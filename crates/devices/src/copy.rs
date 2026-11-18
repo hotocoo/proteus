@@ -55,3 +55,5 @@ pub const GPT_TOO_MANY: &str = "more partitions than a GPT holds";
 pub const GPT_BAD_SIZE: &str = "partition size is not a multiple of the sector size";
 pub const GPU_WORKER_NAME: &str = "virtio-gpu";
 pub const GPU_WORKER_GONE: &str = "display worker thread ended unexpectedly";
+pub const INPUT_WORKER_NAME: &str = "virtio-input";
+pub const INPUT_WORKER_GONE: &str = "input worker thread ended unexpectedly";
