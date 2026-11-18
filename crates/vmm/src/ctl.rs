@@ -45,7 +45,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -361,6 +361,62 @@ fn along(from: (u32, u32), to: (u32, u32), step: u32, steps: u32) -> (u32, u32) 
     (lerp(from.0, to.0), lerp(from.1, to.1))
 }
 
+/// Other instances that get this one's input too: one thread each, which keeps a connection to
+/// that instance's control socket and sends it every command it is handed.
+#[derive(Default)]
+pub struct Followers(Vec<mpsc::Sender<String>>);
+
+impl Followers {
+    pub fn start(targets: &[PathBuf]) -> std::io::Result<Self> {
+        let mut senders = Vec::new();
+        for target in targets {
+            let (sender, lines) = mpsc::channel::<String>();
+            let target = target.clone();
+            thread::Builder::new()
+                .name(copy::SYNC_THREAD.into())
+                .spawn(move || follow(&target, &lines))?;
+            senders.push(sender);
+        }
+        Ok(Self(senders))
+    }
+
+    /// Hands a command to every follower. It does not wait for them.
+    fn send(&self, line: &str) {
+        for sender in &self.0 {
+            // A follower thread only ends when this end is dropped.
+            let _ = sender.send(line.to_owned());
+        }
+    }
+}
+
+/// Sends each line to the instance on `target`, connecting when needed. A follower that is not
+/// running misses what happens until it is; that is reported once per connection attempt.
+fn follow(target: &Path, lines: &mpsc::Receiver<String>) {
+    let mut connection: Option<(BufReader<UnixStream>, UnixStream)> = None;
+    for line in lines {
+        if connection.is_none() {
+            let opened = UnixStream::connect(target)
+                .and_then(|stream| Ok((BufReader::new(stream.try_clone()?), stream)));
+            connection = opened
+                .inspect_err(|err| log::warn!("{}", copy::sync_failed(target, err)))
+                .ok();
+        }
+        let Some((reader, writer)) = connection.as_mut() else {
+            continue;
+        };
+        let mut reply = String::new();
+        let answered = writeln!(writer, "{line}").and_then(|()| reader.read_line(&mut reply));
+        match answered {
+            Ok(read) if read > 0 => {
+                if reply.trim_end() != copy::CTL_OK {
+                    log::debug!("{}", copy::sync_failed(target, &reply.trim_end()));
+                }
+            }
+            _ => connection = None,
+        }
+    }
+}
+
 /// The parts of a running machine that commands act on.
 #[derive(Default)]
 pub struct Controller {
@@ -378,6 +434,8 @@ pub struct Controller {
     pub recording: Mutex<Option<Recording>>,
     /// Set to stop the macro that is playing.
     pub cancel: AtomicBool,
+    /// Instances that get this one's input as well.
+    pub followers: Followers,
     /// Held for the length of a tap or swipe, so that two of them do not share the gesture finger.
     pub gesture: Mutex<()>,
 }
@@ -432,6 +490,9 @@ impl Controller {
         // The pause before a command is measured to when it starts, not to when it has finished.
         let started = Instant::now();
         self.perform(command)?;
+        if command.is_input() {
+            self.followers.send(&command.to_string());
+        }
         let mut recording = self
             .recording
             .lock()

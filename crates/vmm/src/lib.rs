@@ -19,6 +19,7 @@ pub mod frames;
 pub mod gamepad;
 pub mod input;
 pub mod install;
+pub mod instance;
 pub mod keymap;
 pub mod location;
 mod logger;
@@ -193,6 +194,50 @@ fn run(_config: &config::Config, _started: Instant) -> Result<(), VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }
 
+/// Carries out `emu instance ...`. Starting one gives back its configuration, to run.
+fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Config>, String> {
+    use config::InstanceCommand;
+
+    let root = instance::root().map_err(|err| err.to_string())?;
+    let failed = |err: std::io::Error| err.to_string();
+    match command {
+        InstanceCommand::Create { name, args } => {
+            // Checked now, so that a mistake shows here and not when it is started.
+            let mut check: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+            check.extend(["--data-dir".into(), "x".into()]);
+            config::parse(check).map_err(|err| err.to_string())?;
+            instance::create(&root, &name, &args).map_err(failed)?;
+        }
+        InstanceCommand::Start { name, extra } => {
+            let args = instance::start_args(&root, &name, &extra).map_err(failed)?;
+            return match config::parse(args) {
+                Ok(config::Parsed::Run(config)) => Ok(Some(*config)),
+                Ok(_) => Err(copy::INSTANCE_USAGE.to_owned()),
+                Err(err) => Err(err.to_string()),
+            };
+        }
+        InstanceCommand::List => {
+            for (name, running) in instance::list(&root).map_err(failed)? {
+                let mark = if running {
+                    copy::INSTANCE_RUNNING_MARK
+                } else {
+                    ""
+                };
+                println!("{name}\t{mark}");
+            }
+        }
+        InstanceCommand::Remove { name, confirmed } => {
+            let mut answer = std::io::stdin().lock();
+            let removed =
+                instance::remove(&root, &name, confirmed, &mut std::io::stderr(), &mut answer);
+            if !removed.map_err(failed)? {
+                eprintln!("{}", copy::INSTANCE_KEPT);
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Entry point of the `emu` binary.
 pub fn cli_main() -> ExitCode {
     let started = Instant::now();
@@ -202,6 +247,7 @@ pub fn cli_main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(config::Parsed::Ctl { socket, command }) => {
+            let socket = instance::resolve(&socket);
             return match ctl::request(&socket, &command) {
                 Ok(reply) if reply == copy::CTL_OK => ExitCode::SUCCESS,
                 Ok(reply) => {
@@ -215,6 +261,14 @@ pub fn cli_main() -> ExitCode {
             };
         }
         Ok(config::Parsed::Run(config)) => *config,
+        Ok(config::Parsed::Instance(command)) => match instance_main(command) {
+            Ok(None) => return ExitCode::SUCCESS,
+            Ok(Some(config)) => config,
+            Err(err) => {
+                eprintln!("{}", copy::fatal(&err));
+                return ExitCode::FAILURE;
+            }
+        },
         Err(err) => {
             eprintln!("{}\n{}", copy::fatal(&err), copy::USAGE_HINT);
             return ExitCode::from(EXIT_USAGE);

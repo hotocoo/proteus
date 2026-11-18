@@ -72,6 +72,28 @@ pub const MACRO_CANCEL_POLL: Duration = Duration::from_millis(20);
 pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
+pub const INSTANCE_SUBCOMMAND: &str = "instance";
+/// Environment variable naming the emulator's home folder, where instances live.
+pub const EMU_HOME_VARIABLE: &str = "EMU_HOME";
+pub const INSTANCES_DIR: &str = "instances";
+pub const INSTANCE_NAME_MAX: usize = 32;
+/// Longest Unix socket path the system takes (macOS: 104 bytes with the terminating zero).
+pub const SOCKET_PATH_MAX: usize = 103;
+
+/// The emulator's home folder when `EMU_HOME` is not set: the platform's place for app data.
+pub fn home_default() -> Option<PathBuf> {
+    const MACOS_APP_DATA: &str = "Library/Application Support";
+    const XDG_DATA_HOME: &str = "XDG_DATA_HOME";
+    const XDG_DATA_DEFAULT: &str = ".local/share";
+    const APP_FOLDER: &str = "emu";
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        return home.map(|home| home.join(MACOS_APP_DATA).join(APP_FOLDER));
+    }
+    let data = std::env::var_os(XDG_DATA_HOME).map(PathBuf::from);
+    data.or_else(|| home.map(|home| home.join(XDG_DATA_DEFAULT)))
+        .map(|data| data.join(APP_FOLDER))
+}
 /// How often the app in front is checked, for key maps that follow it.
 pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
 /// How long to wait for the `adb` forward to accept a connection.
@@ -163,6 +185,8 @@ pub struct Config {
     pub sound: bool,
     /// Play nothing on the host; the guest's sound card stays.
     pub mute: bool,
+    /// Control sockets of other instances that get this one's input too.
+    pub sync: Vec<PathBuf>,
     /// Whether the guest gets a gamepad.
     pub gamepad: GamepadMode,
     /// Keys and mouse movements that stand for touches, read from this file.
@@ -197,6 +221,7 @@ impl Config {
             window: true,
             sound: true,
             mute: false,
+            sync: Vec::new(),
             gamepad: GamepadMode::Auto,
             keymap: None,
             keymap_dir: None,
@@ -220,8 +245,18 @@ pub enum GamepadMode {
     Never,
 }
 
+/// What `emu instance ...` asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstanceCommand {
+    Create { name: String, args: Vec<String> },
+    Start { name: String, extra: Vec<OsString> },
+    List,
+    Remove { name: String, confirmed: bool },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
+    Instance(InstanceCommand),
     Run(Box<Config>),
     /// Send `command` to the instance listening on `socket`.
     Ctl {
@@ -263,6 +298,36 @@ fn positive<T: std::str::FromStr + PartialOrd + Default>(
     }
 }
 
+fn instance_command(args: Vec<OsString>) -> Result<InstanceCommand, ConfigError> {
+    let text = |arg: &OsString| arg.to_string_lossy().into_owned();
+    let usage = || ConfigError(copy::INSTANCE_USAGE.into());
+    let words: Vec<String> = args.iter().take(2).map(text).collect();
+    let rest = args.get(2..).unwrap_or_default();
+    match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["create", name] if !rest.is_empty() => Ok(InstanceCommand::Create {
+            name: name.to_owned(),
+            args: rest.iter().map(text).collect(),
+        }),
+        ["start", name] => Ok(InstanceCommand::Start {
+            name: name.to_owned(),
+            extra: rest.to_vec(),
+        }),
+        ["list"] if rest.is_empty() => Ok(InstanceCommand::List),
+        ["rm", name] => match rest {
+            [] => Ok(InstanceCommand::Remove {
+                name: name.to_owned(),
+                confirmed: false,
+            }),
+            [yes] if yes == "--yes" => Ok(InstanceCommand::Remove {
+                name: name.to_owned(),
+                confirmed: true,
+            }),
+            _ => Err(usage()),
+        },
+        _ => Err(usage()),
+    }
+}
+
 /// Parses arguments as they follow the program name.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigError> {
     let mut args = args.into_iter().peekable();
@@ -278,6 +343,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             }),
             _ => Err(ConfigError(copy::CTL_NEEDS_ARGUMENTS.into())),
         };
+    }
+    if args
+        .peek()
+        .is_some_and(|first| first == INSTANCE_SUBCOMMAND)
+    {
+        return instance_command(args.skip(1).collect()).map(Parsed::Instance);
     }
     let mut parser = lexopt::Parser::from_args(args);
     let mut kernel = None;
@@ -332,6 +403,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("no-sound") => config.sound = false,
             Long("mute") => config.mute = true,
             Long("gamepad") => config.gamepad = GamepadMode::Always,
+            Long("sync") => config.sync.push(parser.value()?.into()),
             Long("no-gamepad") => config.gamepad = GamepadMode::Never,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
@@ -569,6 +641,50 @@ mod tests {
         assert_eq!(
             run(&["--kernel", "k", "--ctl", "s"]).ctl,
             Some(PathBuf::from("s"))
+        );
+    }
+
+    #[test]
+    fn instance_subcommands_and_sync_targets_are_read() {
+        let instance = |args: &[&str]| match parse_str(args).unwrap() {
+            Parsed::Instance(command) => command,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            instance(&["instance", "create", "a", "--kernel", "k"]),
+            InstanceCommand::Create {
+                name: "a".to_owned(),
+                args: vec!["--kernel".to_owned(), "k".to_owned()],
+            }
+        );
+        assert_eq!(
+            instance(&["instance", "start", "a", "--headless"]),
+            InstanceCommand::Start {
+                name: "a".to_owned(),
+                extra: vec!["--headless".into()],
+            }
+        );
+        assert_eq!(instance(&["instance", "list"]), InstanceCommand::List);
+        assert_eq!(
+            instance(&["instance", "rm", "a", "--yes"]),
+            InstanceCommand::Remove {
+                name: "a".to_owned(),
+                confirmed: true,
+            }
+        );
+        for wrong in [
+            &["instance"][..],
+            &["instance", "create", "a"],
+            &["instance", "rm", "a", "now"],
+            &["instance", "list", "x"],
+            &["instance", "eat", "a"],
+        ] {
+            assert!(parse_str(wrong).is_err(), "{wrong:?}");
+        }
+        let synced = run(&["--kernel", "k", "--sync", "b", "--sync", "/tmp/c.sock"]);
+        assert_eq!(
+            synced.sync,
+            [PathBuf::from("b"), PathBuf::from("/tmp/c.sock")]
         );
     }
 

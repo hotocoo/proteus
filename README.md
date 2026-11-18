@@ -24,7 +24,9 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several virtual CPUs, disks, a serial console.
 - Plain Linux kernels boot too, to a shell on the serial console.
 
-Not there yet: GPU acceleration, several instances,
+- Several instances at once, with one able to drive the others.
+
+Not there yet: GPU acceleration, a GUI,
 Linux and Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
@@ -92,6 +94,23 @@ map does not use still reach Android as a keyboard.
 To have the map follow the app in front, put maps in a folder named after the apps' package names
 (`com.example.game.toml`), optionally with a `default.toml` for every other app, and start with
 `--keymap-dir <folder>`. The emulator checks which app is in front once a second.
+
+### Several instances
+
+```sh
+emu instance create farm --kernel kernel-arm64 --android <image directory> --ram-mib 2048
+emu instance start farm                      # its own data, control socket and adb port
+emu instance list
+emu ctl farm tap 640 360                     # an instance name works where a socket path does
+emu instance rm farm                         # asks first; deletes its Android data for good
+```
+
+Instances live in `~/Library/Application Support/emu/instances` (set `EMU_HOME` to move them). They
+share the Android image, read-only. Each takes the next free adb port from 5555 up; `emu` says which.
+Memory is per instance.
+
+To play several at once, start one with `--sync <instance or socket>` (repeatable): its touches,
+keys and gamepad moves are sent to the others as well. Give them all the same display size.
 
 ### Gamepads
 
@@ -181,7 +200,7 @@ Honest list, most important first:
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed from files (drop them on the window, or `emu ctl ... install`).
 - **Linux and Windows hosts.** Only the macOS backend exists.
-- **Several instances** and a settings window.
+- **A settings window**, and the rest of the planned GUI.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
 answered by the emulator itself, so use a real connection to test the network. Games that detect

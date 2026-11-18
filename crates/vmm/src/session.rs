@@ -107,6 +107,12 @@ impl Session {
         if config.gamepad == GamepadMode::Always || pad_plugged_in {
             controller.gamepad = Some(InputHandle::default());
         }
+        let targets: Vec<_> = config
+            .sync
+            .iter()
+            .map(|target| crate::instance::resolve(target))
+            .collect();
+        controller.followers = ctl::Followers::start(&targets).map_err(VmmError::Thread)?;
         let controller = Arc::new(controller);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some(pads) = pads {

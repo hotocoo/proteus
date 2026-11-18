@@ -13,7 +13,11 @@ pub const HELP: &str = "\
 emu: lightweight Android emulator
 
 Usage: emu --kernel <file> [options]
-       emu ctl <socket> <command>
+       emu ctl <socket or instance> <command>
+       emu instance create <name> <options>   Make a named instance that starts with these options
+       emu instance start <name> [<options>]  Start it, with its own data, socket and adb port
+       emu instance list                      Name each instance, and say which are running
+       emu instance rm <name> [--yes]         Delete an instance and its Android data, for good
 
   --kernel <file>         Uncompressed kernel image (required)
   --initrd <file>         Ramdisk (uncompressed or kernel-supported cpio)
@@ -40,6 +44,8 @@ Usage: emu --kernel <file> [options]
   --mute                  Keep the sound card but play nothing on this machine
   --gamepad               Give the guest a gamepad even with no host pad plugged in
   --no-gamepad            No gamepad, even with a host pad plugged in
+  --sync <socket or instance>  Send this instance's touches, keys and pad moves to another
+                          one as well (repeatable); give them the same display size
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
@@ -57,7 +63,13 @@ Usage: emu --kernel <file> [options]
   touch <finger> <x> <y>                 Put a finger down, or move it (fingers 0 to 9)
   lift <finger>                          Take that finger off the screen
   key <code> [down|up]                   Press a key by its Linux key code
+  pad <control> <value>                  Move a gamepad control: a b x y l1 r1 l2 r2 select
+                                         start mode thumbl thumbr (down/up), sticks lx ly rx ry
+                                         (-1 to 1), triggers lt rt (0 to 1), hatx haty (-1 0 1)
   screenshot <file>                      Save what the display shows as a PNG
+  screenrecord <file> [<seconds>]        Record the screen as MP4, up to 180 seconds
+  install <file or folder>               Install an APK, a folder of split APKs, or an
+                                         .apks/.xapk archive with its OBB files
   location <lat> <lon> [<metres>]        Put the device at this position on Earth
   rotate <x> <y> <z>                     Turn the device, in degrees about its three axes;
                                          0 0 0 is upright, -90 0 0 is flat on a table
@@ -317,4 +329,29 @@ pub const CTL_NO_FRAME_YET: &str = "the guest has not shown anything yet";
 pub const CTL_SOCKET_IN_USE: &str = "another instance is already listening on this control socket";
 pub const CTL_NOT_A_SOCKET: &str = "the control socket path names a file that is not a socket";
 pub const CTL_NO_REPLY: &str = "the instance closed the connection without answering";
-pub const CTL_NEEDS_ARGUMENTS: &str = "`emu ctl` needs a socket path and a command";
+pub const CTL_NEEDS_ARGUMENTS: &str =
+    "`emu ctl` needs a socket path or instance name, and a command";
+pub const INSTANCE_USAGE: &str =
+    "use `emu instance create <name> <options>`, `start <name>`, `list` or `rm <name>`";
+pub const INSTANCE_NO_HOME: &str = "no home folder for instances; set EMU_HOME";
+pub const INSTANCE_BAD_NAME: &str = "an instance name is 1 to 32 letters, digits, '-' or '_'";
+pub const INSTANCE_OWN_OPTIONS: &str =
+    "an instance has its own --data-dir and --ctl; leave them out";
+pub const INSTANCE_BAD_ARGUMENT: &str = "an option of an instance cannot contain a line break";
+pub const INSTANCE_PATH_TOO_LONG: &str =
+    "the instance's control socket path would be too long; use a shorter name or EMU_HOME";
+pub const INSTANCE_EXISTS: &str = "there is already an instance with that name";
+pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
+pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
+pub const INSTANCE_KEPT: &str = "nothing was deleted";
+pub const INSTANCE_RUNNING_MARK: &str = "running";
+
+pub fn instance_confirm_delete(name: &str) -> String {
+    format!("Delete instance {name} and all of its Android data, for good? Type y to delete: ")
+}
+
+pub fn sync_failed(target: &Path, why: &dyn Display) -> String {
+    format!("input sync to {}: {why}", target.display())
+}
+
+pub const SYNC_THREAD: &str = "input sync";
