@@ -45,3 +45,11 @@ sensitivity = 1.0
 center = [640, 360]
 spread = 120
 step = 60
+
+# Four keys walk the device's location, up the screen being north. Set a location first.
+[walk]
+up = "ArrowUp"
+down = "ArrowDown"
+left = "ArrowLeft"
+right = "ArrowRight"
+speed = 5

@@ -14,6 +14,10 @@
 //! screenrecord <file> [<seconds>]
 //! install <file or directory>
 //! location <latitude> <longitude> [<metres above sea level>]
+//! location <map link>
+//! walk <degrees from north> <km/h>
+//! walk stop
+//! route <gpx file> [<km/h>]
 //! rotate <x> <y> <z>
 //! shake
 //! stop
@@ -52,11 +56,11 @@ use std::time::{Duration, Instant};
 use devices::virtio::input::{InputEvent, InputHandle};
 
 use crate::config::{DEFAULT_SWIPE, MACRO_CANCEL_POLL, MACRO_MAX_BYTES, SWIPE_STEP, TAP_HOLD};
-use crate::config::{GUEST_RECORDING, SCREENRECORD_MAX};
+use crate::config::{GUEST_RECORDING, MAX_KMH, ROUTE_DEFAULT_KMH, SCREENRECORD_MAX};
 use crate::copy;
 use crate::frames::Screen;
 use crate::input::{self, PadControl, PadKind, TOUCH_SLOTS, Touch};
-use crate::location::{Fix, Location};
+use crate::location::{self, Fix, Location};
 use crate::sensors::Motion;
 use crate::session::PowerSwitch;
 
@@ -70,6 +74,8 @@ const WORD_SCREENSHOT: &str = "screenshot";
 const WORD_SCREENRECORD: &str = "screenrecord";
 const WORD_INSTALL: &str = "install";
 const WORD_LOCATION: &str = "location";
+const WORD_WALK: &str = "walk";
+const WORD_ROUTE: &str = "route";
 const WORD_ROTATE: &str = "rotate";
 const WORD_SHAKE: &str = "shake";
 const WORD_STOP: &str = "stop";
@@ -128,6 +134,13 @@ pub enum Command {
         latitude: f64,
         longitude: f64,
         altitude: f64,
+    },
+    /// Walk at `(degrees from north, km/h)` from where the device is; `None` stops.
+    Walk(Option<(f64, f64)>),
+    /// Follow the route in a GPX file at this many km/h.
+    Route {
+        path: PathBuf,
+        km_per_hour: f64,
     },
     /// Degrees about the device's x, y and z axes.
     Rotate([f64; 3]),
@@ -201,6 +214,11 @@ impl std::fmt::Display for Command {
                 longitude,
                 altitude,
             } => write!(f, "{WORD_LOCATION} {latitude} {longitude} {altitude}"),
+            Self::Walk(Some((bearing, speed))) => write!(f, "{WORD_WALK} {bearing} {speed}"),
+            Self::Walk(None) => write!(f, "{WORD_WALK} {WORD_STOP}"),
+            Self::Route { path, km_per_hour } => {
+                write!(f, "{WORD_ROUTE} {} {km_per_hour}", path.display())
+            }
             Self::Rotate([x, y, z]) => write!(f, "{WORD_ROTATE} {x} {y} {z}"),
             Self::Shake => f.write_str(WORD_SHAKE),
             Self::Stop => f.write_str(WORD_STOP),
@@ -236,8 +254,33 @@ pub fn parse(line: &str) -> Option<Command> {
             });
         }
         (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
+        (WORD_WALK, Some(&[bearing, speed])) if bearing.is_finite() && speed.is_finite() => {
+            return Some(Command::Walk(Some((bearing, speed))));
+        }
+        (WORD_LOCATION, None) if !rest.is_empty() => {
+            let fix = location::from_link(rest)?;
+            return Some(Command::Location {
+                latitude: fix.latitude,
+                longitude: fix.longitude,
+                altitude: fix.altitude,
+            });
+        }
         (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
         (WORD_STOP, Some(&[])) => return Some(Command::Stop),
+        (WORD_WALK, None) if rest == WORD_STOP => return Some(Command::Walk(None)),
+        (WORD_ROUTE, _) if !rest.is_empty() => {
+            let speed = rest
+                .rsplit_once(char::is_whitespace)
+                .and_then(|(path, last)| {
+                    let speed: f64 = last.parse().ok().filter(|speed: &f64| speed.is_finite())?;
+                    Some((path.trim_end(), speed))
+                });
+            let (path, km_per_hour) = speed.unwrap_or((rest, ROUTE_DEFAULT_KMH));
+            return Some(Command::Route {
+                path: path.into(),
+                km_per_hour,
+            });
+        }
         (WORD_RECORD_STOP, Some(&[])) => return Some(Command::RecordStop),
         (WORD_CANCEL, Some(&[])) => return Some(Command::Cancel),
         _ => {}
@@ -582,6 +625,23 @@ impl Controller {
                 let fix = Fix::new(latitude, longitude, altitude).ok_or(copy::CTL_BAD_LOCATION)?;
                 location.set(fix);
                 Ok(())
+            }
+            Command::Walk(heading) => {
+                let location = self.location.as_ref().ok_or(copy::CTL_NO_LOCATION)?;
+                if heading.is_some_and(|(_, speed)| !(0.0..=MAX_KMH).contains(&speed)) {
+                    return Err(copy::ctl_bad_speed(MAX_KMH));
+                }
+                location.walk(heading)
+            }
+            Command::Route {
+                ref path,
+                km_per_hour,
+            } => {
+                let location = self.location.as_ref().ok_or(copy::CTL_NO_LOCATION)?;
+                if !(0.0..=MAX_KMH).contains(&km_per_hour) || km_per_hour == 0.0 {
+                    return Err(copy::ctl_bad_speed(MAX_KMH));
+                }
+                location.follow(path, km_per_hour)
             }
             Command::Rotate(degrees) => {
                 let motion = self.motion.as_ref().ok_or(copy::CTL_NO_SENSORS)?;
@@ -995,6 +1055,12 @@ mod tests {
                 latitude: -3.5,
                 longitude: 101.25,
                 altitude: 60.0,
+            },
+            Command::Walk(Some((45.0, 5.5))),
+            Command::Walk(None),
+            Command::Route {
+                path: "my walk.gpx".into(),
+                km_per_hour: 12.5,
             },
             Command::Rotate([-90.0, 0.0, 12.5]),
             Command::Shake,

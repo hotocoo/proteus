@@ -25,6 +25,13 @@
 //! radius = 250
 //! sensitivity = 1.0
 //!
+//! [walk]                    # four keys walk the device's location (set one first)
+//! up = "ArrowUp"
+//! down = "ArrowDown"
+//! left = "ArrowLeft"
+//! right = "ArrowRight"
+//! speed = 5                 # km/h
+//!
 //! [zoom]                    # each turn of the mouse wheel is a pinch of two fingers
 //! center = [640, 360]
 //! spread = 120              # how far from the centre each finger lands
@@ -43,6 +50,7 @@ use crate::input::{TOUCH_SLOTS, key_or_button_code};
 const FIRST_FINGER: u32 = 1;
 const LAST_FINGER: u32 = TOUCH_SLOTS - 2;
 const DEFAULT_SENSITIVITY: f64 = 1.0;
+const FULL_TURN_DEGREES: f64 = 360.0;
 /// Moves each finger of a pinch makes between landing and lifting; a pinch that jumps in one move
 /// is not always read as one.
 const ZOOM_MOVES: u32 = 4;
@@ -61,6 +69,11 @@ pub enum Touch {
     Lift {
         finger: u32,
     },
+    /// Walk the location this many degrees from north (up on the screen is north), or stop.
+    Walk {
+        bearing: Option<u16>,
+        km_per_hour: u16,
+    },
 }
 
 #[derive(Deserialize)]
@@ -73,6 +86,17 @@ struct File {
     stick: Vec<StickEntry>,
     look: Option<LookEntry>,
     zoom: Option<ZoomEntry>,
+    walk: Option<WalkEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalkEntry {
+    up: String,
+    down: String,
+    left: String,
+    right: String,
+    speed: u16,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +168,43 @@ struct Zoom {
     pixels: f64,
 }
 
+struct Walk {
+    /// Up, down, left, right.
+    keys: [u16; 4],
+    held: [bool; 4],
+    km_per_hour: u16,
+}
+
+impl Walk {
+    /// Degrees from north for the keys held, or `None` if none are (or they cancel out).
+    fn bearing(&self) -> Option<u16> {
+        let [up, down, left, right] = self.held.map(i32::from);
+        let (east, north) = (right - left, up - down);
+        if (east, north) == (0, 0) {
+            return None;
+        }
+        let degrees = f64::from(east).atan2(f64::from(north)).to_degrees();
+        Some(degrees.rem_euclid(FULL_TURN_DEGREES).round() as u16)
+    }
+
+    fn key(&mut self, code: u16, down: bool) -> Vec<Touch> {
+        let before = self.bearing();
+        for (key, held) in self.keys.iter().zip(&mut self.held) {
+            if *key == code {
+                *held = down;
+            }
+        }
+        let after = self.bearing();
+        if before == after {
+            return Vec::new();
+        }
+        vec![Touch::Walk {
+            bearing: after,
+            km_per_hour: self.km_per_hour,
+        }]
+    }
+}
+
 /// How far the mouse wheel turned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Scroll {
@@ -164,6 +225,7 @@ pub struct Mapper {
     sticks: Vec<Stick>,
     look: Option<Look>,
     zoom: Option<Zoom>,
+    walk: Option<Walk>,
 }
 
 fn key(name: &str, used: &mut Vec<u16>) -> Result<u16, String> {
@@ -269,6 +331,21 @@ impl Mapper {
             }
             None => None,
         };
+        let walk = match &file.walk {
+            Some(entry) => {
+                let names = [&entry.up, &entry.down, &entry.left, &entry.right];
+                let mut keys = [0; 4];
+                for (slot, name) in keys.iter_mut().zip(names) {
+                    *slot = key(name, &mut used)?;
+                }
+                Some(Walk {
+                    keys,
+                    held: [false; 4],
+                    km_per_hour: entry.speed,
+                })
+            }
+            None => None,
+        };
         Ok(Self {
             display,
             toggle,
@@ -278,6 +355,7 @@ impl Mapper {
             sticks,
             look,
             zoom,
+            walk,
         })
     }
 
@@ -325,6 +403,14 @@ impl Mapper {
                 });
             }
         }
+        if let Some(walk) = &mut self.walk
+            && std::mem::take(&mut walk.held).contains(&true)
+        {
+            touches.push(Touch::Walk {
+                bearing: None,
+                km_per_hour: walk.km_per_hour,
+            });
+        }
         if let Some(look) = &mut self.look
             && look.at.take().is_some()
         {
@@ -370,6 +456,9 @@ impl Mapper {
             .find(|stick| stick.keys.contains(&code))
         {
             return Some(stick.key(code, down));
+        }
+        if let Some(walk) = self.walk.as_mut().filter(|walk| walk.keys.contains(&code)) {
+            return Some(walk.key(code, down));
         }
         let look = self.look.as_mut().filter(|look| look.key == code)?;
         if !down {
@@ -534,6 +623,13 @@ mod tests {
         center = [640, 360]
         spread = 120
         step = 60
+
+        [walk]
+        up = "ArrowUp"
+        down = "ArrowDown"
+        left = "ArrowLeft"
+        right = "ArrowRight"
+        speed = 5
     "#;
 
     fn code(name: &str) -> u16 {
@@ -663,6 +759,28 @@ mod tests {
         // Switched off, the wheel does nothing.
         map.key(code("F12"), true);
         assert!(map.scroll(Scroll::Turns(1.0)).is_empty());
+    }
+
+    #[test]
+    fn walk_keys_turn_into_a_bearing_from_north_and_stop_when_let_go() {
+        let mut map = mapper();
+        let walk = |bearing| {
+            Some(vec![Touch::Walk {
+                bearing,
+                km_per_hour: 5,
+            }])
+        };
+        assert_eq!(map.key(code("ArrowUp"), true), walk(Some(0)));
+        assert_eq!(map.key(code("ArrowRight"), true), walk(Some(45)));
+        assert_eq!(map.key(code("ArrowUp"), false), walk(Some(90)));
+        // A repeat changes nothing.
+        assert_eq!(map.key(code("ArrowRight"), true), Some(vec![]));
+        assert_eq!(map.key(code("ArrowDown"), true), walk(Some(135)));
+        assert_eq!(map.key(code("ArrowRight"), false), walk(Some(180)));
+        assert_eq!(map.key(code("ArrowLeft"), true), walk(Some(225)));
+        assert_eq!(map.key(code("ArrowDown"), false), walk(Some(270)));
+        // Switching the map off stops the walk.
+        assert_eq!(map.key(code("F12"), true), walk(None));
     }
 
     #[test]

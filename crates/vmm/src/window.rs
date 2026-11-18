@@ -183,6 +183,12 @@ impl App {
             self.send(match *touch {
                 Touch::Place { finger, x, y } => Command::Touch { finger, x, y },
                 Touch::Lift { finger } => Command::Lift { finger },
+                Touch::Walk {
+                    bearing,
+                    km_per_hour,
+                } => Command::Walk(
+                    bearing.map(|bearing| (f64::from(bearing), f64::from(km_per_hour))),
+                ),
             });
         }
     }

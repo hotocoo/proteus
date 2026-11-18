@@ -72,6 +72,10 @@ pub const MACRO_CANCEL_POLL: Duration = Duration::from_millis(20);
 pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
+/// Speed a GPX route is followed at when none is given: a walk.
+pub const ROUTE_DEFAULT_KMH: f64 = 5.0;
+/// Fastest a walk or route may go; anything faster is a typing mistake (this is an airliner).
+pub const MAX_KMH: f64 = 1000.0;
 pub const INSTANCE_SUBCOMMAND: &str = "instance";
 /// Environment variable naming the emulator's home folder, where instances live.
 pub const EMU_HOME_VARIABLE: &str = "EMU_HOME";

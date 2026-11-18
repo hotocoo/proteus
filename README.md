@@ -76,6 +76,9 @@ emu ctl /tmp/emu.sock screenshot shot.png
 emu ctl /tmp/emu.sock screenrecord clip.mp4 30  # seconds, at most 180; no sound
 emu ctl /tmp/emu.sock install game.xapk        # an APK, a folder of split APKs, or .apks/.xapk
 emu ctl /tmp/emu.sock location 3.139 101.6869  # latitude, longitude
+emu ctl /tmp/emu.sock location "https://www.google.com/maps/@48.8584,2.2945,15z"  # or a geo: link
+emu ctl /tmp/emu.sock route walk.gpx 5         # follow a GPX track at 5 km/h
+emu ctl /tmp/emu.sock walk 90 5                # walk east at 5 km/h; `walk stop` stops
 emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lays the device flat
 emu ctl /tmp/emu.sock shake
 emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly rx ry, triggers lt rt

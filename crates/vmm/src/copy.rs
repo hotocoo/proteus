@@ -71,6 +71,9 @@ Usage: emu --kernel <file> [options]
   install <file or folder>               Install an APK, a folder of split APKs, or an
                                          .apks/.xapk archive with its OBB files
   location <lat> <lon> [<metres>]        Put the device at this position on Earth
+  location <map link>                    The same, from a geo: or map link with coordinates
+  walk <degrees> <km/h> | walk stop      Walk from there, degrees clockwise from north
+  route <gpx file> [<km/h>]              Follow a GPX track or route (default 5 km/h)
   rotate <x> <y> <z>                     Turn the device, in degrees about its three axes;
                                          0 0 0 is upright, -90 0 0 is flat on a table
   shake                                  Shake the device
@@ -317,6 +320,12 @@ pub fn ctl_bad_macro_line(path: &Path, line: usize) -> String {
         "{}: line {line} is not a command a macro can contain",
         path.display()
     )
+}
+pub const GPX_BROKEN: &str = "that GPX file has a point without a valid latitude and longitude";
+pub const GPX_EMPTY: &str = "that GPX file has no track, route or waypoints";
+pub const LOCATION_NOT_SET: &str = "set a location first; walking starts from it";
+pub fn ctl_bad_speed(max: f64) -> String {
+    format!("a speed is above 0 and at most {max} km/h")
 }
 pub const CTL_NO_LOCATION: &str = "this instance has no location service";
 pub const CTL_BAD_LOCATION: &str =
