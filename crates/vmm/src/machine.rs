@@ -90,8 +90,25 @@ struct SpiLine {
 }
 
 impl InterruptLine for SpiLine {
+    #[cfg(target_arch = "aarch64")]
     fn set(&self, level: bool) {
         if let Err(err) = self.chip.set_irq(self.spi, level) {
+            log::error!("{}", copy::irq_failed(self.spi, &err));
+        }
+    }
+
+    /// The board's IOAPIC pins are edge-triggered, as ISA interrupts are, so a raised line is a
+    /// pulse: high, then low again so that the next raise is an edge too. Lowering does nothing.
+    #[cfg(target_arch = "x86_64")]
+    fn set(&self, level: bool) {
+        if !level {
+            return;
+        }
+        let pulsed = self
+            .chip
+            .set_irq(self.spi, true)
+            .and_then(|()| self.chip.set_irq(self.spi, false));
+        if let Err(err) = pulsed {
             log::error!("{}", copy::irq_failed(self.spi, &err));
         }
     }
