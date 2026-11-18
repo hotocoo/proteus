@@ -43,7 +43,6 @@ pub const KERNEL_OVERLAPS_INITRD: &str = "kernel image reaches into the ramdisk 
 pub const INITRD_OVERLAPS_FDT: &str = "ramdisk and bootconfig reach into the device tree area";
 #[cfg(target_arch = "aarch64")]
 pub const FDT_TOO_LARGE: &str = "device tree exceeds 2 MiB";
-#[cfg(target_arch = "aarch64")]
 pub const RAM_TOO_SMALL: &str = "RAM is smaller than the fixed boot layout needs";
 #[cfg(target_arch = "aarch64")]
 pub const RAM_TOO_LARGE: &str = "RAM would run into the GPU shared-memory window";
