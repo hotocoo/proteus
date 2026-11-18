@@ -146,6 +146,8 @@ pub struct Config {
     pub sound: bool,
     /// Play nothing on the host; the guest's sound card stays.
     pub mute: bool,
+    /// Whether the guest gets a gamepad.
+    pub gamepad: GamepadMode,
     /// Keys and mouse movements that stand for touches, read from this file.
     pub keymap: Option<PathBuf>,
     /// Listen on this local socket for control commands.
@@ -176,6 +178,7 @@ impl Config {
             window: true,
             sound: true,
             mute: false,
+            gamepad: GamepadMode::Auto,
             keymap: None,
             ctl: None,
             logcat: None,
@@ -185,6 +188,16 @@ impl Config {
             log_level: DEFAULT_LOG_LEVEL,
         }
     }
+}
+
+/// When the guest gets a gamepad. virtio devices are fixed at boot, so a pad plugged in later needs
+/// a restart, or `Always`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GamepadMode {
+    /// If the window is shown and a host pad is plugged in at start.
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -297,6 +310,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("keymap") => config.keymap = Some(parser.value()?.into()),
             Long("no-sound") => config.sound = false,
             Long("mute") => config.mute = true,
+            Long("gamepad") => config.gamepad = GamepadMode::Always,
+            Long("no-gamepad") => config.gamepad = GamepadMode::Never,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;

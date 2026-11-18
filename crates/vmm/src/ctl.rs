@@ -9,6 +9,7 @@
 //! touch <finger> <x> <y>
 //! lift <finger>
 //! key <code> [down|up]
+//! pad <control> <value>
 //! screenshot <file>
 //! location <latitude> <longitude> [<metres above sea level>]
 //! rotate <x> <y> <z>
@@ -24,6 +25,11 @@
 //! A macro is a file of these commands, one per line; `#` starts a comment. `record` writes one
 //! from the touches and keys that follow, with the pauses between them, until `record-stop`. `run`
 //! plays one, and `cancel` stops a macro that is playing.
+//!
+//! Gamepad controls are `a`, `b`, `x`, `y`, `l1`, `r1`, `l2`, `r2`, `select`, `start`, `mode`,
+//! `thumbl` and `thumbr` (value `down`, `up`, 1 or 0), the sticks `lx`, `ly`, `rx` and `ry` (-1 to 1,
+//! right and down positive), the triggers `lt` and `rt` (0 to 1) and the direction pad `hatx` and
+//! `haty` (-1, 0 or 1).
 //!
 //! Positions are display pixels, key codes are Linux key codes, and angles are degrees. The answer is `ok`, or `error:`
 //! followed by the reason. Unix sockets only; a Windows host will need a named pipe here.
@@ -42,7 +48,7 @@ use devices::virtio::input::{InputEvent, InputHandle};
 use crate::config::{DEFAULT_SWIPE, MACRO_CANCEL_POLL, MACRO_MAX_BYTES, SWIPE_STEP, TAP_HOLD};
 use crate::copy;
 use crate::frames::Screen;
-use crate::input::{self, TOUCH_SLOTS, Touch};
+use crate::input::{self, PadControl, PadKind, TOUCH_SLOTS, Touch};
 use crate::location::{Fix, Location};
 use crate::sensors::Motion;
 use crate::session::PowerSwitch;
@@ -52,6 +58,7 @@ const WORD_SWIPE: &str = "swipe";
 const WORD_TOUCH: &str = "touch";
 const WORD_LIFT: &str = "lift";
 const WORD_KEY: &str = "key";
+const WORD_PAD: &str = "pad";
 const WORD_SCREENSHOT: &str = "screenshot";
 const WORD_LOCATION: &str = "location";
 const WORD_ROTATE: &str = "rotate";
@@ -95,6 +102,11 @@ pub enum Command {
         code: u16,
         down: Option<bool>,
     },
+    /// A gamepad control moved; see `input::pad_event` for the values.
+    Pad {
+        control: PadControl,
+        value: f64,
+    },
     Screenshot(PathBuf),
     Location {
         latitude: f64,
@@ -129,6 +141,7 @@ impl Command {
                 | Self::Touch { .. }
                 | Self::Lift { .. }
                 | Self::Key { .. }
+                | Self::Pad { .. }
         )
     }
 }
@@ -156,6 +169,7 @@ impl std::fmt::Display for Command {
                 let state = if *down { WORD_DOWN } else { WORD_UP };
                 write!(f, "{WORD_KEY} {code} {state}")
             }
+            Self::Pad { control, value } => write!(f, "{WORD_PAD} {} {value}", control.name),
             Self::Screenshot(path) => write!(f, "{WORD_SCREENSHOT} {}", path.display()),
             Self::Location {
                 latitude,
@@ -230,6 +244,19 @@ pub fn parse(line: &str) -> Option<Command> {
                 .next()
                 .is_none()
                 .then_some(Command::Key { code, down })
+        }
+        (WORD_PAD, _) => {
+            let (name, value) = rest.split_once(char::is_whitespace)?;
+            let control = input::pad_control(name)?;
+            let value = match (control.kind, value.trim()) {
+                (PadKind::Button, WORD_DOWN) => 1.0,
+                (PadKind::Button, WORD_UP) => 0.0,
+                (_, number) => number
+                    .parse()
+                    .ok()
+                    .filter(|value: &f64| value.is_finite())?,
+            };
+            Some(Command::Pad { control, value })
         }
         (WORD_SCREENSHOT, _) if !rest.is_empty() => Some(Command::Screenshot(rest.into())),
         (WORD_WAIT, Some(&[millis])) => Some(Command::Wait(Duration::from_millis(millis.into()))),
@@ -307,6 +334,7 @@ pub struct Controller {
     /// The touchscreen, and which fingers are on it.
     pub touch: Option<(InputHandle, Mutex<Touch>)>,
     pub keyboard: Option<InputHandle>,
+    pub gamepad: Option<InputHandle>,
     pub screen: Option<Arc<Screen>>,
     pub location: Option<Arc<Location>>,
     pub motion: Option<Arc<Motion>>,
@@ -406,6 +434,10 @@ impl Controller {
                 self.key(code, true)?;
                 thread::sleep(TAP_HOLD);
                 self.key(code, false)
+            }
+            Command::Pad { control, value } => {
+                let gamepad = self.gamepad.as_ref().ok_or(copy::CTL_NO_GAMEPAD)?;
+                send(gamepad, &input::pad_event(control, value))
             }
             Command::Screenshot(ref path) => {
                 let screen = self.screen.as_ref().ok_or(copy::CTL_NO_DISPLAY)?;
@@ -704,6 +736,11 @@ mod tests {
             "key x",
             "key 30 sideways",
             "key 30 down again",
+            "pad a",
+            "pad a sideways",
+            "pad lx down",
+            "pad lx NaN",
+            "pad nub 1",
             "screenshot",
             "reboot",
         ] {
@@ -816,6 +853,10 @@ mod tests {
                 code: 30,
                 down: Some(false),
             },
+            Command::Pad {
+                control: input::pad_control("ly").unwrap(),
+                value: -0.25,
+            },
             Command::Screenshot("a b.png".into()),
             Command::Location {
                 latitude: -3.5,
@@ -837,6 +878,21 @@ mod tests {
         for command in commands {
             assert_eq!(parse(&command.to_string()), Some(command));
         }
+        let a = input::pad_control("a").unwrap();
+        assert_eq!(
+            parse("pad a down"),
+            Some(Command::Pad {
+                control: a,
+                value: 1.0
+            })
+        );
+        assert_eq!(
+            parse("pad a up"),
+            Some(Command::Pad {
+                control: a,
+                value: 0.0
+            })
+        );
         assert_eq!(
             parse("run farm.txt"),
             Some(Command::Run {

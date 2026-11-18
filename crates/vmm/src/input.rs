@@ -24,6 +24,7 @@ const BUS_VIRTUAL: u16 = 6;
 const VENDOR: u16 = 0x1af4;
 const PRODUCT_TOUCHSCREEN: u16 = 1;
 const PRODUCT_KEYBOARD: u16 = 2;
+const PRODUCT_GAMEPAD: u16 = 3;
 const DEVICE_VERSION: u16 = 1;
 
 /// Fingers the touchscreen tracks at once.
@@ -37,6 +38,72 @@ const TRACKING_ID_NONE: i32 = -1;
 const KEYBOARD_CODES: RangeInclusive<u16> = 1..=248;
 /// `KEY_APPSELECT`, which Android reads as its "recent apps" button.
 pub const KEY_APPSELECT: u16 = 0x244;
+
+/// How far a stick reaches from its centre, in the units the gamepad reports.
+const STICK_REACH: i32 = 32767;
+/// A trigger pulled all the way.
+const TRIGGER_FULL: i32 = 255;
+/// A stick this close to its centre reads as centred; real sticks never rest exactly there.
+const STICK_FLAT: u32 = 1024;
+
+/// What a gamepad control is: a button, or one of the kinds of axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadKind {
+    Button,
+    /// From one side through the centre to the other.
+    Stick,
+    /// From released to fully pulled.
+    Trigger,
+    /// The direction pad, which is only ever one way, centred or the other.
+    Hat,
+}
+
+/// One control of the gamepad: its name in control commands, its Linux code and what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadControl {
+    pub name: &'static str,
+    pub code: u16,
+    pub kind: PadKind,
+}
+
+const fn pad(name: &'static str, code: u16, kind: PadKind) -> PadControl {
+    PadControl { name, code, kind }
+}
+
+/// The gamepad's controls. Buttons are the Linux gamepad buttons, which Android's generic gamepad
+/// layout already knows. The right stick is Z and RZ and the triggers brake and gas, because that is
+/// where Android looks for them on a pad with no layout of its own.
+pub const PAD_CONTROLS: [PadControl; 21] = [
+    pad("a", 0x130, PadKind::Button),
+    pad("b", 0x131, PadKind::Button),
+    pad("x", 0x133, PadKind::Button),
+    pad("y", 0x134, PadKind::Button),
+    pad("l1", 0x136, PadKind::Button),
+    pad("r1", 0x137, PadKind::Button),
+    pad("l2", 0x138, PadKind::Button),
+    pad("r2", 0x139, PadKind::Button),
+    pad("select", 0x13a, PadKind::Button),
+    pad("start", 0x13b, PadKind::Button),
+    pad("mode", 0x13c, PadKind::Button),
+    pad("thumbl", 0x13d, PadKind::Button),
+    pad("thumbr", 0x13e, PadKind::Button),
+    pad("lx", 0x00, PadKind::Stick),
+    pad("ly", 0x01, PadKind::Stick),
+    pad("rx", 0x02, PadKind::Stick),
+    pad("ry", 0x05, PadKind::Stick),
+    pad("lt", 0x0a, PadKind::Trigger),
+    pad("rt", 0x09, PadKind::Trigger),
+    pad("hatx", 0x10, PadKind::Hat),
+    pad("haty", 0x11, PadKind::Hat),
+];
+
+/// The gamepad control with this name.
+pub fn pad_control(name: &str) -> Option<PadControl> {
+    PAD_CONTROLS
+        .iter()
+        .copied()
+        .find(|control| control.name == name)
+}
 
 const fn event(kind: u16, code: u16, value: i32) -> InputEvent {
     InputEvent { kind, code, value }
@@ -97,6 +164,56 @@ pub fn keyboard() -> InputDescription {
         events: vec![(EV_KEY, KEYBOARD_CODES.chain([KEY_APPSELECT]).collect())],
         axes: Vec::new(),
     }
+}
+
+/// A gamepad with two sticks, two analogue triggers, a direction pad and the usual buttons.
+pub fn gamepad() -> InputDescription {
+    // evdev's axis limits are signed; virtio carries them as their 32-bit patterns.
+    let range = |min: i32, max: i32, flat: u32| AbsInfo {
+        min: min as u32,
+        max: max as u32,
+        flat,
+        ..AbsInfo::default()
+    };
+    let of = |kind: PadKind| {
+        PAD_CONTROLS
+            .iter()
+            .filter(move |control| control.kind == kind)
+    };
+    let axes = of(PadKind::Stick)
+        .map(|stick| (stick.code, range(-STICK_REACH, STICK_REACH, STICK_FLAT)))
+        .chain(of(PadKind::Trigger).map(|trigger| (trigger.code, range(0, TRIGGER_FULL, 0))))
+        .chain(of(PadKind::Hat).map(|hat| (hat.code, range(-1, 1, 0))));
+    let axes: Vec<_> = axes.collect();
+    InputDescription {
+        name: copy::GAMEPAD_NAME.to_owned(),
+        serial: copy::INPUT_SERIAL.to_owned(),
+        ids: ids(PRODUCT_GAMEPAD),
+        properties: Vec::new(),
+        events: vec![
+            (
+                EV_KEY,
+                of(PadKind::Button).map(|button| button.code).collect(),
+            ),
+            (EV_ABS, axes.iter().map(|(code, _)| *code).collect()),
+        ],
+        axes,
+    }
+}
+
+/// A gamepad control moved, as a complete report. `value` is 0 or 1 for a button (anything else
+/// counts as pressed), -1 to 1 for a stick (right and down are positive) or the direction pad, and
+/// 0 to 1 for a trigger. Values past the ends are held at the end.
+pub fn pad_event(control: PadControl, value: f64) -> [InputEvent; 2] {
+    let scaled =
+        |low: f64, high: f64, full: i32| (value.clamp(low, high) * f64::from(full)).round();
+    let (kind, value) = match control.kind {
+        PadKind::Button => (EV_KEY, i32::from(value != 0.0)),
+        PadKind::Stick => (EV_ABS, scaled(-1.0, 1.0, STICK_REACH) as i32),
+        PadKind::Trigger => (EV_ABS, scaled(0.0, 1.0, TRIGGER_FULL) as i32),
+        PadKind::Hat => (EV_ABS, scaled(-1.0, 1.0, 1) as i32),
+    };
+    [event(kind, control.code, value), REPORT]
 }
 
 /// Keys by name and Linux key code. The names are the ones the W3C gives physical keys ("KeyW",
@@ -406,6 +523,47 @@ mod tests {
         assert_eq!(key_or_button_code("NoSuchKey"), None);
         // Mouse buttons are not keyboard keys, so they are never sent to the guest's keyboard.
         assert!(BUTTON_NAMES.iter().all(|(_, code)| !is_key(*code)));
+    }
+
+    #[test]
+    fn gamepad_reports_every_control_and_scales_values_into_its_ranges() {
+        let description = gamepad();
+        let (_, buttons) = &description.events[0];
+        let (_, axes) = &description.events[1];
+        assert_eq!(buttons.len() + axes.len(), PAD_CONTROLS.len());
+        assert_eq!(description.axes.len(), axes.len());
+        // Nothing a keyboard has, so the guest never takes the pad for one.
+        assert!(buttons.iter().all(|code| !is_key(*code)));
+        let hat = pad_control("hatx").unwrap();
+        let limits = description
+            .axes
+            .iter()
+            .find(|(code, _)| *code == hat.code)
+            .unwrap()
+            .1;
+        assert_eq!((limits.min as i32, limits.max as i32), (-1, 1));
+
+        let a = pad_control("a").unwrap();
+        assert_eq!(pad_event(a, 1.0), [event(EV_KEY, 0x130, 1), REPORT]);
+        assert_eq!(pad_event(a, 0.0)[0].value, 0);
+        let stick = pad_control("ly").unwrap();
+        assert_eq!(pad_event(stick, -1.0)[0], event(EV_ABS, 0x01, -STICK_REACH));
+        assert_eq!(pad_event(stick, 0.5)[0].value, 16384);
+        assert_eq!(pad_event(stick, 3.0)[0].value, STICK_REACH);
+        let trigger = pad_control("rt").unwrap();
+        assert_eq!(pad_event(trigger, -1.0)[0].value, 0);
+        assert_eq!(pad_event(trigger, 1.0)[0].value, TRIGGER_FULL);
+        assert_eq!(pad_event(hat, -0.7)[0].value, -1);
+        assert_eq!(pad_control("z"), None);
+        // No name or code is used twice.
+        for (index, control) in PAD_CONTROLS.iter().enumerate() {
+            let later = &PAD_CONTROLS[index + 1..];
+            assert!(
+                later
+                    .iter()
+                    .all(|c| c.name != control.name && c.code != control.code)
+            );
+        }
     }
 
     #[test]

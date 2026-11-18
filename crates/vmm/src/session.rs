@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use devices::virtio::input::InputHandle;
 
 use crate::VmmError;
-use crate::config::Config;
+use crate::config::{Config, GamepadMode};
 use crate::ctl::{self, Controller};
 use crate::frames::{self, Screen};
 use crate::input::Touch;
@@ -92,7 +92,26 @@ impl Session {
             controller.motion = Some(motion);
             controller.location = Some(Arc::default());
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let pads = match config.gamepad {
+            GamepadMode::Never => None,
+            GamepadMode::Auto if !config.window || config.display.is_none() => None,
+            GamepadMode::Auto | GamepadMode::Always => {
+                Some(crate::gamepad::HostPads::watch().map_err(VmmError::Thread)?)
+            }
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let pad_plugged_in = pads.as_ref().is_some_and(|pads| pads.connected);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let pad_plugged_in = false;
+        if config.gamepad == GamepadMode::Always || pad_plugged_in {
+            controller.gamepad = Some(InputHandle::default());
+        }
         let controller = Arc::new(controller);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(pads) = pads {
+            pads.forward_to(&controller);
+        }
         let ctl = match &config.ctl {
             Some(path) => {
                 let server = ctl::Server::start(path, Arc::clone(&controller));
@@ -160,6 +179,9 @@ mod tests {
         let shown = Session::new(&config).unwrap();
         assert!(shown.controller.touch.is_some() && shown.controller.keyboard.is_some());
         assert!(shown.controller.screen.is_some());
+        assert!(shown.controller.gamepad.is_none());
+        config.gamepad = GamepadMode::Always;
+        assert!(Session::new(&config).unwrap().controller.gamepad.is_some());
         // Location and motion belong to Android; a plain kernel has neither.
         assert!(shown.controller.location.is_none());
     }

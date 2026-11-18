@@ -14,12 +14,15 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Networking without any host driver or admin rights: DHCP, DNS through the host's resolver, TCP and UDP.
 - A sinkhole that blocks domains you list (trackers, ads) at the DNS and TLS server-name level.
 - `adb` over a loopback port.
-- A control socket: taps, swipes, keys, screenshots, a location, device rotation and shaking.
+- A control socket: taps, swipes, keys, gamepad controls, screenshots, a location, device rotation
+  and shaking, and macros recorded from it or written by hand.
+- Key maps for playing with keyboard and mouse, including mouse-wheel pinch zoom.
+- A host gamepad shows up in Android as a gamepad.
 - Sound, played through this machine's default output (`--mute` turns it off).
 - Several virtual CPUs, disks, a serial console.
 - Plain Linux kernels boot too, to a shell on the serial console.
 
-Not there yet: GPU acceleration, gamepads, macros, several instances,
+Not there yet: GPU acceleration, several instances,
 Linux and Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
@@ -69,6 +72,7 @@ emu ctl /tmp/emu.sock screenshot shot.png
 emu ctl /tmp/emu.sock location 3.139 101.6869  # latitude, longitude
 emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lays the device flat
 emu ctl /tmp/emu.sock shake
+emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly rx ry, triggers lt rt
 emu ctl /tmp/emu.sock stop
 ```
 
@@ -80,6 +84,12 @@ A key map says which keys and mouse movements stand for which touches: taps, a v
 four keys, and a "look" mode in which the mouse drags the view. `assets/keymaps/example.toml` explains
 the format; copy it, put your game's button positions in, and start with `--keymap <file>`. Keys the
 map does not use still reach Android as a keyboard.
+
+### Gamepads
+
+A gamepad plugged into this machine when `emu` starts becomes a gamepad in Android. Devices are fixed
+when the guest boots, so a pad plugged in later needs a restart, or start with `--gamepad` to always
+have one (`--no-gamepad` to never). Every host pad drives the same guest pad.
 
 ## Build
 
@@ -157,8 +167,9 @@ Honest list, most important first:
 
 - **GPU acceleration.** Android draws with the guest's CPU. Games need the host's GPU; that work
   (gfxstream over virtio-gpu) has not started.
-- **More game controls.** Key maps cover taps, a joystick and mouse look. Gamepads, macros, pinch
-  zoom and a map that follows the app in front are not built, and maps are written by hand.
+- **More game controls.** A key map that follows the app in front is not built, and maps are
+  written by hand. All host gamepads drive the guest's one gamepad, so two-player games on one
+  machine do not work.
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed with `adb install`.

@@ -63,6 +63,7 @@ pub const VIRTIO_DISK_SLOTS: u32 = 3;
 pub const VIRTIO_GPU_SLOT: u32 = 3;
 pub const VIRTIO_TOUCH_SLOT: u32 = 4;
 pub const VIRTIO_KEYBOARD_SLOT: u32 = 5;
+pub const VIRTIO_GAMEPAD_SLOT: u32 = 6;
 pub const VIRTIO_SOUND_SLOT: u32 = 7;
 pub const VIRTIO_CONSOLE_SLOT: u32 = 9;
 /// Network cards that exist only so that the real one is not the guest's first: the guest numbers
@@ -89,7 +90,8 @@ const _: () = {
     assert!(SHM_BASE + SHM_SIZE <= 1 << GPA_BITS);
     assert!(INITRD_OFFSET < FDT_OFFSET);
     assert!(VIRTIO_DISK_SLOTS <= VIRTIO_GPU_SLOT && VIRTIO_GPU_SLOT < VIRTIO_TOUCH_SLOT);
-    assert!(VIRTIO_TOUCH_SLOT < VIRTIO_KEYBOARD_SLOT && VIRTIO_KEYBOARD_SLOT < VIRTIO_SOUND_SLOT);
+    assert!(VIRTIO_TOUCH_SLOT < VIRTIO_KEYBOARD_SLOT && VIRTIO_KEYBOARD_SLOT < VIRTIO_GAMEPAD_SLOT);
+    assert!(VIRTIO_GAMEPAD_SLOT < VIRTIO_SOUND_SLOT);
     assert!(VIRTIO_SOUND_SLOT < VIRTIO_CONSOLE_SLOT);
     assert!(VIRTIO_CONSOLE_SLOT < VIRTIO_SPARE_NET_SLOTS[0]);
     assert!(VIRTIO_SPARE_NET_SLOTS[0] < VIRTIO_SPARE_NET_SLOTS[1]);

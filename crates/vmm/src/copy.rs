@@ -37,6 +37,8 @@ Usage: emu --kernel <file> [options]
   --logcat <file>         Write Android's system log to this file
   --no-sound              Give the guest no sound card
   --mute                  Keep the sound card but play nothing on this machine
+  --gamepad               Give the guest a gamepad even with no host pad plugged in
+  --no-gamepad            No gamepad, even with a host pad plugged in
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
@@ -216,6 +218,12 @@ pub const FRAME_DUMP_THREAD: &str = "frame-dump";
 /// Names the guest sees for its input devices.
 pub const TOUCHSCREEN_NAME: &str = "emu touchscreen";
 pub const KEYBOARD_NAME: &str = "emu keyboard";
+pub const GAMEPAD_NAME: &str = "emu gamepad";
+pub const GAMEPAD_THREAD: &str = "gamepads";
+
+pub fn gamepads_unavailable(err: &dyn Display) -> String {
+    format!("host gamepads cannot be read: {err}")
+}
 pub const INPUT_SERIAL: &str = "0";
 
 pub const SENSORS_THREAD: &str = "sensors";
@@ -241,6 +249,7 @@ pub const CTL_USAGE: &str =
     "unknown command; see `emu --help` for the commands and their arguments";
 pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";
 pub const CTL_NO_KEYBOARD: &str = "this instance has no keyboard";
+pub const CTL_NO_GAMEPAD: &str = "this instance has no gamepad; start it with --gamepad";
 pub const CTL_NO_DISPLAY: &str = "this instance has no display to capture";
 pub const CTL_NO_SENSORS: &str = "this instance has no motion sensors";
 pub const CTL_MACRO_TOO_LARGE: &str = "that macro file is larger than a macro can be";
