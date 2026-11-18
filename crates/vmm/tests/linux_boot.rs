@@ -24,6 +24,7 @@ use net::Resolver;
 use vmm::VmmError;
 use vmm::config::{Config, DiskConfig, NetOptions};
 use vmm::console::{Console, ConsoleInput};
+use vmm::ctl::Controller;
 use vmm::machine::{self, Outcome, Stop};
 
 const KERNEL_ENV: &str = "EMU_TEST_KERNEL";
@@ -157,6 +158,8 @@ struct Session {
     transcript: Arc<Transcript>,
     typist: Sender<Vec<u8>>,
     outcome: Receiver<Result<Outcome, VmmError>>,
+    /// The host ends of the machine's devices, and its power switch.
+    controller: Arc<Controller>,
 }
 
 impl Session {
@@ -176,8 +179,11 @@ impl Session {
             input: Some(ConsoleInput::from_reader(Typed(typed, Vec::new())).unwrap()),
         };
         let (finished, outcome) = mpsc::channel();
+        let host = vmm::session::Session::new(&config).unwrap();
+        let controller = Arc::clone(&host.controller);
         thread::spawn(move || {
-            finished.send(machine::run_with(
+            finished.send(machine::run_in(
+                &host,
                 &config,
                 console,
                 Instant::now(),
@@ -188,6 +194,7 @@ impl Session {
             transcript,
             typist,
             outcome,
+            controller,
         }
     }
 
@@ -299,6 +306,27 @@ fn linux_boots_to_a_shell_uses_two_cpus_and_two_disks_then_powers_off() {
         vec![sector_fill(READ_SECTOR); SECTOR]
     );
     assert_eq!(read_only_disk.contents(), read_only_before);
+}
+
+/// The host can turn a running machine off without the guest's help, and a touch sent from the host
+/// reaches the guest's input device.
+#[test]
+fn host_power_switch_stops_a_running_guest() {
+    let Some([kernel, initrd]) = fixtures([KERNEL_ENV, INITRD_ENV]) else {
+        return;
+    };
+    let _one_vm = ONE_VM.lock().unwrap();
+    let mut config = Config::new(kernel);
+    config.net = None;
+    let session = Session::boot(config, initrd);
+    session.transcript.expect("# ", 0);
+    session.controller.power.off();
+    let outcome = session
+        .outcome
+        .recv_timeout(STEP_TIMEOUT)
+        .expect("the machine stopped when the host switched it off")
+        .expect("the machine ran until then");
+    assert_eq!(outcome.stop, Stop::PowerOff);
 }
 
 /// The bootconfig trailer is the only channel for `androidboot.*` parameters, so it has to be accepted by

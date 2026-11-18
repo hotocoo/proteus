@@ -35,6 +35,8 @@ pub const RNG_SEED_LEN: usize = 64;
 pub const SERIAL_INPUT_RETRY: Duration = Duration::from_millis(1);
 /// The frame dump file is rewritten at most this often.
 pub const FRAME_DUMP_INTERVAL: Duration = Duration::from_secs(1);
+/// While the machine is stopping, how often vCPUs that are still running are told again.
+pub const STOP_KICK_INTERVAL: Duration = Duration::from_millis(5);
 /// How long `tap` keeps the finger down, and a key press keeps the key down.
 pub const TAP_HOLD: Duration = Duration::from_millis(50);
 /// A swipe moves the finger once per this interval.

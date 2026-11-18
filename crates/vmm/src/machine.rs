@@ -20,7 +20,7 @@ use devices::virtio::VirtioDevice;
 use devices::virtio::blk::{Block, DiskImage};
 use devices::virtio::console::{Console as VirtioConsole, PortSink};
 use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
-use devices::virtio::input::Input;
+use devices::virtio::input::{Input, InputHandle};
 use devices::virtio::mmio::MmioTransport;
 use devices::virtio::net::{MAC_LEN, Net};
 use devices::{InterruptLine, MmioDevice};
@@ -30,20 +30,17 @@ use hv::{
 };
 use net::config::{ADB_PORT, AdbForward, NetConfig};
 use net::policy::{DomainSet, Sinkhole};
-use net::{HostResolver, Network, Resolver};
+use net::{Network, Resolver};
 use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 
 use crate::config::{
     BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_POLL,
-    SERIAL_INPUT_RETRY,
+    SERIAL_INPUT_RETRY, STOP_KICK_INTERVAL,
 };
 use crate::console::{Console, ConsoleInput, MarkerWatch};
-use crate::ctl::{self, Controller};
-use crate::frames::{self, Screen};
 use crate::input::{self, Touch};
-use crate::location::{self, Location};
-use crate::sensors::{self, Motion};
-use crate::{VmmError, android, copy};
+use crate::session::{PowerSwitch, Session};
+use crate::{VmmError, android, copy, location, sensors};
 
 // The terminals the VMM answers on have to be ones the console device has.
 const _: () = assert!(sensors::CONTROL_PORT < android::CONSOLE_PORTS);
@@ -110,6 +107,8 @@ enum Role {
 struct Progress {
     /// vCPU threads that have finished creating their vCPU, successfully or not.
     created: u32,
+    /// vCPU threads that have ended.
+    ended: u32,
     /// The first stop request wins.
     stop: Option<Result<Stop, VmmError>>,
 }
@@ -138,6 +137,7 @@ impl Machine {
             vcpus,
             progress: Mutex::new(Progress {
                 created: 0,
+                ended: 0,
                 stop: None,
             }),
             progressed: Condvar::new(),
@@ -232,6 +232,9 @@ impl Machine {
 
         let io = BusIo(&self.bus);
         loop {
+            if self.stopping() {
+                return Ok(());
+            }
             match vcpu.run(&io)? {
                 Exit::Kicked if self.stopping() => return Ok(()),
                 Exit::Kicked => {}
@@ -278,12 +281,27 @@ impl Machine {
             log::error!("{}", copy::vcpu_stopped(index, &err));
             self.request_stop(Err(err));
         }
+        lock(&self.progress).ended += 1;
+        self.progressed.notify_all();
     }
 
-    /// Runs every vCPU on its own thread and returns once the guest has stopped.
-    fn run(&self, primary: Regs) -> Result<Stop, VmmError> {
+    /// Runs every vCPU on its own thread and returns once the guest has stopped, or `power` has
+    /// turned the machine off.
+    fn run(&self, primary: Regs, power: &PowerSwitch) -> Result<Stop, VmmError> {
         thread::scope(|scope| {
+            let boot = power.boot();
+            let switched_off = thread::Builder::new()
+                .name(copy::POWER_THREAD.into())
+                .spawn_scoped(scope, move || {
+                    if power.wait(boot) {
+                        self.request_stop(Ok(Stop::PowerOff));
+                    }
+                });
+            if let Err(err) = switched_off {
+                self.request_stop(Err(VmmError::Thread(err)));
+            }
             let mut primary = Some(primary);
+            let mut spawned = 0;
             for index in 0..self.vcpus {
                 let role = match primary.take() {
                     Some(regs) => Role::Primary(Box::new(regs)),
@@ -296,22 +314,39 @@ impl Machine {
                     }
                 };
                 let name = format!("{}{index}", copy::VCPU_THREAD_PREFIX);
-                let spawned = thread::Builder::new()
+                let thread = thread::Builder::new()
                     .name(name)
                     .spawn_scoped(scope, move || self.vcpu_thread(index, role));
-                if let Err(err) = spawned {
+                if let Err(err) = thread {
                     // Threads already running wait for the full CPU count; this releases them.
                     self.request_stop(Err(VmmError::Thread(err)));
                     break;
                 }
+                spawned += 1;
             }
             let progress = lock(&self.progress);
             let running = |progress: &mut Progress| progress.stop.is_none();
-            drop(
-                self.progressed
-                    .wait_while(progress, running)
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
+            let mut progress = self
+                .progressed
+                .wait_while(progress, running)
+                .unwrap_or_else(PoisonError::into_inner);
+            // A kick only interrupts a vCPU that is inside the guest at that moment. One that was
+            // between two entries misses it, enters, and may then sleep in the guest for good. So
+            // the kick is repeated until every thread is out.
+            while progress.ended < spawned {
+                drop(progress);
+                for kick in lock(&self.kickers).iter() {
+                    kick.kick();
+                }
+                let (woken, _) = self
+                    .progressed
+                    .wait_timeout(lock(&self.progress), STOP_KICK_INTERVAL)
+                    .unwrap_or_else(PoisonError::into_inner);
+                progress = woken;
+            }
+            drop(progress);
+            // Lets the thread that watches the power switch go.
+            power.boot_ended();
         });
         lock(&self.progress)
             .stop
@@ -432,13 +467,20 @@ fn network(
 }
 
 /// Builds the machine described by `config`, boots it and blocks until the guest stops.
-/// `started` is the instant boot timing is measured from.
-pub fn run(config: &Config, console: Console, started: Instant) -> Result<Outcome, VmmError> {
-    run_with(config, console, started, Arc::new(HostResolver))
+/// `started` is the instant boot timing is measured from. The guest's host-name lookups are
+/// answered by `resolver`.
+pub fn run_with(
+    config: &Config,
+    console: Console,
+    started: Instant,
+    resolver: Arc<dyn Resolver>,
+) -> Result<Outcome, VmmError> {
+    run_in(&Session::new(config)?, config, console, started, resolver)
 }
 
-/// As `run`, with the guest's host-name lookups answered by `resolver` instead of the host's own.
-pub fn run_with(
+/// As `run_with`, for one boot of a machine whose host side, `session`, lasts across restarts.
+pub fn run_in(
+    session: &Session,
     config: &Config,
     console: Console,
     started: Instant,
@@ -547,27 +589,28 @@ pub fn run_with(
         attach(slot, Box::new(Block::new(image)))?;
     }
 
-    let mut controller = Controller::default();
+    let controller = &session.controller;
     if let Some((width, height)) = config.display {
         let mode = DisplayMode { width, height };
-        // Frames are only kept if something can ask for them.
-        let wanted = config.frame_dump.is_some() || config.ctl.is_some();
-        let screen = wanted.then(|| Arc::new(Screen::default()));
-        let gpu = match &screen {
+        let gpu = match &controller.screen {
             Some(screen) => Gpu::with_sink(mode, Arc::clone(screen) as Arc<dyn FrameSink>),
             None => Gpu::headless(mode),
         };
-        if let (Some(screen), Some(path)) = (&screen, &config.frame_dump) {
-            frames::spawn_dump(screen, path.clone()).map_err(VmmError::Thread)?;
-        }
         attach(layout::VIRTIO_GPU_SLOT, Box::new(gpu))?;
-        let (touchscreen, touch) = Input::new(input::touchscreen(width, height));
+        // The host ends of the input devices outlive this machine; a guest that restarted finds no
+        // finger on its new touchscreen.
+        let touch = match &controller.touch {
+            Some((touch, fingers)) => {
+                *lock(fingers) = Touch::new(width, height);
+                touch.clone()
+            }
+            None => InputHandle::default(),
+        };
+        let touchscreen = Input::attached(input::touchscreen(width, height), &touch);
         attach(layout::VIRTIO_TOUCH_SLOT, Box::new(touchscreen))?;
-        let (keyboard, keys) = Input::new(input::keyboard());
+        let keys = controller.keyboard.clone().unwrap_or_default();
+        let keyboard = Input::attached(input::keyboard(), &keys);
         attach(layout::VIRTIO_KEYBOARD_SLOT, Box::new(keyboard))?;
-        controller.touch = Some((touch, Mutex::new(Touch::new(width, height))));
-        controller.keyboard = Some(keys);
-        controller.screen = screen;
     }
 
     if let Some(options) = &config.net {
@@ -585,32 +628,17 @@ pub fn run_with(
             sinks[android::LOGCAT_PORT] = Some(Box::new(file));
         }
         let (mut console, ports) = VirtioConsole::new(sinks);
-        let motion = Arc::new(Motion::default());
-        console.set_sink(
-            sensors::CONTROL_PORT,
-            Box::new(sensors::Requests::new(Arc::clone(&motion), ports.clone())),
-        );
-        sensors::spawn_readings(&motion, ports.clone()).map_err(VmmError::Thread)?;
-        let place = Arc::new(Location::default());
-        console.set_sink(
-            location::PORT,
-            Box::new(location::Requests::new(Arc::clone(&place), ports)),
-        );
-        controller.motion = Some(motion);
-        controller.location = Some(place);
+        if let Some(motion) = &controller.motion {
+            let requests = sensors::Requests::new(Arc::clone(motion), ports.clone());
+            console.set_sink(sensors::CONTROL_PORT, Box::new(requests));
+            motion.connect(ports.clone());
+        }
+        if let Some(place) = &controller.location {
+            let requests = location::Requests::new(Arc::clone(place), ports);
+            console.set_sink(location::PORT, Box::new(requests));
+        }
         attach(slot, Box::new(console))?;
     }
-    // Listens until this boot of the machine ends.
-    let _ctl = match &config.ctl {
-        Some(path) => {
-            let server = ctl::Server::start(path, Arc::new(controller));
-            Some(server.map_err(|source| VmmError::File {
-                path: path.clone(),
-                source,
-            })?)
-        }
-        None => None,
-    };
 
     let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
     let mut bootconfig = Vec::new();
@@ -662,7 +690,7 @@ pub fn run_with(
     let fdt_addr = boot::load_fdt(&mem, &blob)?;
 
     let machine = Machine::new(vm, bus, config.vcpus);
-    let stop = machine.run(boot::primary_regs(entry, fdt_addr));
+    let stop = machine.run(boot::primary_regs(entry, fdt_addr), &controller.power);
     input_stop.store(true, Ordering::SeqCst);
     let stop = stop?;
     let boot_marker_after = marker_seen

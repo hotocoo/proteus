@@ -134,6 +134,8 @@ pub struct Motion {
     pose: Mutex<Pose>,
     /// One bit per sensor the guest wants readings from.
     enabled: AtomicU32,
+    /// The running machine's terminals, once it has them.
+    ports: Mutex<Option<ConsoleHandle>>,
 }
 
 impl Default for Motion {
@@ -145,6 +147,7 @@ impl Default for Motion {
                 shaking_since: None,
             }),
             enabled: AtomicU32::new(0),
+            ports: Mutex::new(None),
         }
     }
 }
@@ -163,6 +166,13 @@ impl Motion {
     pub fn shake(&self) {
         let mut pose = self.pose.lock().unwrap_or_else(PoisonError::into_inner);
         pose.shaking_since = Some(Instant::now());
+    }
+
+    /// Sends readings to these terminals from now on. A machine calls this when it starts; its
+    /// guest has not switched any sensor on yet.
+    pub fn connect(&self, ports: ConsoleHandle) {
+        self.enabled.store(0, Ordering::Relaxed);
+        *self.ports.lock().unwrap_or_else(PoisonError::into_inner) = Some(ports);
     }
 
     fn set_enabled(&self, sensor: u32, on: bool) {
@@ -219,7 +229,7 @@ impl Motion {
 
 /// Sends the guest a reading of every sensor it has switched on, every `SENSOR_INTERVAL`, for as
 /// long as `motion` exists.
-pub fn spawn_readings(motion: &Arc<Motion>, ports: ConsoleHandle) -> std::io::Result<()> {
+pub fn spawn_readings(motion: &Arc<Motion>) -> std::io::Result<()> {
     let motion = Arc::downgrade(motion);
     let feed = move || {
         loop {
@@ -228,7 +238,8 @@ pub fn spawn_readings(motion: &Arc<Motion>, ports: ConsoleHandle) -> std::io::Re
                 break;
             };
             let readings = motion.readings(SENSOR_INTERVAL, Instant::now());
-            if !readings.is_empty() {
+            let ports = motion.ports.lock().unwrap_or_else(PoisonError::into_inner);
+            if let (false, Some(ports)) = (readings.is_empty(), ports.as_ref()) {
                 ports.send(DATA_PORT, &readings);
             }
         }

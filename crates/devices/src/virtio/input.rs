@@ -163,7 +163,8 @@ impl Shared {
 }
 
 /// The host's end of an input device. Cheap to clone; usable from any thread.
-#[derive(Clone)]
+/// It can exist before its device does: events sent then wait for one.
+#[derive(Clone, Default)]
 pub struct InputHandle(Arc<Shared>);
 
 impl InputHandle {
@@ -262,15 +263,27 @@ pub struct Input {
 impl Input {
     /// The device, and the handle the host sends its events through.
     pub fn new(description: InputDescription) -> (Self, InputHandle) {
-        let shared = Arc::new(Shared::default());
-        let device = Self {
+        let handle = InputHandle::default();
+        (Self::attached(description, &handle), handle)
+    }
+
+    /// A device for a handle that already exists. A machine that is rebuilt after the guest
+    /// restarts makes its devices this way, so that whoever holds the handles keeps using them.
+    /// Events still waiting from before are dropped: they were meant for the guest that is gone.
+    pub fn attached(description: InputDescription, handle: &InputHandle) -> Self {
+        let shared = Arc::clone(&handle.0);
+        shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        Self {
             description,
             select: 0,
             subsel: 0,
-            shared: Arc::clone(&shared),
+            shared,
             worker: None,
-        };
-        (device, InputHandle(shared))
+        }
     }
 }
 
@@ -533,6 +546,22 @@ mod tests {
         // The third event is still waiting for a usable buffer.
         assert_eq!(device.shared.pending.lock().unwrap().len(), 1);
         assert!(!deliver(&device.shared, &mut events, &mut status, &mem).unwrap());
+    }
+
+    #[test]
+    fn a_new_device_for_an_old_handle_starts_with_nothing_waiting() {
+        let (first, handle) = Input::new(touchscreen());
+        let event = InputEvent {
+            kind: EV_SYN,
+            code: 0,
+            value: 0,
+        };
+        assert!(handle.send(&[event]));
+        drop(first);
+        let second = Input::attached(touchscreen(), &handle);
+        assert!(second.shared.pending.lock().unwrap().is_empty());
+        assert!(handle.send(&[event]));
+        assert_eq!(second.shared.pending.lock().unwrap().len(), 1);
     }
 
     #[test]

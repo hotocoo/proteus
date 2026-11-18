@@ -13,6 +13,7 @@
 //! location <latitude> <longitude> [<metres above sea level>]
 //! rotate <x> <y> <z>
 //! shake
+//! stop
 //! ```
 //!
 //! Positions are display pixels, key codes are Linux key codes, and angles are degrees. The answer is `ok`, or `error:`
@@ -35,6 +36,7 @@ use crate::frames::Screen;
 use crate::input::{self, TOUCH_SLOTS, Touch};
 use crate::location::{Fix, Location};
 use crate::sensors::Motion;
+use crate::session::PowerSwitch;
 
 const WORD_TAP: &str = "tap";
 const WORD_SWIPE: &str = "swipe";
@@ -45,6 +47,7 @@ const WORD_SCREENSHOT: &str = "screenshot";
 const WORD_LOCATION: &str = "location";
 const WORD_ROTATE: &str = "rotate";
 const WORD_SHAKE: &str = "shake";
+const WORD_STOP: &str = "stop";
 const WORD_DOWN: &str = "down";
 const WORD_UP: &str = "up";
 
@@ -86,6 +89,8 @@ pub enum Command {
     /// Degrees about the device's x, y and z axes.
     Rotate([f64; 3]),
     Shake,
+    /// Turn the machine off without asking the guest.
+    Stop,
 }
 
 /// Reads one command line. `None` if it is not a command in the form the module text gives.
@@ -112,6 +117,7 @@ pub fn parse(line: &str) -> Option<Command> {
         }
         (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
         (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
+        (WORD_STOP, Some(&[])) => return Some(Command::Stop),
         _ => {}
     }
     match (word, numbers.as_deref()) {
@@ -173,6 +179,7 @@ pub struct Controller {
     pub screen: Option<Arc<Screen>>,
     pub location: Option<Arc<Location>>,
     pub motion: Option<Arc<Motion>>,
+    pub power: Arc<PowerSwitch>,
     /// Held for the length of a tap or swipe, so that two of them do not share the gesture finger.
     pub gesture: Mutex<()>,
 }
@@ -260,6 +267,10 @@ impl Controller {
             Command::Shake => {
                 let motion = self.motion.as_ref().ok_or(copy::CTL_NO_SENSORS)?;
                 motion.shake();
+                Ok(())
+            }
+            Command::Stop => {
+                self.power.off();
                 Ok(())
             }
         }
@@ -535,6 +546,7 @@ mod tests {
             Some(Command::Rotate([-90.0, 0.0, 12.5]))
         );
         assert_eq!(parse("shake"), Some(Command::Shake));
+        assert_eq!(parse("stop"), Some(Command::Stop));
         for line in ["location 1", "location a b", "rotate 1 2", "shake 1"] {
             assert_eq!(parse(line), None, "{line:?}");
         }

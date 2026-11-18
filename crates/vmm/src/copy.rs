@@ -54,7 +54,9 @@ Usage: emu --kernel <file> [options]
   location <lat> <lon> [<metres>]        Put the device at this position on Earth
   rotate <x> <y> <z>                     Turn the device, in degrees about its three axes;
                                          0 0 0 is upright, -90 0 0 is flat on a table
-  shake                                  Shake the device";
+  shake                                  Shake the device
+  stop                                   Turn the machine off at once, like pulling the plug;
+                                         shut Android down from inside when you can";
 
 pub const USAGE_HINT: &str = "run `emu --help` for usage";
 
@@ -135,6 +137,7 @@ pub const VCPU_PANICKED: &str = "a vCPU thread panicked";
 
 pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
+pub const POWER_THREAD: &str = "power";
 pub const CONSOLE_INPUT_THREAD: &str = "console-in";
 pub const REBOOTING: &str = "emu: guest asked to restart; booting again";
 pub const RESET_LOOP: &str = "the guest keeps resetting right after it starts; giving up";

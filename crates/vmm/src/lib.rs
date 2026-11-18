@@ -18,6 +18,7 @@ mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
 pub mod sensors;
+pub mod session;
 
 /// Exit status for a command line the program could not understand.
 const EXIT_USAGE: u8 = 2;
@@ -79,13 +80,16 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
         .then(|| console::ConsoleInput::from_reader(std::io::stdin()))
         .transpose();
     let input = input.map_err(VmmError::Thread)?;
+    let session = session::Session::new(config)?;
     let mut quick_resets = 0;
     let mut boot_started = started;
     loop {
-        let outcome = machine::run(
+        let outcome = machine::run_in(
+            &session,
             config,
             console::Console::stdout(input.clone()),
             boot_started,
+            std::sync::Arc::new(net::HostResolver),
         )?;
         if boot_started == started && config.boot_marker.is_some() {
             match outcome.boot_marker_after {
