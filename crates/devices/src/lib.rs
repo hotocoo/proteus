@@ -3,6 +3,7 @@
 
 pub mod bus;
 mod copy;
+pub mod disk;
 pub mod rtc;
 pub mod serial;
 pub mod virtio;

@@ -4,8 +4,7 @@
 //! Data moves straight between the file and guest memory, with no intermediate buffer.
 //! Every field of a request comes from the guest and is checked before it is used.
 
-use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom};
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,6 +18,7 @@ use vm_memory::{Bytes, GuestMemoryMmap};
 
 use super::{Activate, DeviceError, VirtioDevice, VirtioInterrupt};
 use crate::copy;
+use crate::disk::{Disk, sparse};
 
 /// virtio-blk addresses the disk in 512-byte sectors whatever the image's block size.
 const SECTOR_SHIFT: u32 = 9;
@@ -46,26 +46,40 @@ enum Op {
 }
 
 pub struct DiskImage {
-    file: File,
+    disk: Disk,
     capacity_bytes: u64,
     read_only: bool,
     id: [u8; ID_LEN],
 }
 
 impl DiskImage {
+    /// Opens one image file as a whole disk. A read-only Android sparse image is expanded on the fly.
     /// `id` is what the guest sees under `/sys/block/*/serial`; longer strings are cut to 20 bytes.
     pub fn open(path: &Path, read_only: bool, id: &str) -> std::io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(!read_only).open(path)?;
-        let capacity_bytes = file.metadata()?.len() >> SECTOR_SHIFT << SECTOR_SHIFT;
+        let mut file = OpenOptions::new().read(true).write(!read_only).open(path)?;
+        let disk = if read_only && sparse::is_sparse(&mut file)? {
+            let mut disk = Disk::default();
+            sparse::append(&mut disk, file)?;
+            disk
+        } else {
+            let len = file.metadata()?.len();
+            Disk::from_file(file, len, !read_only)
+        };
+        Ok(Self::from_disk(disk, read_only, id))
+    }
+
+    /// Presents an already assembled disk. Anything past its last whole sector is not exposed.
+    pub fn from_disk(disk: Disk, read_only: bool, id: &str) -> Self {
+        let capacity_bytes = disk.len() >> SECTOR_SHIFT << SECTOR_SHIFT;
         let mut id_bytes = [0u8; ID_LEN];
         let len = id.len().min(ID_LEN);
         id_bytes[..len].copy_from_slice(&id.as_bytes()[..len]);
-        Ok(Self {
-            file,
+        Self {
+            disk,
             capacity_bytes,
             read_only,
             id: id_bytes,
-        })
+        }
     }
 
     /// End offset of a data buffer of `len` bytes at `offset`, if it is whole sectors inside the disk.
@@ -88,16 +102,11 @@ impl DiskImage {
         let kind = u32::from_le_bytes(kind.try_into().expect("four bytes"));
         let sector = &rest[HEADER_SECTOR_AT - size_of::<u32>()..];
         let sector = u64::from_le_bytes(sector.try_into().expect("eight bytes"));
-        let mut seek = || {
-            let offset = sector.checked_mul(SECTOR_SIZE).ok_or(IO_ERROR)?;
-            self.file
-                .seek(SeekFrom::Start(offset))
-                .map_err(|_| IO_ERROR)
-        };
+        let offset = || sector.checked_mul(SECTOR_SIZE).ok_or(IO_ERROR);
         match kind {
-            VIRTIO_BLK_T_IN => Ok(Op::Read { offset: seek()? }),
+            VIRTIO_BLK_T_IN => Ok(Op::Read { offset: offset()? }),
             VIRTIO_BLK_T_OUT if self.read_only => Err(IO_ERROR),
-            VIRTIO_BLK_T_OUT => Ok(Op::Write { offset: seek()? }),
+            VIRTIO_BLK_T_OUT => Ok(Op::Write { offset: offset()? }),
             VIRTIO_BLK_T_FLUSH => Ok(Op::Flush),
             VIRTIO_BLK_T_GET_ID => Ok(Op::GetId { answered: false }),
             _ => Err(UNSUPPORTED),
@@ -115,14 +124,16 @@ impl DiskImage {
         match op {
             Op::Read { offset } if buffer.is_write_only() => {
                 let end = self.span(*offset, u64::from(len))?;
-                mem.read_exact_volatile_from(buffer.addr(), &mut self.file, len as usize)
+                self.disk
+                    .read_to_guest(mem, buffer.addr(), *offset, u64::from(len))
                     .map_err(|_| IO_ERROR)?;
                 *offset = end;
                 Ok(len)
             }
             Op::Write { offset } if !buffer.is_write_only() => {
                 let end = self.span(*offset, u64::from(len))?;
-                mem.write_all_volatile_to(buffer.addr(), &mut self.file, len as usize)
+                self.disk
+                    .write_from_guest(mem, buffer.addr(), *offset, u64::from(len))
                     .map_err(|_| IO_ERROR)?;
                 *offset = end;
                 Ok(0)
@@ -141,7 +152,7 @@ impl DiskImage {
 
     fn finish(&mut self, op: Op) -> Status {
         match op {
-            Op::Flush if self.file.sync_data().is_err() => IO_ERROR,
+            Op::Flush if self.disk.flush().is_err() => IO_ERROR,
             Op::Flush | Op::Read { .. } | Op::Write { .. } | Op::GetId { .. } => OK,
         }
     }
@@ -333,6 +344,7 @@ impl Drop for Block {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -617,6 +629,32 @@ mod tests {
             &[writable(DATA_AT, 4)],
         );
         assert_eq!((used, status), (4 + 1, OK));
+    }
+
+    #[test]
+    fn read_only_sparse_image_is_served_expanded() {
+        use crate::disk::sparse::tests::{Chunk, image};
+        let data = vec![0x5a; 4096];
+        let sparse =
+            crate::disk::testing::TempFile::new(&image(&[Chunk::Skip(1), Chunk::Raw(&data)]));
+        let mut disk = DiskImage::open(&sparse.0, true, "").unwrap();
+        assert_eq!(disk.capacity_bytes, 8192);
+        let mem = memory();
+        let (used, status) = run(
+            &mut disk,
+            &mem,
+            VIRTIO_BLK_T_IN,
+            7,
+            &[writable(DATA_AT, 1024)],
+        );
+        assert_eq!((used, status), (1024 + 1, OK));
+        assert_eq!(
+            guest_bytes(&mem, DATA_AT, 1024),
+            [vec![0; 512], vec![0x5a; 512]].concat()
+        );
+        // Opened writable, the same file is taken as raw bytes, magic and all.
+        let raw = DiskImage::open(&sparse.0, false, "").unwrap();
+        assert_ne!(raw.capacity_bytes, 8192);
     }
 
     #[test]

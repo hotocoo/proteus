@@ -87,8 +87,68 @@ where
     Ok(entry)
 }
 
-/// Copies the ramdisk in and appends the bootconfig trailer when there are parameters.
-/// Returns the guest range the device tree must advertise.
+/// One archive of the ramdisk. The kernel unpacks them in order, and a later file replaces an earlier
+/// one with the same path.
+pub enum RamdiskPart<'a, F> {
+    /// A byte range of a file: a ramdisk inside a boot image, or a whole ramdisk file.
+    Stream {
+        stream: &'a mut F,
+        range: Range<u64>,
+    },
+    Bytes(&'a [u8]),
+}
+
+/// Copies the ramdisk parts in, back to back with nothing between them, and appends the bootconfig
+/// trailer when there are parameters. Returns the guest range the device tree must advertise.
+///
+/// The parts must be archives the kernel can tell apart on its own. In particular, whatever follows an
+/// LZ4 legacy archive must be another one: that format has no end marker, so its decoder reads on.
+pub fn load_ramdisk<M, F>(
+    mem: &M,
+    parts: &mut [RamdiskPart<'_, F>],
+    bootconfig: &[(String, String)],
+) -> Result<Range<u64>, ArchError>
+where
+    M: GuestMemory,
+    F: ReadVolatile + Seek,
+{
+    let start = layout::RAM_BASE + layout::INITRD_OFFSET;
+    let room = layout::FDT_OFFSET - layout::INITRD_OFFSET;
+    let too_big = || ArchError::Layout(copy::INITRD_OVERLAPS_FDT);
+    let mut len = 0u64;
+    for part in parts {
+        let part_len = match part {
+            RamdiskPart::Stream { range, .. } => range.end.saturating_sub(range.start),
+            RamdiskPart::Bytes(bytes) => bytes.len() as u64,
+        };
+        if len.checked_add(part_len).is_none_or(|end| end > room) {
+            return Err(too_big());
+        }
+        match part {
+            RamdiskPart::Stream { stream, range } => {
+                stream.seek(SeekFrom::Start(range.start))?;
+                let count = usize::try_from(part_len).map_err(|_| too_big())?;
+                mem.read_exact_volatile_from(GuestAddress(start + len), *stream, count)?;
+            }
+            RamdiskPart::Bytes(bytes) => mem.write_slice(bytes, GuestAddress(start + len))?,
+        }
+        len += part_len;
+    }
+    let host_len = usize::try_from(len).map_err(|_| too_big())?;
+    let trailer = if bootconfig.is_empty() {
+        Vec::new()
+    } else {
+        bootconfig::trailer(bootconfig, host_len)?
+    };
+    let total = len + trailer.len() as u64;
+    if total > room {
+        return Err(too_big());
+    }
+    mem.write_slice(&trailer, GuestAddress(start + len))?;
+    Ok(start..start + total)
+}
+
+/// As `load_ramdisk`, for a ramdisk that is one whole file.
 pub fn load_initrd<M, F>(
     mem: &M,
     initrd: &mut F,
@@ -99,21 +159,11 @@ where
     F: ReadVolatile + Seek,
 {
     let len = stream_len(initrd)?;
-    let host_len =
-        usize::try_from(len).map_err(|_| ArchError::Layout(copy::INITRD_OVERLAPS_FDT))?;
-    let trailer = if bootconfig.is_empty() {
-        Vec::new()
-    } else {
-        bootconfig::trailer(bootconfig, host_len)?
-    };
-    let total = len + trailer.len() as u64;
-    if total > layout::FDT_OFFSET - layout::INITRD_OFFSET {
-        return Err(ArchError::Layout(copy::INITRD_OVERLAPS_FDT));
-    }
-    let start = layout::RAM_BASE + layout::INITRD_OFFSET;
-    copy_in(mem, start, initrd, len)?;
-    mem.write_slice(&trailer, GuestAddress(start + len))?;
-    Ok(start..start + total)
+    let mut parts = [RamdiskPart::Stream {
+        stream: initrd,
+        range: 0..len,
+    }];
+    load_ramdisk(mem, &mut parts, bootconfig)
 }
 
 /// Copies the device tree in and returns its guest address.
@@ -248,6 +298,40 @@ mod tests {
         // Without parameters nothing is appended.
         let plain = load_initrd(&mem, &mut Cursor::new(ramdisk.clone()), &[]).unwrap();
         assert_eq!(plain.end - plain.start, ramdisk.len() as u64);
+    }
+
+    #[test]
+    fn ramdisk_parts_are_laid_out_in_order_back_to_back() {
+        let mem = ram();
+        let image: Vec<u8> = (0..200u8).collect();
+        let overlay = b"overlay-archive";
+        let mut stream = Cursor::new(image.clone());
+        let mut parts = [
+            // Bytes 10..17 of the stream: seven bytes, an odd length on purpose.
+            RamdiskPart::Stream {
+                stream: &mut stream,
+                range: 10..17,
+            },
+            RamdiskPart::Bytes(overlay),
+        ];
+        let range = load_ramdisk(&mem, &mut parts, &[]).unwrap();
+        let mut loaded = vec![0xffu8; (range.end - range.start) as usize];
+        mem.read_slice(&mut loaded, GuestAddress(range.start))
+            .unwrap();
+        assert_eq!(&loaded[..7], &image[10..17]);
+        assert_eq!(&loaded[7..], overlay, "no padding between parts");
+    }
+
+    #[test]
+    fn ramdisk_too_large_for_its_area_is_refused() {
+        let mem = ram();
+        let room = (layout::FDT_OFFSET - layout::INITRD_OFFSET) as usize;
+        let big = vec![0u8; room + 1];
+        let mut parts: [RamdiskPart<'_, Cursor<Vec<u8>>>; 1] = [RamdiskPart::Bytes(&big)];
+        assert!(matches!(
+            load_ramdisk(&mem, &mut parts, &[]),
+            Err(ArchError::Layout(_))
+        ));
     }
 
     #[test]

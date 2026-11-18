@@ -10,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use arch::aarch64::boot::RamdiskPart;
 use arch::aarch64::psci::{self, Call};
 use arch::aarch64::{boot, fdt, layout};
 use devices::bus::MmioBus;
@@ -33,7 +34,7 @@ use crate::config::{
     SERIAL_INPUT_RETRY,
 };
 use crate::console::{Console, MarkerWatch};
-use crate::{VmmError, copy};
+use crate::{VmmError, android, copy};
 
 type HostVm = <Host as HypervisorBackend>::Vm;
 type HostVcpu = <HostVm as Vm>::Vcpu;
@@ -356,10 +357,16 @@ fn open(path: &Path) -> Result<File, VmmError> {
 
 /// The VMM's own arguments go first: anything after a ` -- ` in the user's command line is handed to
 /// init instead of the kernel, and a later `console=` from the user should win over ours.
-fn kernel_cmdline(config: &Config) -> String {
+/// `image` is what an Android image set asks for; it sits between the two.
+fn kernel_cmdline(config: &Config, image: &str, has_bootconfig: bool) -> String {
     let serial = config.serial.then_some(SERIAL_CONSOLE_ARG);
-    let bootconfig = (!config.bootconfig.is_empty()).then_some(BOOTCONFIG_ARG);
-    let parts = [serial, bootconfig, Some(config.cmdline.as_str())];
+    let bootconfig = has_bootconfig.then_some(BOOTCONFIG_ARG);
+    let parts = [
+        serial,
+        bootconfig,
+        Some(image),
+        Some(config.cmdline.as_str()),
+    ];
     parts
         .into_iter()
         .flatten()
@@ -420,7 +427,10 @@ pub fn run_with(
     if config.vcpus == 0 || config.vcpus > caps.max_vcpus.min(layout::MAX_VCPUS) {
         return Err(VmmError::Config(copy::TOO_MANY_VCPUS));
     }
-    let disk_slots = u32::try_from(config.disks.len())
+    let android = config.android.as_ref().map(android::assemble).transpose()?;
+    let (android_disk, android_boot) = android.unzip();
+    let disk_count = config.disks.len() + usize::from(android_disk.is_some());
+    let disk_slots = u32::try_from(disk_count)
         .ok()
         .filter(|count| *count <= layout::VIRTIO_DISK_SLOTS)
         .ok_or(VmmError::Config(copy::TOO_MANY_DISKS))?;
@@ -478,13 +488,18 @@ pub fn run_with(
         }
     }
     bus.insert(layout::RTC_BASE, layout::RTC_SIZE, Arc::new(Rtc::default()))?;
-    for (slot, disk) in (0u32..).zip(&config.disks) {
-        let id = format!("{}{slot}", copy::DISK_ID_PREFIX);
+    // An Android system disk goes first, so that it is the disk the guest's boot device setting names.
+    let mut images: Vec<DiskImage> = android_disk.into_iter().collect();
+    for disk in &config.disks {
+        let id = format!("{}{}", copy::DISK_ID_PREFIX, images.len());
         let image =
             DiskImage::open(&disk.path, disk.read_only, &id).map_err(|source| VmmError::File {
                 path: disk.path.clone(),
                 source,
             })?;
+        images.push(image);
+    }
+    for (slot, image) in (0u32..).zip(images) {
         let transport = MmioTransport::new(
             Box::new(Block::new(image)),
             mem.clone(),
@@ -515,13 +530,32 @@ pub fn run_with(
     }
 
     let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
-    let initrd = match &config.initrd {
-        Some(path) => Some(boot::load_initrd(
-            &mem,
-            &mut open(path)?,
-            &config.bootconfig,
-        )?),
-        None => None,
+    let mut bootconfig = Vec::new();
+    let mut image_cmdline = String::new();
+    let initrd = match (android_boot, &config.initrd) {
+        (Some(mut image), _) => {
+            bootconfig = std::mem::take(&mut image.bootconfig);
+            image_cmdline = std::mem::take(&mut image.cmdline);
+            // The user's parameters replace the image's where both set a key.
+            bootconfig
+                .retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));
+            bootconfig.extend(config.bootconfig.iter().cloned());
+            let mut parts: Vec<RamdiskPart<'_, File>> = image
+                .ramdisks
+                .iter_mut()
+                .map(|(stream, range)| RamdiskPart::Stream {
+                    stream,
+                    range: range.clone(),
+                })
+                .collect();
+            parts.push(RamdiskPart::Bytes(&image.overlay));
+            Some(boot::load_ramdisk(&mem, &mut parts, &bootconfig)?)
+        }
+        (None, Some(path)) => {
+            bootconfig.clone_from(&config.bootconfig);
+            Some(boot::load_initrd(&mem, &mut open(path)?, &bootconfig)?)
+        }
+        (None, None) => None,
     };
     let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
     getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
@@ -531,7 +565,7 @@ pub fn run_with(
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,
         vcpus: config.vcpus,
-        cmdline: &kernel_cmdline(config),
+        cmdline: &kernel_cmdline(config, &image_cmdline, !bootconfig.is_empty()),
         initrd,
         serial: config.serial,
         virtio_slots: &virtio_slots,
@@ -560,14 +594,13 @@ mod tests {
     #[test]
     fn cmdline_joins_only_the_parts_that_apply() {
         let mut config = Config::new(PathBuf::from("k"));
-        assert_eq!(kernel_cmdline(&config), "");
+        assert_eq!(kernel_cmdline(&config, "", false), "");
         config.serial = true;
-        assert_eq!(kernel_cmdline(&config), SERIAL_CONSOLE_ARG);
+        assert_eq!(kernel_cmdline(&config, "", false), SERIAL_CONSOLE_ARG);
         config.cmdline = "quiet".into();
-        config.bootconfig.push(("a".into(), "b".into()));
         assert_eq!(
-            kernel_cmdline(&config),
-            format!("{SERIAL_CONSOLE_ARG} {BOOTCONFIG_ARG} quiet")
+            kernel_cmdline(&config, "panic=-1", true),
+            format!("{SERIAL_CONSOLE_ARG} {BOOTCONFIG_ARG} panic=-1 quiet")
         );
     }
 
@@ -575,9 +608,8 @@ mod tests {
     fn vmm_arguments_stay_ahead_of_an_init_separator() {
         let mut config = Config::new(PathBuf::from("k"));
         config.serial = true;
-        config.bootconfig.push(("a".into(), "b".into()));
         config.cmdline = "rdinit=/bin/sh -- -c true".into();
-        let cmdline = kernel_cmdline(&config);
+        let cmdline = kernel_cmdline(&config, "", true);
         let (kernel_part, _init_part) = cmdline.split_once(" -- ").unwrap();
         assert!(kernel_part.contains(SERIAL_CONSOLE_ARG) && kernel_part.contains(BOOTCONFIG_ARG));
     }

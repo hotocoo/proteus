@@ -14,6 +14,10 @@ pub fn bootconfig(why: &str) -> String {
     format!("bootconfig: {why}")
 }
 
+pub fn boot_image(why: &str) -> String {
+    format!("Android boot image: {why}")
+}
+
 pub fn fdt(err: &dyn Display) -> String {
     format!("device tree: {err}")
 }
@@ -40,3 +44,7 @@ pub const TOO_MANY_VIRTIO: &str = "more virtio devices than the board has slots"
 pub const BOOTCONFIG_BAD_KEY: &str = "keys may hold only letters, digits, '.', '-' and '_'";
 pub const BOOTCONFIG_BAD_VALUE: &str = "values may not contain a double quote, newline or NUL";
 pub const BOOTCONFIG_TOO_LARGE: &str = "exceeds the kernel's 32 KiB limit";
+pub const BOOT_IMAGE_BAD_MAGIC: &str = "not a boot image of the expected kind";
+pub const BOOT_IMAGE_BAD_VERSION: &str = "only header versions 3 and 4 are supported";
+pub const BOOT_IMAGE_BAD_PAGE_SIZE: &str = "page size is not a power of two";
+pub const BOOT_IMAGE_TRUNCATED: &str = "a section runs past the end of the file";

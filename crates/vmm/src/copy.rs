@@ -11,6 +11,10 @@ Usage: emu --kernel <file> [options]
 
   --kernel <file>         Uncompressed kernel image (required)
   --initrd <file>         Ramdisk (uncompressed or kernel-supported cpio)
+  --android <dir>         Boot Android from a directory of AOSP virtual-device images
+                          (init_boot.img, vendor_boot.img, super.img, vbmeta*.img)
+  --data-dir <dir>        Where this Android instance keeps its data (default: <dir>/emu-data)
+  --userdata-gib <n>      Size of the Android data partition when first created
   --cmdline <text>        Kernel command line
   --ram-mib <n>           Guest RAM in MiB
   --vcpus <n>             Number of virtual CPUs
@@ -55,6 +59,9 @@ pub fn bad_number(option: &str) -> String {
 
 pub const MISSING_KERNEL: &str = "--kernel is required";
 pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
+pub const ANDROID_WITH_INITRD: &str =
+    "--android brings its own ramdisk; do not pass --initrd with it";
+pub const DATA_DIR_NEEDS_ANDROID: &str = "--data-dir only applies with --android";
 pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";
 pub const BOOT_MARKER_NEEDS_SERIAL: &str =
@@ -105,3 +112,5 @@ pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
 /// Prefix of the serial number each disk reports to the guest, followed by its slot.
 pub const DISK_ID_PREFIX: &str = "emu-disk-";
+/// Serial number the Android system disk reports to the guest.
+pub const ANDROID_DISK_ID: &str = "emu-android";

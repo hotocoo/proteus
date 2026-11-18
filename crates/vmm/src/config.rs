@@ -14,6 +14,10 @@ const MIB: u64 = 1 << 20;
 
 pub const DEFAULT_RAM_MIB: u64 = 4096;
 pub const DEFAULT_VCPUS: u32 = 4;
+/// Size the guest's data partition is created with.
+pub const DEFAULT_USERDATA_GIB: u64 = 8;
+/// Where an Android instance keeps what the guest writes, inside the images directory, unless told otherwise.
+pub const DEFAULT_DATA_DIR: &str = "emu-data";
 pub const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::Warn;
 /// What Android's first-stage init prints when it starts; the end point of the cold-boot measurement.
 pub const DEFAULT_BOOT_MARKER: &str = "init first stage started";
@@ -34,6 +38,17 @@ pub const SERIAL_INPUT_CHUNK: usize = 256;
 pub struct DiskConfig {
     pub path: PathBuf,
     pub read_only: bool,
+}
+
+/// A directory of AOSP virtual-device images to boot, and where this instance keeps its own data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidOptions {
+    /// Holds `init_boot.img`, `vendor_boot.img`, `super.img` and the `vbmeta` images. Never written to.
+    pub images: PathBuf,
+    /// Holds the writable partitions; created on first use.
+    pub data: PathBuf,
+    /// Size of the data partition when it is first created.
+    pub userdata_bytes: u64,
 }
 
 /// The guest's network. Everything here has a default; the command line only overrides.
@@ -75,6 +90,8 @@ pub struct Config {
     pub serial: bool,
     /// `None` leaves the guest without a network device.
     pub net: Option<NetOptions>,
+    /// Boot Android from an image directory instead of a plain ramdisk.
+    pub android: Option<AndroidOptions>,
     pub bootconfig: Vec<(String, String)>,
     /// Console text whose first appearance is timed, if boot timing was asked for.
     pub boot_marker: Option<String>,
@@ -92,6 +109,7 @@ impl Config {
             disks: Vec::new(),
             serial: false,
             net: Some(NetOptions::default()),
+            android: None,
             bootconfig: Vec::new(),
             boot_marker: None,
             log_level: DEFAULT_LOG_LEVEL,
@@ -146,6 +164,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     let mut boot_marker = None;
     let mut net = NetOptions::default();
     let mut no_net = false;
+    let mut android_images: Option<PathBuf> = None;
+    let mut data_dir: Option<PathBuf> = None;
+    let mut userdata_gib = DEFAULT_USERDATA_GIB;
 
     while let Some(arg) = parser.next()? {
         match arg {
@@ -176,6 +197,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                 config.bootconfig.push((key.to_owned(), value.to_owned()));
             }
             Long("serial") => config.serial = true,
+            Long("android") => android_images = Some(parser.value()?.into()),
+            Long("data-dir") => data_dir = Some(parser.value()?.into()),
+            Long("userdata-gib") => userdata_gib = positive(&mut parser, "userdata-gib")?,
             Long("no-net") => no_net = true,
             Long("blocklist") => net.blocklists.push(parser.value()?.into()),
             Long("allowlist") => net.allowlists.push(parser.value()?.into()),
@@ -206,6 +230,24 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
 
     config.kernel = kernel.ok_or_else(|| ConfigError(copy::MISSING_KERNEL.into()))?;
     config.net = (!no_net).then_some(net);
+    config.android = match android_images {
+        Some(images) => {
+            if config.initrd.is_some() {
+                return Err(ConfigError(copy::ANDROID_WITH_INITRD.into()));
+            }
+            let userdata_bytes = userdata_gib
+                .checked_mul(MIB << 10)
+                .ok_or_else(|| ConfigError(copy::bad_number("userdata-gib")))?;
+            let data = data_dir.unwrap_or_else(|| images.join(DEFAULT_DATA_DIR));
+            Some(AndroidOptions {
+                images,
+                data,
+                userdata_bytes,
+            })
+        }
+        None if data_dir.is_some() => return Err(ConfigError(copy::DATA_DIR_NEEDS_ANDROID.into())),
+        None => None,
+    };
     if boot_timing || boot_marker.is_some() {
         if !config.serial {
             return Err(ConfigError(copy::BOOT_MARKER_NEEDS_SERIAL.into()));
@@ -330,6 +372,31 @@ mod tests {
     }
 
     #[test]
+    fn android_directory_gets_a_data_directory_and_a_data_partition_size() {
+        let android = run(&["--kernel", "k", "--android", "images"])
+            .android
+            .unwrap();
+        assert_eq!(android.images, PathBuf::from("images"));
+        assert_eq!(android.data, PathBuf::from("images").join(DEFAULT_DATA_DIR));
+        assert_eq!(android.userdata_bytes, DEFAULT_USERDATA_GIB << 30);
+        let custom = run(&[
+            "--kernel",
+            "k",
+            "--android",
+            "images",
+            "--data-dir",
+            "mine",
+            "--userdata-gib",
+            "32",
+        ]);
+        let custom = custom.android.unwrap();
+        assert_eq!(
+            (custom.data, custom.userdata_bytes),
+            (PathBuf::from("mine"), 32 << 30)
+        );
+    }
+
+    #[test]
     fn help_wins() {
         assert_eq!(parse_str(&["--help"]).unwrap(), Parsed::Help);
     }
@@ -349,6 +416,16 @@ mod tests {
             &["--kernel", "k", "--log-level", "loud"],
             &["--kernel", "k", "--boot-timing"],
             &["--kernel", "k", "--frobnicate"],
+            &["--kernel", "k", "--android", "images", "--initrd", "r"],
+            &["--kernel", "k", "--data-dir", "mine"],
+            &[
+                "--kernel",
+                "k",
+                "--android",
+                "images",
+                "--userdata-gib",
+                "0",
+            ],
             &["--kernel", "k", "--adb-port", "70000"],
             &["--kernel", "k", "--adb-port", "adb"],
             &["--kernel", "k", "stray"],

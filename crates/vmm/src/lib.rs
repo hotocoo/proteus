@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+#[cfg(target_arch = "aarch64")]
+mod android;
 pub mod config;
 pub mod console;
 mod copy;

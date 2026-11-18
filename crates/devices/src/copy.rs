@@ -42,3 +42,14 @@ pub const DISK_WORKER_GONE: &str = "disk worker thread ended unexpectedly";
 pub const DISK_ALREADY_ACTIVE: &str = "device is already active";
 pub const DISK_NO_QUEUE: &str = "device was activated without all of its queues";
 pub const DISK_WORKER_NAME: &str = "virtio-blk";
+
+pub const DISK_OUT_OF_RANGE: &str = "access runs past the end of the disk";
+pub const DISK_BAD_GUEST_ADDRESS: &str = "guest buffer address overflows";
+pub const DISK_READ_ONLY_AREA: &str = "write to a read-only part of the disk";
+pub const SPARSE_BAD_HEADER: &str = "sparse image header is not one this version understands";
+pub const SPARSE_BAD_CHUNK: &str = "sparse image has a malformed chunk";
+pub const SPARSE_TRUNCATED: &str = "sparse image is shorter than its chunks say";
+pub const SPARSE_SIZE_MISMATCH: &str = "sparse image chunks do not add up to its declared size";
+pub const GPT_NAME_TOO_LONG: &str = "partition name is longer than 36 characters";
+pub const GPT_TOO_MANY: &str = "more partitions than a GPT holds";
+pub const GPT_BAD_SIZE: &str = "partition size is not a multiple of the sector size";
