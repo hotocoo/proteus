@@ -11,6 +11,8 @@
 //! key <code> [down|up]
 //! pad <control> <value>
 //! screenshot <file>
+//! screenrecord <file> [<seconds>]
+//! install <file or directory>
 //! location <latitude> <longitude> [<metres above sea level>]
 //! rotate <x> <y> <z>
 //! shake
@@ -26,6 +28,10 @@
 //! from the touches and keys that follow, with the pauses between them, until `record-stop`. `run`
 //! plays one, and `cancel` stops a macro that is playing.
 //!
+//! `install` takes an APK, a directory of split APKs, or an `.apks` / `.xapk` archive (whose OBB
+//! files are copied too). `screenrecord` records the screen (no sound) for the given time, up to
+//! three minutes, and saves it as MP4. Both go through the guest's `adb`.
+//!
 //! Gamepad controls are `a`, `b`, `x`, `y`, `l1`, `r1`, `l2`, `r2`, `select`, `start`, `mode`,
 //! `thumbl` and `thumbr` (value `down`, `up`, 1 or 0), the sticks `lx`, `ly`, `rx` and `ry` (-1 to 1,
 //! right and down positive), the triggers `lt` and `rt` (0 to 1) and the direction pad `hatx` and
@@ -38,7 +44,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -46,6 +52,7 @@ use std::time::{Duration, Instant};
 use devices::virtio::input::{InputEvent, InputHandle};
 
 use crate::config::{DEFAULT_SWIPE, MACRO_CANCEL_POLL, MACRO_MAX_BYTES, SWIPE_STEP, TAP_HOLD};
+use crate::config::{GUEST_RECORDING, SCREENRECORD_MAX};
 use crate::copy;
 use crate::frames::Screen;
 use crate::input::{self, PadControl, PadKind, TOUCH_SLOTS, Touch};
@@ -60,6 +67,8 @@ const WORD_LIFT: &str = "lift";
 const WORD_KEY: &str = "key";
 const WORD_PAD: &str = "pad";
 const WORD_SCREENSHOT: &str = "screenshot";
+const WORD_SCREENRECORD: &str = "screenrecord";
+const WORD_INSTALL: &str = "install";
 const WORD_LOCATION: &str = "location";
 const WORD_ROTATE: &str = "rotate";
 const WORD_SHAKE: &str = "shake";
@@ -108,6 +117,13 @@ pub enum Command {
         value: f64,
     },
     Screenshot(PathBuf),
+    /// Record the screen into an MP4 file for this long.
+    Screenrecord {
+        path: PathBuf,
+        duration: Duration,
+    },
+    /// Install the app at this path.
+    Install(PathBuf),
     Location {
         latitude: f64,
         longitude: f64,
@@ -170,6 +186,15 @@ impl std::fmt::Display for Command {
                 write!(f, "{WORD_KEY} {code} {state}")
             }
             Self::Pad { control, value } => write!(f, "{WORD_PAD} {} {value}", control.name),
+            Self::Screenrecord { path, duration } => {
+                write!(
+                    f,
+                    "{WORD_SCREENRECORD} {} {}",
+                    path.display(),
+                    duration.as_secs()
+                )
+            }
+            Self::Install(path) => write!(f, "{WORD_INSTALL} {}", path.display()),
             Self::Screenshot(path) => write!(f, "{WORD_SCREENSHOT} {}", path.display()),
             Self::Location {
                 latitude,
@@ -262,21 +287,29 @@ pub fn parse(line: &str) -> Option<Command> {
         (WORD_WAIT, Some(&[millis])) => Some(Command::Wait(Duration::from_millis(millis.into()))),
         (WORD_RECORD, _) if !rest.is_empty() => Some(Command::Record(rest.into())),
         (WORD_RUN, _) if !rest.is_empty() => {
-            // The file name may have spaces in it; a last word that is a number is the count.
-            let counted = rest
-                .rsplit_once(char::is_whitespace)
-                .and_then(|(path, last)| {
-                    let times = last.parse().ok()?;
-                    Some((path.trim_end(), times))
-                });
-            let (path, times) = counted.unwrap_or((rest, 1));
+            let (path, times) = counted(rest).unwrap_or((rest, 1));
             Some(Command::Run {
                 path: path.into(),
                 times,
             })
         }
+        (WORD_SCREENRECORD, _) if !rest.is_empty() => {
+            let (path, seconds) =
+                counted(rest).unwrap_or((rest, SCREENRECORD_MAX.as_secs() as u32));
+            Some(Command::Screenrecord {
+                path: path.into(),
+                duration: Duration::from_secs(seconds.into()),
+            })
+        }
+        (WORD_INSTALL, _) if !rest.is_empty() => Some(Command::Install(rest.into())),
         _ => None,
     }
+}
+
+/// A file name, which may have spaces in it, and a last word that is a number, if there is one.
+fn counted(rest: &str) -> Option<(&str, u32)> {
+    let (path, last) = rest.rsplit_once(char::is_whitespace)?;
+    Some((path.trim_end(), last.parse().ok()?))
 }
 
 /// A macro being recorded: the commands so far, as lines of a macro file.
@@ -339,6 +372,8 @@ pub struct Controller {
     pub location: Option<Arc<Location>>,
     pub motion: Option<Arc<Motion>>,
     pub power: Arc<PowerSwitch>,
+    /// The loopback port the guest's `adb` is reached on; 0 while there is none.
+    pub adb_port: Arc<AtomicU16>,
     /// The macro being recorded, if one is.
     pub recording: Mutex<Option<Recording>>,
     /// Set to stop the macro that is playing.
@@ -365,6 +400,31 @@ impl Controller {
             return Err(copy::CTL_BAD_KEY.to_owned());
         }
         send(keyboard, &input::key(code, down))
+    }
+
+    /// Records the guest's screen for `duration`, then copies the recording to `path`.
+    fn screenrecord(&self, path: &Path, duration: Duration) -> Result<(), String> {
+        if duration.is_zero() || duration > SCREENRECORD_MAX {
+            return Err(copy::ctl_record_too_long(SCREENRECORD_MAX));
+        }
+        let port = self.adb_port.load(Ordering::SeqCst);
+        let guest_file = crate::adb::quote(GUEST_RECORDING);
+        let record = format!(
+            "screenrecord --time-limit {} {guest_file}",
+            duration.as_secs()
+        );
+        let failed = |err: std::io::Error| copy::file(path, &err);
+        let said = crate::adb::output(port, &record).map_err(failed)?;
+        let mut file = std::fs::File::create(path).map_err(|err| copy::file(path, &err))?;
+        let copied = crate::adb::exec(port, &format!("cat {guest_file}"), None, &mut file);
+        let _ = crate::adb::output(port, &format!("rm -f {guest_file}"));
+        copied.map_err(failed)?;
+        // screenrecord says nothing when it works; an empty file means it did not.
+        if file.metadata().map_err(|err| copy::file(path, &err))?.len() == 0 {
+            let _ = std::fs::remove_file(path);
+            return Err(copy::ctl_record_failed(said.trim()));
+        }
+        Ok(())
     }
 
     /// Carries out one command. Gestures, waits and macros take as long as they last.
@@ -439,6 +499,11 @@ impl Controller {
                 let gamepad = self.gamepad.as_ref().ok_or(copy::CTL_NO_GAMEPAD)?;
                 send(gamepad, &input::pad_event(control, value))
             }
+            Command::Install(ref path) => {
+                let port = self.adb_port.load(Ordering::SeqCst);
+                crate::install::install(port, path).map_err(|err| copy::install_failed(path, &err))
+            }
+            Command::Screenrecord { ref path, duration } => self.screenrecord(path, duration),
             Command::Screenshot(ref path) => {
                 let screen = self.screen.as_ref().ok_or(copy::CTL_NO_DISPLAY)?;
                 match screen.save(path) {
@@ -742,6 +807,8 @@ mod tests {
             "pad lx NaN",
             "pad nub 1",
             "screenshot",
+            "screenrecord",
+            "install",
             "reboot",
         ] {
             assert_eq!(parse(line), None, "{line:?}");
@@ -857,6 +924,11 @@ mod tests {
                 control: input::pad_control("ly").unwrap(),
                 value: -0.25,
             },
+            Command::Screenrecord {
+                path: "clip one.mp4".into(),
+                duration: Duration::from_secs(30),
+            },
+            Command::Install("my game.xapk".into()),
             Command::Screenshot("a b.png".into()),
             Command::Location {
                 latitude: -3.5,

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+pub mod adb;
 #[cfg(target_arch = "aarch64")]
 mod android;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -17,6 +18,7 @@ pub mod frames;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod gamepad;
 pub mod input;
+pub mod install;
 pub mod keymap;
 pub mod location;
 mod logger;

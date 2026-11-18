@@ -291,6 +291,9 @@ impl Worker {
 
         let (lookups, resolved) = spawn_resolvers(resolver, cfg.resolver_threads, waker)?;
         let mut adb = cfg.adb.and_then(|forward| bind_adb(forward.host_port));
+        let bound = adb.as_ref().and_then(|listener| listener.local_addr().ok());
+        let bound = bound.map_or(0, |address| address.port());
+        cfg.adb_bound.store(bound, Ordering::SeqCst);
         if let Some(listener) = &mut adb {
             poll.registry()
                 .register(listener, ADB, Interest::READABLE)?;

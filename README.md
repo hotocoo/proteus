@@ -18,6 +18,8 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
   and shaking, and macros recorded from it or written by hand.
 - Key maps for playing with keyboard and mouse, including mouse-wheel pinch zoom.
 - A host gamepad shows up in Android as a gamepad.
+- Installing apps by dropping them on the window: single APKs, split sets and `.apks`/`.xapk`
+  archives with their OBB files. Screen recordings to MP4.
 - Sound, played through this machine's default output (`--mute` turns it off).
 - Several virtual CPUs, disks, a serial console.
 - Plain Linux kernels boot too, to a shell on the serial console.
@@ -69,6 +71,8 @@ emu ctl /tmp/emu.sock tap 640 360
 emu ctl /tmp/emu.sock swipe 640 650 640 150
 emu ctl /tmp/emu.sock key 116                  # Linux key code; 116 is the power button
 emu ctl /tmp/emu.sock screenshot shot.png
+emu ctl /tmp/emu.sock screenrecord clip.mp4 30  # seconds, at most 180; no sound
+emu ctl /tmp/emu.sock install game.xapk        # an APK, a folder of split APKs, or .apks/.xapk
 emu ctl /tmp/emu.sock location 3.139 101.6869  # latitude, longitude
 emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lays the device flat
 emu ctl /tmp/emu.sock shake
@@ -172,9 +176,9 @@ Honest list, most important first:
   machine do not work.
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
-  the planned stripping. Apps are installed with `adb install`.
+  the planned stripping. Apps are installed from files (drop them on the window, or `emu ctl ... install`).
 - **Linux and Windows hosts.** Only the macOS backend exists.
-- **Several instances**, an app installer, screen recording and a settings window.
+- **Several instances** and a settings window.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
 answered by the emulator itself, so use a real connection to test the network. Games that detect

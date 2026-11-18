@@ -338,6 +338,19 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => self.touch(false),
+            // An install takes a while; the window keeps drawing meanwhile.
+            WindowEvent::DroppedFile(path) => {
+                let controller = Arc::clone(&self.controller);
+                let installing = std::thread::Builder::new()
+                    .name(copy::INSTALL_THREAD.into())
+                    .spawn(move || match controller.execute(&Command::Install(path)) {
+                        Ok(()) => eprintln!("{}", copy::INSTALLED),
+                        Err(why) => eprintln!("{}", copy::fatal(&why)),
+                    });
+                if let Err(err) = installing {
+                    log::error!("{}", copy::thread(&err));
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => Scroll::Turns(f64::from(lines)),

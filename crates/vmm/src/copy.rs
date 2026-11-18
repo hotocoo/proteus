@@ -249,6 +249,36 @@ pub const CTL_USAGE: &str =
     "unknown command; see `emu --help` for the commands and their arguments";
 pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";
 pub const CTL_NO_KEYBOARD: &str = "this instance has no keyboard";
+pub const ADB_TOO_LARGE: &str = "adb message too large";
+pub const ADB_GARBLED: &str = "Android's adb sent something that is not adb";
+pub const ADB_WANTS_KEY: &str = "Android's adb asks for a key, which this emulator cannot give yet";
+pub const ADB_COMMAND_REFUSED: &str = "Android's adb refused the command";
+pub const ADB_NONE: &str = "this instance has no adb; it needs the network and an --adb-port";
+pub const ADB_NOT_ANSWERING: &str =
+    "Android's adb is not answering; wait until Android has started";
+pub const INSTALL_BAD_ARCHIVE: &str = "not an APK, a directory of APKs or an archive of them";
+pub const INSTALL_ZIP64: &str = "archives over 4 GiB are not supported";
+pub const INSTALL_TOO_LARGE: &str = "a compressed APK in this archive is too large to unpack";
+pub const INSTALL_NOTHING: &str = "there is no APK there to install";
+pub fn ctl_record_too_long(max: Duration) -> String {
+    format!("a screen recording lasts at most {} seconds", max.as_secs())
+}
+
+pub fn ctl_record_failed(said: &str) -> String {
+    format!("the screen could not be recorded: {said}")
+}
+
+pub const INSTALL_THREAD: &str = "install";
+pub const INSTALLED: &str = "installed the dropped app";
+
+pub fn install_refused(said: &str) -> String {
+    format!("Android refused the app: {said}")
+}
+
+pub fn install_failed(path: &Path, err: &dyn Display) -> String {
+    format!("could not install {}: {err}", path.display())
+}
+
 pub const CTL_NO_GAMEPAD: &str = "this instance has no gamepad; start it with --gamepad";
 pub const CTL_NO_DISPLAY: &str = "this instance has no display to capture";
 pub const CTL_NO_SENSORS: &str = "this instance has no motion sensors";

@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
@@ -448,6 +448,7 @@ fn load_lists(paths: &[PathBuf]) -> Result<DomainSet, VmmError> {
 fn network(
     options: &NetOptions,
     resolver: Arc<dyn Resolver>,
+    adb_bound: Arc<AtomicU16>,
 ) -> Result<(Network, [u8; MAC_LEN]), VmmError> {
     let policy = Sinkhole {
         blocked: load_lists(&options.blocklists)?,
@@ -460,6 +461,7 @@ fn network(
             host_port,
             guest_port: ADB_PORT,
         }),
+        adb_bound,
         host_loopback: options.host_loopback,
         ..NetConfig::default()
     };
@@ -650,7 +652,7 @@ pub fn run_in(
         attach(*slot, Box::new(Net::unplugged(mac)))?;
     }
     if let Some(options) = &config.net {
-        let (network, mac) = network(options, resolver)?;
+        let (network, mac) = network(options, resolver, Arc::clone(&controller.adb_port))?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
     }
     if let Some(slot) = console_slot {

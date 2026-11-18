@@ -1,6 +1,8 @@
 //! Addresses, limits and timings of the guest network. Code reads them from here by name.
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU16;
 use std::time::Duration;
 
 use devices::virtio::net::MAC_LEN;
@@ -53,6 +55,9 @@ pub struct NetConfig {
     pub guest_mac: [u8; MAC_LEN],
     pub gateway_mac: [u8; MAC_LEN],
     pub adb: Option<AdbForward>,
+    /// Where the `adb` listener ended up, once it is bound (it may move off a taken port); 0 until
+    /// then, or if it could not be bound. Whoever made the config can read it.
+    pub adb_bound: Arc<AtomicU16>,
     /// Make the gateway address reach the host's own loopback interface. Off by default: it would let
     /// any app in the guest talk to services that listen only on the host's localhost.
     pub host_loopback: bool,
@@ -80,6 +85,7 @@ impl Default for NetConfig {
                 host_port: ADB_PORT,
                 guest_port: ADB_PORT,
             }),
+            adb_bound: Arc::default(),
             host_loopback: false,
             sniff_timeout: SNIFF_TIMEOUT,
             handshake_timeout: HANDSHAKE_TIMEOUT,

@@ -72,6 +72,21 @@ pub const MACRO_CANCEL_POLL: Duration = Duration::from_millis(20);
 pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
+/// How long to wait for the `adb` forward to accept a connection.
+pub const ADB_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// A guest command may print nothing for this long and still be running (a screen recording
+/// prints nothing until it ends, at most `SCREENRECORD_MAX` later).
+pub const ADB_IDLE_TIMEOUT: Duration = Duration::from_secs(240);
+/// Most bytes sent to the guest in one `adb` write.
+pub const ADB_CHUNK: usize = 64 * 1024;
+/// The guest's shared storage, where OBB files go.
+pub const GUEST_SHARED_STORAGE: &str = "/sdcard";
+/// Largest compressed archive entry inflated while installing.
+pub const ZIP_MAX_INFLATED: u64 = 1 << 30;
+/// Where the guest writes a screen recording before it is copied out.
+pub const GUEST_RECORDING: &str = "/data/local/tmp/emu-screenrecord.mp4";
+/// Longest recording the guest's `screenrecord` makes, and the default length.
+pub const SCREENRECORD_MAX: Duration = Duration::from_secs(180);
 /// How often the serial input pump checks whether its machine has stopped.
 pub const SERIAL_INPUT_POLL: Duration = Duration::from_millis(100);
 /// A guest that resets this soon after starting did not boot; this many in a row and the VMM gives up.
