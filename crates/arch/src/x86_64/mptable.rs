@@ -35,6 +35,12 @@ const INTERRUPT_EXTINT: u8 = 3;
 const BUS_ID: u8 = 0;
 /// Destination meaning every local APIC.
 const ALL_LAPICS: u8 = 0xff;
+/// BIOS data area words: the real-mode segment of the extended BIOS data area, and the size of base
+/// memory in KiB.
+const BDA_EBDA_SEGMENT: u64 = 0x40e;
+const BDA_BASE_MEMORY_KIB: u64 = 0x413;
+const PARAGRAPH_SHIFT: u32 = 4;
+const KIB: u64 = 1024;
 /// The extended BIOS data area is one kilobyte; the table has to fit in it.
 const EBDA_LEN: usize = 0x400;
 
@@ -120,9 +126,13 @@ pub fn build(cpus: u32) -> Result<Vec<u8>, ArchError> {
     Ok(floating)
 }
 
-/// Writes the MP table for `cpus` CPUs at the start of the extended BIOS data area.
+/// Writes the MP table for `cpus` CPUs at the start of the extended BIOS data area, and the BIOS
+/// data area words that say where that is, which is where Linux looks first.
 pub fn write<M: GuestMemory>(mem: &M, cpus: u32) -> Result<(), ArchError> {
     mem.write_slice(&build(cpus)?, GuestAddress(EBDA_START))?;
+    let segment = (EBDA_START >> PARAGRAPH_SHIFT) as u16;
+    mem.write_obj(segment, GuestAddress(BDA_EBDA_SEGMENT))?;
+    mem.write_obj((EBDA_START / KIB) as u16, GuestAddress(BDA_BASE_MEMORY_KIB))?;
     Ok(())
 }
 
@@ -151,6 +161,19 @@ mod tests {
         // The first processor is the bootstrap one, the others only enabled.
         assert_eq!(table[HEADER_LEN + 3], CPU_ENABLED | CPU_BOOTSTRAP);
         assert_eq!(table[HEADER_LEN + 20 + 3], CPU_ENABLED);
+    }
+
+    #[test]
+    fn the_bios_data_area_points_at_the_table() {
+        use vm_memory::GuestMemoryMmap;
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 1 << 20)]).unwrap();
+        write(&mem, 2).unwrap();
+        let segment: u16 = mem.read_obj(GuestAddress(BDA_EBDA_SEGMENT)).unwrap();
+        assert_eq!(u64::from(segment) << 4, EBDA_START);
+        let mut signature = [0u8; 4];
+        mem.read_slice(&mut signature, GuestAddress(EBDA_START))
+            .unwrap();
+        assert_eq!(&signature, FLOATING_SIGNATURE);
     }
 
     #[test]
