@@ -152,8 +152,10 @@ pub const BOOTCONFIG_NEEDS_INITRD: &str =
     "--bootconfig needs --initrd, because the kernel reads it from the end of the ramdisk";
 pub const TOO_MANY_VCPUS: &str = "more vCPUs requested than the host or the board supports";
 pub const TOO_MANY_DISKS: &str = "more disks than the board has disk slots (three)";
+#[cfg(target_arch = "aarch64")]
 pub const GIC_GEOMETRY: &str =
     "the host's interrupt controller does not fit the board's address map";
+#[cfg(target_arch = "aarch64")]
 pub const NO_ENTROPY: &str = "the host gave no random bytes to seed the guest";
 pub const RAM_UNMAPPABLE: &str = "guest RAM could not be mapped";
 pub const UNKNOWN_EXIT: &str = "the hypervisor reported an exit this build does not know";

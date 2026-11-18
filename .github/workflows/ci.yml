@@ -95,7 +95,7 @@ jobs:
           sudo apt-get install -y -qq strace >/dev/null
           cargo build --release --locked -p vmm
           scripts/no-connect.sh target/release/emu 20 \
-            --kernel "$RUNNER_TEMP/vmlinux" --initrd "$RUNNER_TEMP/initramfs.cpio" --serial
+            --kernel "$RUNNER_TEMP/vmlinux" --initrd "$RUNNER_TEMP/initramfs.cpio" --serial --headless
 
   android:
     # Milestone 2's check on Linux: Google's x86_64 Cuttlefish image with this repository's guest
@@ -129,7 +129,7 @@ jobs:
       - name: Boot Android
         run: |
           target/release/emu --kernel "$RUNNER_TEMP/kernel/kernel-x86_64" \
-            --android "$RUNNER_TEMP/image" --data-dir "$RUNNER_TEMP/data" \
+            --android "$RUNNER_TEMP/image" --data-dir "$RUNNER_TEMP/data" --headless \
             --serial --logcat "$RUNNER_TEMP/logcat.txt" --ctl "$RUNNER_TEMP/emu.sock" \
             </dev/null >"$RUNNER_TEMP/console.txt" 2>&1 &
           emu=$!
