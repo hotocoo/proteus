@@ -200,9 +200,10 @@ const CONSOLE_ON: &[(&str, &str)] = &[
     ("androidboot.serialconsole", "1"),
 ];
 const CONSOLE_OFF: &[(&str, &str)] = &[("androidboot.serialconsole", "0")];
-/// The first device `virtio_mmio.device=` creates.
+/// The first device `virtio_mmio.device=` creates, as init names it: its path under
+/// `/sys/devices/platform/`, where the kernel puts command-line devices under a parent of their own.
 #[cfg(not(target_arch = "aarch64"))]
-const BOOT_DEVICE_FROM_CMDLINE: &str = "virtio-mmio.0";
+const BOOT_DEVICE_FROM_CMDLINE: &str = "virtio-mmio-cmdline/virtio-mmio.0";
 /// Tells init which block device holds the named partitions: the disk in virtio slot 0.
 const BOOT_DEVICES_KEY: &str = "androidboot.boot_devices";
 /// Kernel arguments the vendor image asks for that this board must not pass on.
