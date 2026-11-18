@@ -50,6 +50,55 @@ jobs:
           cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: emu-*.tar.gz*
+
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Build
+        run: cargo build --release --locked -p vmm
+      - name: Fetch the guest kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow "Guest kernel" --branch main --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+          test -n "$run"
+          gh run download "$run" --name kernel-x86_64 --dir kernel
+          ls -l kernel
+      - name: Package
+        run: |
+          name="emu-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir "$name"
+          cp target/release/emu README.md "$name/"
+          cp kernel/kernel-x86_64 kernel/kernel-x86_64.config kernel/kernel-x86_64.source.txt "$name/"
+          cp guest/kernel/README.md "$name/KERNEL.md"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: emu-*.tar.gz*
+
+  publish:
+    name: Publish
+    needs: [macos, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
