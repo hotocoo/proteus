@@ -27,7 +27,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several instances at once, with one able to drive the others.
 
 Not there yet: GPU acceleration, a GUI,
-Linux and Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
+Android, a window and sound on Linux hosts, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
 ## Run Android
@@ -184,7 +184,7 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 
 | Path | Contents |
 |---|---|
-| `crates/hv` | Hypervisor traits and the Hypervisor.framework backend |
+| `crates/hv` | Hypervisor traits, and the Hypervisor.framework and KVM backends |
 | `crates/arch` | Board address map, device tree, kernel loading, PSCI, bootconfig |
 | `crates/devices` | MMIO bus, UART, RTC, virtio-mmio transport, virtio block, network, display, input, console and sound devices |
 | `crates/net` | Userspace NAT, DHCP, DNS, sinkhole policy, adb forward |
@@ -206,7 +206,11 @@ Honest list, most important first:
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed from files (drop them on the window, or `emu ctl ... install`).
-- **Linux and Windows hosts.** Only the macOS backend exists.
+- **Linux and Windows hosts.** On x86_64 Linux, `emu` boots a Linux kernel on KVM (checked in CI
+  with two CPUs, disks and the network), headless, with no sound. Android does not run there yet:
+  that needs the x86_64 Android image, a window and a display that Linux has not got yet. The
+  test kernel must find its hardware through the MP table and `virtio_mmio.device=` on its command
+  line; the board has no ACPI. There is no Windows backend.
 - **A settings window**, and the rest of the planned GUI.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
