@@ -1,0 +1,4 @@
+# Hypervisor.framework refuses unsigned callers, and every relink drops the
+# signature, so `cargo run` and `cargo test` go through a runner that signs first.
+[target.aarch64-apple-darwin]
+runner = "scripts/sign-run.sh"

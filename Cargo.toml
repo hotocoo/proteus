@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/hv", "crates/arch", "crates/devices", "crates/vmm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+hv = { path = "crates/hv" }
+arch = { path = "crates/arch" }
+devices = { path = "crates/devices" }
+getrandom = "0.3"
+lexopt = "0.3"
+log = "0.4"
+virtio-bindings = "0.2"
+virtio-queue = "0.18"
+vm-fdt = "0.3"
+vm-memory = { version = "0.18", features = ["backend-mmap"] }
+vm-superio = "0.8"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

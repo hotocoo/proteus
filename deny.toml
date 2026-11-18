@@ -1,0 +1,49 @@
+# Enforces the "no telemetry from the VMM" rule at the dependency level:
+# no analytics or crash-upload crate, no HTTP client, and nothing from outside crates.io.
+# Run with: cargo deny check bans sources
+
+[graph]
+all-features = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # Crash and error upload.
+    { crate = "sentry", reason = "uploads crash reports" },
+    { crate = "sentry-core", reason = "uploads crash reports" },
+    { crate = "bugsnag", reason = "uploads crash reports" },
+    { crate = "rollbar", reason = "uploads crash reports" },
+    { crate = "backtrace-on-stack-overflow", reason = "not needed; crash data stays local" },
+    # Metrics and tracing exporters.
+    { crate = "opentelemetry", reason = "exports telemetry" },
+    { crate = "opentelemetry_sdk", reason = "exports telemetry" },
+    { crate = "opentelemetry-otlp", reason = "exports telemetry" },
+    { crate = "tracing-opentelemetry", reason = "exports telemetry" },
+    { crate = "metrics-exporter-prometheus", reason = "exports metrics" },
+    { crate = "metrics-exporter-statsd", reason = "exports metrics" },
+    { crate = "cadence", reason = "exports metrics" },
+    { crate = "dogstatsd", reason = "exports metrics" },
+    { crate = "datadog-statsd", reason = "exports metrics" },
+    # Product analytics.
+    { crate = "posthog-rs", reason = "product analytics" },
+    { crate = "segment", reason = "product analytics" },
+    { crate = "amplitude", reason = "product analytics" },
+    { crate = "mixpanel-rs", reason = "product analytics" },
+    # HTTP clients. The VMM opens sockets only for guest flows, the adb listener and its control socket.
+    { crate = "reqwest", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "hyper", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "ureq", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "isahc", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "surf", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "attohttpc", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "minreq", reason = "the VMM makes no HTTP requests of its own" },
+    { crate = "curl", reason = "the VMM makes no HTTP requests of its own" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

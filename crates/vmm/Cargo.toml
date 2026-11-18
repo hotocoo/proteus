@@ -1,0 +1,18 @@
+[package]
+name = "vmm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "emu"
+path = "src/main.rs"
+
+[dependencies]
+arch.workspace = true
+devices.workspace = true
+getrandom.workspace = true
+hv.workspace = true
+lexopt.workspace = true
+log.workspace = true
+vm-memory.workspace = true
