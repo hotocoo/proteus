@@ -16,8 +16,24 @@ pub const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 /// These scenarios finish in milliseconds; anything near this long is a guest that never came back.
 pub const DEADLINE: Duration = Duration::from_secs(20);
 
+/// Hosted CI runners are themselves virtual machines without nested virtualization, so they set this
+/// to say that no hypervisor is expected there. Everywhere else the tests must run.
+const SKIP_ENV: &str = "EMU_SKIP_HV_TESTS";
+
+/// False (after saying so) when the environment declares that this machine has no usable hypervisor.
+pub fn hypervisor_expected() -> bool {
+    let expected = std::env::var_os(SKIP_ENV).is_none();
+    if !expected {
+        eprintln!("skipped: {SKIP_ENV} is set");
+    }
+    expected
+}
+
 /// Runs `scenario` on its own thread so that a guest that hangs fails the test instead of stalling it.
 pub fn within_deadline(scenario: impl FnOnce() + Send + 'static) {
+    if !hypervisor_expected() {
+        return;
+    }
     let (done, finished) = mpsc::channel();
     std::thread::spawn(move || {
         scenario();

@@ -204,6 +204,9 @@ fn mmio_scenario() {
 
 #[test]
 fn second_vm_in_one_process_is_refused() {
+    if !common::hypervisor_expected() {
+        return;
+    }
     let _one_vm = ONE_VM.lock().unwrap();
     let vm = Host::create_vm(&VmConfig { gpa_bits: GPA_BITS }).unwrap();
     assert!(matches!(
@@ -217,6 +220,9 @@ fn second_vm_in_one_process_is_refused() {
 
 #[test]
 fn unaligned_mapping_is_refused() {
+    if !common::hypervisor_expected() {
+        return;
+    }
     let _one_vm = ONE_VM.lock().unwrap();
     let caps = Host::probe().unwrap();
     let vm = Host::create_vm(&VmConfig { gpa_bits: GPA_BITS }).unwrap();
