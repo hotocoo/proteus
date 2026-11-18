@@ -16,7 +16,7 @@ mod copy;
 pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod kvm;
-#[cfg(target_arch = "x86_64")]
+/// Plain register types, built on every host so x86_64 boot code can be tested anywhere.
 pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
