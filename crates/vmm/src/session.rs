@@ -64,7 +64,7 @@ pub struct Session {
     /// The host ends of the guest's devices, for whatever drives the guest from outside.
     pub controller: Arc<Controller>,
     /// The host's sound output. It opens when the guest first plays something.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(host_board)]
     pub speaker: crate::audio::Speaker,
     _ctl: Option<ctl::Server>,
     gamepad_forced: bool,
@@ -117,7 +117,7 @@ impl Session {
             controller.motion = Some(motion);
             controller.location = Some(Arc::default());
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(host_board)]
         let pads = match config.gamepad {
             GamepadMode::Never => None,
             GamepadMode::Auto if !config.window || config.display.is_none() => None,
@@ -127,12 +127,12 @@ impl Session {
         };
         // Whether a host pad is there is found out while the machine is being built; the guest
         // only gets the device if one is.
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(host_board)]
         let (pads, pad_found) = match pads {
             Some((pads, found)) => (Some(pads), Some(Mutex::new(Some(found)))),
             None => (None, None),
         };
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(not(host_board))]
         let pad_found = None;
         if config.gamepad == GamepadMode::Always || pad_found.is_some() {
             controller.gamepad = Some(InputHandle::default());
@@ -144,7 +144,7 @@ impl Session {
             .collect();
         controller.followers = ctl::Followers::start(&targets).map_err(VmmError::Thread)?;
         let controller = Arc::new(controller);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(host_board)]
         if let Some(pads) = pads {
             pads.forward_to(&controller);
         }
@@ -163,7 +163,7 @@ impl Session {
             gamepad_forced: config.gamepad == GamepadMode::Always,
             pad_found,
             pad_seen: std::sync::OnceLock::new(),
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(host_board)]
             speaker: crate::audio::Speaker::default(),
             _ctl: ctl,
         })

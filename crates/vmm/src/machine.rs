@@ -790,15 +790,11 @@ pub fn run_in(
     }
 
     if let Some(slot) = sound_slot {
-        #[cfg(target_os = "macos")]
         let sink: Box<dyn AudioSink> = if config.mute {
             Box::new(Silence::default())
         } else {
             Box::new(session.speaker.clone())
         };
-        // shortcut: no host sound output on Linux yet; the guest's sound card plays into silence.
-        #[cfg(not(target_os = "macos"))]
-        let sink: Box<dyn AudioSink> = Box::new(Silence::default());
         attach(slot, Box::new(Sound::new(sink)))?;
     }
     for (slot, mac) in spare_net_slots.iter().zip(SPARE_NIC_MACS) {

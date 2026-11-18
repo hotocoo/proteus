@@ -205,7 +205,16 @@ impl App {
         } else {
             CursorGrabMode::None
         };
-        match shown.window.set_cursor_grab(mode) {
+        // X11 cannot lock the pointer in place, only keep it inside the window; that does too,
+        // since the key map reads the mouse's raw movement, not where the pointer is.
+        let grabbed = shown
+            .window
+            .set_cursor_grab(mode)
+            .or_else(|err| match mode {
+                CursorGrabMode::Locked => shown.window.set_cursor_grab(CursorGrabMode::Confined),
+                _ => Err(err),
+            });
+        match grabbed {
             Ok(()) => {
                 shown.window.set_cursor_visible(!wanted);
                 self.grabbed = wanted;

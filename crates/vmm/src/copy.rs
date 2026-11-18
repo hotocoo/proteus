@@ -1,9 +1,6 @@
 //! Every message the `emu` binary can show. Code refers to these by name.
 // On a host that has no hypervisor backend yet, the machine is not built and its messages go unused.
-#![cfg_attr(
-    not(all(target_os = "macos", target_arch = "aarch64")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(host_board), allow(dead_code))]
 
 use std::fmt::Display;
 use std::path::Path;
@@ -149,7 +146,7 @@ pub fn vcpu_stopped(index: u32, err: &dyn Display) -> String {
     format!("vCPU {index} stopped: {err}")
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(host_board))]
 pub const HOST_UNSUPPORTED: &str = "this build has no hypervisor backend for this host";
 pub const BOOTCONFIG_NEEDS_INITRD: &str =
     "--bootconfig needs --initrd, because the kernel reads it from the end of the ramdisk";

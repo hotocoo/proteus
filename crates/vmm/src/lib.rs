@@ -7,14 +7,14 @@ use std::time::Instant;
 
 pub mod adb;
 mod android;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(host_board)]
 pub mod audio;
 pub mod config;
 pub mod console;
 mod copy;
 pub mod ctl;
 pub mod frames;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(host_board)]
 pub mod gamepad;
 pub mod input;
 pub mod install;
@@ -22,15 +22,12 @@ pub mod instance;
 pub mod keymap;
 pub mod location;
 mod logger;
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64")
-))]
+#[cfg(host_board)]
 pub mod machine;
 pub mod profiles;
 pub mod sensors;
 pub mod session;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(host_board)]
 pub mod window;
 
 /// Exit status for a command line the program could not understand.
@@ -84,7 +81,7 @@ impl From<devices::bus::BusError> for VmmError {
 }
 
 /// Runs the machine, with a window if the configuration asks for one, until it stops for good.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(host_board)]
 fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
     use window::{Notice, WindowLoop};
 
@@ -143,21 +140,8 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
     })
 }
 
-/// Runs the machine without a window, which this host does not have yet.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
-    if config.keymap.is_some() || config.keymap_dir.is_some() {
-        return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
-    }
-    let session = session::Session::new(config)?;
-    boot_loop(config, &session, started)
-}
-
 /// Boots the machine, and boots it again each time the guest asks to restart.
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64")
-))]
+#[cfg(host_board)]
 fn boot_loop(
     config: &config::Config,
     session: &session::Session,
@@ -204,10 +188,7 @@ fn boot_loop(
     }
 }
 
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64")
-)))]
+#[cfg(not(host_board))]
 fn run(_config: &config::Config, _started: Instant) -> Result<(), VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }

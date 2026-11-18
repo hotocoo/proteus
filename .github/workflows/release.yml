@@ -60,8 +60,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install toolchain and the sound and device libraries
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev libudev-dev >/dev/null
       - name: Test
         run: cargo test --workspace --locked
       - name: Build

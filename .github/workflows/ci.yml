@@ -52,8 +52,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install toolchain and the sound and device libraries
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev libudev-dev >/dev/null
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
@@ -67,8 +69,10 @@ jobs:
       EMU_SKIP_HV_TESTS: ""
     steps:
       - uses: actions/checkout@v4
-      - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install toolchain and the sound and device libraries
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          sudo apt-get update -qq && sudo apt-get install -y -qq libasound2-dev libudev-dev >/dev/null
       - name: Open /dev/kvm to this user
         run: sudo chmod 666 /dev/kvm
       - name: Hypervisor tests
@@ -107,7 +111,8 @@ jobs:
       - name: Install toolchain and adb
         run: |
           rustup show active-toolchain || rustup toolchain install
-          sudo apt-get update -qq && sudo apt-get install -y -qq android-tools-adb >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb libasound2-dev libudev-dev >/dev/null
       - name: Open /dev/kvm to this user
         run: sudo chmod 666 /dev/kvm
       - name: Build emu

@@ -8,10 +8,7 @@
 //!   on x86_64 a `vmlinux` or bzImage with virtio-mmio command-line devices and 8250 built in.
 //! - `EMU_TEST_BOOTCONFIG_KERNEL`: an uncompressed ARM64 `Image` built with `CONFIG_BOOT_CONFIG`,
 //!   such as a stock Android GKI kernel. It needs no virtio support.
-#![cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64")
-))]
+#![cfg(host_board)]
 
 use std::fs::File;
 use std::io::{self, Read, Write};

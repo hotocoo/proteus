@@ -27,7 +27,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several instances at once, with one able to drive the others.
 
 Not there yet: GPU acceleration, a GUI,
-Android, a window and sound on Linux hosts, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
+Android checked on Linux hosts, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
 ## Run Android
@@ -207,7 +207,9 @@ Honest list, most important first:
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed from files (drop them on the window, or `emu ctl ... install`).
 - **Linux and Windows hosts.** On x86_64 Linux, `emu` boots a Linux kernel on KVM (checked in CI
-  with two CPUs, disks and the network), headless, with no sound. Android does not run there yet:
+  with two CPUs, disks and the network). The window (X11 or Wayland), sound (ALSA) and gamepads
+  are built there too but have not been tried on a Linux desktop; building needs `libasound2-dev`
+  and `libudev-dev`. Android does not run there yet:
   that needs the x86_64 Android image, a window and a display that Linux has not got yet. The
   test kernel must find its hardware through the MP table and `virtio_mmio.device=` on its command
   line; the board has no ACPI. There is no Windows backend.
