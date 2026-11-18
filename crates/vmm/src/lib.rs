@@ -206,7 +206,8 @@ fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Conf
             let mut check: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
             check.extend(["--data-dir".into(), "x".into()]);
             config::parse(check).map_err(|err| err.to_string())?;
-            instance::create(&root, &name, &args).map_err(failed)?;
+            let cwd = std::env::current_dir().map_err(failed)?;
+            instance::create(&root, &name, &args, &cwd).map_err(failed)?;
         }
         InstanceCommand::Start { name, extra } => {
             let args = instance::start_args(&root, &name, &extra).map_err(failed)?;

@@ -6,9 +6,11 @@
 
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use gilrs::{Axis, Button, EventType, Gilrs};
 
+use crate::config::GAMEPAD_SETTLE;
 use crate::copy;
 use crate::ctl::{Command, Controller};
 use crate::input::{self, PadControl};
@@ -136,6 +138,14 @@ impl HostPads {
                         return;
                     }
                 };
+                // Pads already plugged in are announced as connection events from another
+                // thread, a moment after start, so they are waited for before counting.
+                let settled = Instant::now() + GAMEPAD_SETTLE;
+                while let Some(left) = settled.checked_duration_since(Instant::now()) {
+                    if pads.next_event_blocking(Some(left)).is_none() {
+                        break;
+                    }
+                }
                 let _ = found.send(pads.gamepads().next().is_some());
                 let Ok(controller) = target.recv() else {
                     return;

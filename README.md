@@ -197,7 +197,11 @@ Honest list, most important first:
 
 - **GPU acceleration.** Android draws with the guest's CPU. Games need the host's GPU; that work
   (gfxstream over virtio-gpu) has not started.
-- **More game controls.** Key maps are written by hand. All host gamepads drive the guest's one gamepad, so two-player games on one
+- **More game controls.** Key maps are written by hand.
+- **Not yet tried for real:** a physical gamepad plugged in at start (the guest pad was checked
+  with `--gamepad` and the `pad` command), dropping a file on the window (the same install was
+  checked through `emu ctl ... install`), and a split set of several APKs of one app (one-APK
+  sessions and refused mixed sets were checked). All host gamepads drive the guest's one gamepad, so two-player games on one
   machine do not work.
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of

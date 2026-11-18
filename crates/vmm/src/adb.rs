@@ -11,6 +11,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::time::Duration;
 
 use crate::config::{ADB_CHUNK, ADB_CONNECT_TIMEOUT, ADB_IDLE_TIMEOUT};
 use crate::copy;
@@ -164,12 +165,23 @@ pub fn exec(
     input: Option<Input<'_>>,
     output: &mut dyn Write,
 ) -> io::Result<()> {
+    exec_within(port, command, input, output, ADB_IDLE_TIMEOUT)
+}
+
+/// As `exec`, giving up if the guest is silent for `idle`.
+fn exec_within(
+    port: u16,
+    command: &str,
+    input: Option<Input<'_>>,
+    output: &mut dyn Write,
+    idle: Duration,
+) -> io::Result<()> {
     if port == 0 {
         return Err(io::Error::new(io::ErrorKind::NotConnected, copy::ADB_NONE));
     }
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect_timeout(&address, ADB_CONNECT_TIMEOUT)?;
-    stream.set_read_timeout(Some(ADB_IDLE_TIMEOUT))?;
+    stream.set_read_timeout(Some(idle))?;
     stream.set_nodelay(true)?;
     let ran = exec_on(&mut stream, command, input, output);
     // The forward accepts at once and only then reaches the guest, so a guest whose adbd is not up
@@ -184,8 +196,13 @@ pub fn exec(
 
 /// Runs `command` in the guest and returns what it printed, as text.
 pub fn output(port: u16, command: &str) -> io::Result<String> {
+    output_within(port, command, ADB_IDLE_TIMEOUT)
+}
+
+/// As `output`, giving up if the guest is silent for `idle`.
+pub fn output_within(port: u16, command: &str, idle: Duration) -> io::Result<String> {
     let mut printed = Vec::new();
-    exec(port, command, None, &mut printed)?;
+    exec_within(port, command, None, &mut printed, idle)?;
     Ok(String::from_utf8_lossy(&printed).into_owned())
 }
 

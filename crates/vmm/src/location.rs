@@ -180,19 +180,33 @@ impl Plan {
 
 /// Reads the points of a GPX file: its track points, route points or waypoints, in order.
 pub fn read_gpx(text: &str) -> Result<Vec<Fix>, String> {
-    let attribute = |tag: &str, name: &str| -> Option<f64> {
-        let at = tag.find(&format!(" {name}="))? + name.len() + 2;
-        let quote = tag[at..].chars().next()?;
-        let rest = &tag[at + 1..];
-        rest[..rest.find(quote)?].trim().parse().ok()
-    };
+    // A file can hold a track and waypoints both; the track is the route, so the kinds of point
+    // are tried in order and the first one present is used.
+    for element in GPX_POINTS {
+        let points = gpx_points(text, element)?;
+        if !points.is_empty() {
+            return Ok(points);
+        }
+    }
+    Err(copy::GPX_EMPTY.to_owned())
+}
+
+/// The value of attribute `name` in the text of a tag, if it is a number in quotes.
+fn gpx_attribute(tag: &str, name: &str) -> Option<f64> {
+    let at = tag.find(&format!(" {name}="))? + name.len() + 2;
+    let quote = tag[at..]
+        .chars()
+        .next()
+        .filter(|quote| *quote == '"' || *quote == '\'')?;
+    let rest = &tag[at + quote.len_utf8()..];
+    rest[..rest.find(quote)?].trim().parse().ok()
+}
+
+/// Every point written as `element` in a GPX file, in order.
+fn gpx_points(text: &str, element: &str) -> Result<Vec<Fix>, String> {
     let mut points = Vec::new();
     let mut rest = text;
-    while let Some((at, element)) = GPX_POINTS
-        .iter()
-        .filter_map(|element| Some((rest.find(element)?, *element)))
-        .min()
-    {
+    while let Some(at) = rest.find(element) {
         let after = &rest[at + element.len()..];
         let tag_end = after.find('>').ok_or(copy::GPX_BROKEN)?;
         let tag = &after[..tag_end];
@@ -208,15 +222,12 @@ pub fn read_gpx(text: &str) -> Result<Vec<Fix>, String> {
             ele.split_once("</ele>")
                 .and_then(|(value, _)| value.trim().parse().ok())
         });
-        let latitude = attribute(tag, "lat").ok_or(copy::GPX_BROKEN)?;
-        let longitude = attribute(tag, "lon").ok_or(copy::GPX_BROKEN)?;
+        let latitude = gpx_attribute(tag, "lat").ok_or(copy::GPX_BROKEN)?;
+        let longitude = gpx_attribute(tag, "lon").ok_or(copy::GPX_BROKEN)?;
         let fix =
             Fix::new(latitude, longitude, elevation.unwrap_or(0.0)).ok_or(copy::GPX_BROKEN)?;
         points.push(fix);
         rest = &after[tag_end..];
-    }
-    if points.is_empty() {
-        return Err(copy::GPX_EMPTY.to_owned());
     }
     Ok(points)
 }
@@ -448,6 +459,19 @@ mod tests {
         assert_eq!((points[0].latitude, points[0].altitude), (3.139, 60.0));
         assert_eq!((points[1].longitude, points[1].altitude), (101.687, 0.0));
         assert_eq!(read_gpx("<gpx></gpx>"), Err(copy::GPX_EMPTY.to_owned()));
+        // Waypoints written before a track are not part of its route.
+        let mixed = r#"<wpt lat="9" lon="9"/><trk><trkpt lat="1" lon="2"/></trk>"#;
+        assert_eq!(read_gpx(mixed).unwrap().len(), 1);
+        assert_eq!(read_gpx(mixed).unwrap()[0].latitude, 1.0);
+        // Characters that are not plain quotes are refused, not a crash.
+        assert_eq!(
+            read_gpx("<trkpt lat=\u{201c}1\u{201d} lon=\u{201c}2\u{201d}>"),
+            Err(copy::GPX_BROKEN.to_owned())
+        );
+        assert_eq!(
+            read_gpx("<trkpt lat=\u{e9}"),
+            Err(copy::GPX_BROKEN.to_owned())
+        );
         assert_eq!(
             read_gpx(r#"<trkpt lat="x" lon="1">"#),
             Err(copy::GPX_BROKEN.to_owned())

@@ -21,6 +21,58 @@ const SOCKET_FILE: &str = "ctl.sock";
 /// Options an instance sets for itself; they cannot be given when it is created.
 const OWN_OPTIONS: [&str; 2] = ["--data-dir", "--ctl"];
 const YES: &str = "y";
+/// Options whose value is a file or folder. They are made absolute when an instance is created, so
+/// that it starts the same from any folder.
+const PATH_OPTIONS: [&str; 11] = [
+    "--kernel",
+    "--initrd",
+    "--android",
+    "--disk",
+    "--ro-disk",
+    "--keymap",
+    "--keymap-dir",
+    "--frame-dump",
+    "--logcat",
+    "--blocklist",
+    "--allowlist",
+];
+/// `--sync` names an instance or a socket; only a socket that exists is a path.
+const SYNC_OPTION: &str = "--sync";
+
+/// `args` with every path-valued option's relative value made relative to `cwd` instead.
+fn absolute(args: &[String], cwd: &Path) -> Vec<String> {
+    let fix = |value: &str| cwd.join(value).to_string_lossy().into_owned();
+    let mut out = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let (option, inline) = match arg.split_once('=') {
+            Some((option, value)) if option.starts_with("--") => (option, Some(value)),
+            _ => (arg.as_str(), None),
+        };
+        let is_path = |value: &str| {
+            let relative = Path::new(value).is_relative();
+            relative
+                && (PATH_OPTIONS.contains(&option)
+                    || (option == SYNC_OPTION && cwd.join(value).exists()))
+        };
+        match inline {
+            Some(value) if is_path(value) => out.push(format!("{option}={}", fix(value))),
+            Some(_) => out.push(arg.clone()),
+            None => {
+                out.push(arg.clone());
+                let takes_path = PATH_OPTIONS.contains(&option) || option == SYNC_OPTION;
+                if let Some(value) = takes_path.then(|| iter.next()).flatten() {
+                    out.push(if is_path(value) {
+                        fix(value)
+                    } else {
+                        value.clone()
+                    });
+                }
+            }
+        }
+    }
+    out
+}
 
 /// The folder all instances live in.
 pub fn root() -> io::Result<PathBuf> {
@@ -75,9 +127,10 @@ fn running(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
-/// Makes a new instance that starts with `args`.
-pub fn create(root: &Path, name: &str, args: &[String]) -> io::Result<()> {
+/// Makes a new instance that starts with `args`, whose relative paths are relative to `cwd`.
+pub fn create(root: &Path, name: &str, args: &[String], cwd: &Path) -> io::Result<()> {
     let dir = folder(root, name)?;
+    let args = &absolute(args, cwd);
     if args.iter().any(|arg| OWN_OPTIONS.contains(&arg.as_str())) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -198,18 +251,20 @@ mod tests {
             "--android".to_owned(),
             "a b".to_owned(),
         ];
-        create(&root, "farm-1", &args).unwrap();
+        create(&root, "farm-1", &args, Path::new("/")).unwrap();
         assert_eq!(
-            create(&root, "farm-1", &args).unwrap_err().to_string(),
+            create(&root, "farm-1", &args, Path::new("/"))
+                .unwrap_err()
+                .to_string(),
             copy::INSTANCE_EXISTS
         );
         let started = start_args(&root, "farm-1", &["--headless".into()]).unwrap();
         let dir = root.join("farm-1");
         let expected: Vec<OsString> = vec![
             "--kernel".into(),
-            "k".into(),
+            "/k".into(),
             "--android".into(),
-            "a b".into(),
+            "/a b".into(),
             "--data-dir".into(),
             dir.join("data").into(),
             "--ctl".into(),
@@ -222,11 +277,44 @@ mod tests {
     }
 
     #[test]
+    fn relative_paths_are_made_absolute_and_nothing_else_is_touched() {
+        let words = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let cwd = Path::new("/home/me");
+        let given = words(&[
+            "--kernel",
+            "kernel-arm64",
+            "--android=img",
+            "--ram-mib",
+            "2048",
+            "--logcat",
+            "/abs/log.txt",
+            "--sync",
+            "farm",
+            "--headless",
+        ]);
+        let expected = words(&[
+            "--kernel",
+            "/home/me/kernel-arm64",
+            "--android=/home/me/img",
+            "--ram-mib",
+            "2048",
+            "--logcat",
+            "/abs/log.txt",
+            "--sync",
+            "farm",
+            "--headless",
+        ]);
+        assert_eq!(absolute(&given, cwd), expected);
+    }
+
+    #[test]
     fn names_and_options_that_would_go_wrong_are_refused() {
         let root = scratch("names_and_options_th");
         let refused = |name: &str, args: &[&str]| {
             let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-            create(&root, name, &args).unwrap_err().to_string()
+            create(&root, name, &args, Path::new("/"))
+                .unwrap_err()
+                .to_string()
         };
         assert_eq!(refused("../x", &[]), copy::INSTANCE_BAD_NAME);
         assert_eq!(refused("", &[]), copy::INSTANCE_BAD_NAME);
@@ -239,7 +327,8 @@ mod tests {
     #[test]
     fn removing_asks_first_and_only_yes_deletes() {
         let root = scratch("removing_asks_first_");
-        create(&root, "a", &["--kernel".to_owned(), "k".to_owned()]).unwrap();
+        let args = ["--kernel".to_owned(), "k".to_owned()];
+        create(&root, "a", &args, Path::new("/")).unwrap();
         let mut asked = Vec::new();
         assert!(!remove(&root, "a", false, &mut asked, &mut &b"\n"[..]).unwrap());
         assert_eq!(

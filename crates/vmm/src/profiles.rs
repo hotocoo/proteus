@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::thread::JoinHandle;
 
 use crate::adb;
-use crate::config::FOREGROUND_POLL;
+use crate::config::{FOREGROUND_POLL, FOREGROUND_TIMEOUT};
 use crate::copy;
 
 /// The guest command that prints the app in front, in a line like
@@ -59,7 +59,8 @@ pub fn watch(
             while !done.load(Ordering::SeqCst) {
                 let port = adb_port.load(Ordering::SeqCst);
                 // Until Android is up there is no answer; that is not worth reporting.
-                if let Ok(printed) = adb::output(port, FOREGROUND_COMMAND)
+                if let Ok(printed) =
+                    adb::output_within(port, FOREGROUND_COMMAND, FOREGROUND_TIMEOUT)
                     && let Some(package) = foreground_package(&printed)
                     && package != last
                 {
