@@ -170,8 +170,10 @@ const BOOTCONFIG: &[(&str, &str)] = &[
     ("androidboot.cpuvulkan.version", "4202496"),
     ("androidboot.opengles.version", "196609"),
     ("androidboot.lcd_density", "320"),
-    // The network card appears to Android as a Wi-Fi network that is always connected.
-    ("androidboot.wifi_impl", "virt_wifi"),
+    // The network card is used as it is, as wired Ethernet, which Android brings up by itself.
+    // (The image can also wrap it as a Wi-Fi network, "virt_wifi", but then Wi-Fi has to be
+    // switched on and joined by hand before anything can reach the guest.)
+    ("androidboot.wifi_impl", "none"),
     ("androidboot.wifi_mac_prefix", "5554"),
     ("androidboot.setupwizard_mode", "DISABLED"),
     ("androidboot.enable_bootanimation", "1"),

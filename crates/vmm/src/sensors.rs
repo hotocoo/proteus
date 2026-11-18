@@ -7,14 +7,14 @@
 //! payload length, followed by the payload, which is text.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use devices::virtio::console::ConsoleHandle;
 
 use crate::config::{
-    ROTATION_SPEED, SENSOR_INTERVAL, SHAKE_ACCELERATION, SHAKE_DURATION, SHAKE_HZ,
+    ROTATION_SPEED, SENSOR_INTERVAL, SENSOR_KEEPALIVE, SHAKE_ACCELERATION, SHAKE_DURATION, SHAKE_HZ,
 };
 use crate::copy;
 
@@ -31,8 +31,6 @@ const UPDATE_HAL: u32 = 2;
 /// Requests are short commands; a longer length means the stream is not what it should be.
 const MAX_PAYLOAD: usize = 256;
 const LIST_SENSORS: &[u8] = b"list-sensors";
-/// A request to switch one sensor on or off: this, the sensor's name, a colon, then `1` or `0`.
-const SET_SENSOR: &str = "set:";
 const END_OF_MESSAGE: char = '\n';
 
 // The image's numbers for the sensors this machine has; the answer to "list" has one bit for each.
@@ -53,12 +51,8 @@ const SENSORS: u32 = 1 << ACCELERATION
     | 1 << PRESSURE
     | 1 << HUMIDITY;
 
-/// The sensors whose readings change with how the device is held, and their names in messages.
-const MOVING: [(u32, &str); 3] = [
-    (ACCELERATION, "acceleration"),
-    (GYROSCOPE, "gyroscope"),
-    (MAGNETIC, "magnetic"),
-];
+/// The sensors whose readings change with how the device is held, by their names in messages.
+const MOVING: [&str; 3] = ["acceleration", "gyroscope", "magnetic"];
 /// Standard gravity, in metres per second squared.
 const GRAVITY: f64 = 9.806_65;
 /// The Earth's magnetic field in the device's frame when it is held upright, in microtesla.
@@ -132,8 +126,9 @@ struct Pose {
 /// How the device is held and moved, and which sensors the guest has switched on.
 pub struct Motion {
     pose: Mutex<Pose>,
-    /// One bit per sensor the guest wants readings from.
-    enabled: AtomicU32,
+    /// Whether the guest's sensor service has asked which sensors there are. Before that nothing
+    /// is listening on its end.
+    listening: AtomicBool,
     /// The running machine's terminals, once it has them.
     ports: Mutex<Option<ConsoleHandle>>,
 }
@@ -146,7 +141,7 @@ impl Default for Motion {
                 current: [0.0; 3],
                 shaking_since: None,
             }),
-            enabled: AtomicU32::new(0),
+            listening: AtomicBool::new(false),
             ports: Mutex::new(None),
         }
     }
@@ -169,18 +164,10 @@ impl Motion {
     }
 
     /// Sends readings to these terminals from now on. A machine calls this when it starts; its
-    /// guest has not switched any sensor on yet.
+    /// guest's sensor service is not listening yet.
     pub fn connect(&self, ports: ConsoleHandle) {
-        self.enabled.store(0, Ordering::Relaxed);
+        self.listening.store(false, Ordering::Relaxed);
         *self.ports.lock().unwrap_or_else(PoisonError::into_inner) = Some(ports);
-    }
-
-    fn set_enabled(&self, sensor: u32, on: bool) {
-        if on {
-            self.enabled.fetch_or(1 << sensor, Ordering::Relaxed);
-        } else {
-            self.enabled.fetch_and(!(1 << sensor), Ordering::Relaxed);
-        }
     }
 
     /// Moves the device for `step` of time and returns the readings of the moving sensors:
@@ -213,34 +200,40 @@ impl Motion {
         ]
     }
 
-    /// The messages for one step: a reading for each moving sensor the guest has switched on.
-    fn readings(&self, step: Duration, now: Instant) -> Vec<u8> {
-        let enabled = self.enabled.load(Ordering::Relaxed);
-        let values = self.advance(step, now);
-        let wanted = MOVING.iter().zip(values);
-        wanted
-            .filter(|((sensor, _), _)| enabled & (1 << sensor) != 0)
-            .flat_map(|((_, name), [x, y, z])| {
-                message(&format!("{name}:{x}:{y}:{z}{END_OF_MESSAGE}"))
-            })
+    /// The messages that carry these readings to the guest, one per moving sensor.
+    fn messages(values: &[Vector; 3]) -> Vec<u8> {
+        let named = MOVING.iter().zip(values);
+        named
+            .flat_map(|(name, [x, y, z])| message(&format!("{name}:{x}:{y}:{z}{END_OF_MESSAGE}")))
             .collect()
     }
 }
 
-/// Sends the guest a reading of every sensor it has switched on, every `SENSOR_INTERVAL`, for as
-/// long as `motion` exists.
+/// Keeps the guest's sensor service up to date for as long as `motion` exists: every
+/// `SENSOR_INTERVAL` while the readings change, and every `SENSOR_KEEPALIVE` while they do not. The
+/// service repeats the last readings to apps at whatever rate they ask for.
 pub fn spawn_readings(motion: &Arc<Motion>) -> std::io::Result<()> {
     let motion = Arc::downgrade(motion);
     let feed = move || {
+        let mut sent: Option<([Vector; 3], Instant)> = None;
         loop {
             std::thread::sleep(SENSOR_INTERVAL);
             let Some(motion) = motion.upgrade() else {
                 break;
             };
-            let readings = motion.readings(SENSOR_INTERVAL, Instant::now());
+            let now = Instant::now();
+            let values = motion.advance(SENSOR_INTERVAL, now);
+            if !motion.listening.load(Ordering::Relaxed) {
+                sent = None;
+                continue;
+            }
+            let stale = sent.is_none_or(|(last, at)| {
+                last != values || now.saturating_duration_since(at) >= SENSOR_KEEPALIVE
+            });
             let ports = motion.ports.lock().unwrap_or_else(PoisonError::into_inner);
-            if let (false, Some(ports)) = (readings.is_empty(), ports.as_ref()) {
-                ports.send(DATA_PORT, &readings);
+            if let (true, Some(ports)) = (stale, ports.as_ref()) {
+                ports.send(DATA_PORT, &Motion::messages(&values));
+                sent = Some((values, now));
             }
         }
     };
@@ -295,16 +288,6 @@ impl Requests {
     }
 }
 
-/// The sensor a "switch on" or "switch off" request names, if it is one of the moving ones.
-fn switched(request: &[u8]) -> Option<(u32, bool)> {
-    let text = std::str::from_utf8(request).ok()?;
-    let (name, state) = text.strip_prefix(SET_SENSOR)?.rsplit_once(':')?;
-    let (sensor, _) = MOVING.iter().find(|(_, known)| *known == name)?;
-    // The state may be followed by a line end or a terminator.
-    let on = state.trim_end_matches(|c: char| !c.is_ascii_digit()) != "0";
-    Some((*sensor, on))
-}
-
 impl Write for Requests {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.partial.extend_from_slice(bytes);
@@ -313,13 +296,12 @@ impl Write for Requests {
                 "{}",
                 copy::sensor_request(&String::from_utf8_lossy(&request))
             );
+            // Everything else (a reporting rate, the time) needs no answer and changes nothing here.
             if request.starts_with(LIST_SENSORS) {
                 let answer = message(&format!("{SENSORS}{END_OF_MESSAGE}"));
                 self.answers.send(CONTROL_PORT, &answer);
-            } else if let Some((sensor, on)) = switched(&request) {
-                self.motion.set_enabled(sensor, on);
+                self.motion.listening.store(true, Ordering::Relaxed);
             }
-            // Anything else (a reporting rate, the time) needs no answer and changes nothing here.
         }
         Ok(bytes.len())
     }
@@ -410,17 +392,21 @@ mod tests {
     }
 
     #[test]
-    fn readings_are_sent_only_for_sensors_the_guest_switched_on() {
+    fn readings_travel_as_one_named_message_per_moving_sensor() {
+        let values = [[0.0, GRAVITY, 0.0], [0.0; 3], MAGNETIC_FIELD];
+        let mut expected = message(&format!("acceleration:0:{GRAVITY}:0\n"));
+        expected.extend(message("gyroscope:0:0:0\n"));
+        expected.extend(message("magnetic:0:5.9:-48.4\n"));
+        assert_eq!(Motion::messages(&values), expected);
+    }
+
+    #[test]
+    fn the_service_counts_as_listening_once_it_has_asked_for_the_sensor_list() {
         let (_console, motion, mut requests) = requests(DATA_PORT + 1);
-        assert!(motion.readings(STEP, Instant::now()).is_empty());
-        requests.write_all(&request(b"set:acceleration:1")).unwrap();
-        requests.write_all(&request(b"set:light:1")).unwrap();
-        let expected = message(&format!("acceleration:0:{GRAVITY}:0\n"));
-        assert_eq!(motion.readings(STEP, Instant::now()), expected);
-        requests
-            .write_all(&request(b"set:acceleration:0\n"))
-            .unwrap();
-        assert!(motion.readings(STEP, Instant::now()).is_empty());
+        requests.write_all(&request(b"set-delay:66")).unwrap();
+        assert!(!motion.listening.load(Ordering::Relaxed));
+        requests.write_all(&request(LIST_SENSORS)).unwrap();
+        assert!(motion.listening.load(Ordering::Relaxed));
     }
 
     fn request(text: &[u8]) -> Vec<u8> {

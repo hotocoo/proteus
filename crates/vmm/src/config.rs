@@ -35,6 +35,12 @@ pub const RNG_SEED_LEN: usize = 64;
 pub const SERIAL_INPUT_RETRY: Duration = Duration::from_millis(1);
 /// The frame dump file is rewritten at most this often.
 pub const FRAME_DUMP_INTERVAL: Duration = Duration::from_secs(1);
+/// Hardware addresses of the network cards that have no cable (see the board's spare slots).
+/// Locally administered, and different from the real card's.
+pub const SPARE_NIC_MACS: [[u8; 6]; 2] = [
+    [0x52, 0x54, 0x00, 0x12, 0x34, 0x60],
+    [0x52, 0x54, 0x00, 0x12, 0x34, 0x61],
+];
 /// While the machine is stopping, how often vCPUs that are still running are told again.
 pub const STOP_KICK_INTERVAL: Duration = Duration::from_millis(5);
 /// How long `tap` keeps the finger down, and a key press keeps the key down.
@@ -43,8 +49,10 @@ pub const TAP_HOLD: Duration = Duration::from_millis(50);
 pub const SWIPE_STEP: Duration = Duration::from_millis(10);
 /// How long a swipe takes when the command does not say.
 pub const DEFAULT_SWIPE: Duration = Duration::from_millis(300);
-/// How often the guest gets a reading from each motion sensor it has switched on.
+/// How often the motion sensors are read, and sent to the guest if their readings changed.
 pub const SENSOR_INTERVAL: Duration = Duration::from_millis(20);
+/// How often unchanged readings are sent again anyway.
+pub const SENSOR_KEEPALIVE: Duration = Duration::from_secs(1);
 /// How fast the device turns towards a new orientation, in degrees per second about each axis.
 pub const ROTATION_SPEED: f64 = 360.0;
 /// How long a shake lasts, how often it changes direction, and how hard it pushes (m/s²).

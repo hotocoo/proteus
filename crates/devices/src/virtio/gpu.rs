@@ -156,8 +156,10 @@ struct Display {
     mode: DisplayMode,
     sink: Option<Arc<dyn FrameSink>>,
     resources: HashMap<u32, Resource>,
-    /// The resource the guest attached to the one scanout.
-    scanout: Option<u32>,
+    /// The resource the guest attached to the one scanout, and the part of it that is shown.
+    scanout: Option<(u32, Rect)>,
+    /// The shown part's pixels, when it is not the whole resource. Kept to reuse its memory.
+    cropped: Vec<u8>,
 }
 
 impl Display {
@@ -205,12 +207,12 @@ impl Display {
                 self.resources
                     .remove(&id)
                     .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
-                if self.scanout == Some(id) {
+                if self.scanout.is_some_and(|(shown, _)| shown == id) {
                     self.scanout = None;
                 }
             }
             CMD_SET_SCANOUT => {
-                let _rect = body.rect()?;
+                let rect = body.rect()?;
                 let (scanout, id) = (body.u32()?, body.u32()?);
                 if scanout >= SCANOUTS {
                     return Err(RESP_ERR_INVALID_SCANOUT_ID);
@@ -219,8 +221,16 @@ impl Display {
                 self.scanout = match id {
                     0 => None,
                     id => {
-                        self.resource(id)?;
-                        Some(id)
+                        let resource = self.resource(id)?;
+                        // The shown part has to lie inside the resource and have some area.
+                        let right = rect.x.checked_add(rect.width);
+                        let bottom = rect.y.checked_add(rect.height);
+                        let inside = right.is_some_and(|right| right <= resource.width)
+                            && bottom.is_some_and(|bottom| bottom <= resource.height);
+                        if !inside || rect.width == 0 || rect.height == 0 {
+                            return Err(RESP_ERR_INVALID_PARAMETER);
+                        }
+                        Some((id, rect))
                     }
                 };
             }
@@ -275,17 +285,32 @@ impl Display {
             CMD_FLUSH => {
                 let _rect = body.rect()?;
                 let id = body.u32()?;
-                let shown = self.scanout == Some(id);
+                let shown = self.scanout.filter(|(shown, _)| *shown == id);
                 let resource = self
                     .resources
                     .get(&id)
                     .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
-                if let (true, Some(sink)) = (shown, &self.sink) {
+                if let (Some((_, rect)), Some(sink)) = (shown, &self.sink) {
+                    // A resource can be larger than what is shown of it (drivers round sizes up).
+                    let whole = rect.width == resource.width && rect.height == resource.height;
+                    let pixels = if whole {
+                        &resource.pixels
+                    } else {
+                        let stride = resource.width as usize * BYTES_PER_PIXEL;
+                        let left = rect.x as usize * BYTES_PER_PIXEL;
+                        let row_len = rect.width as usize * BYTES_PER_PIXEL;
+                        let rows = resource.pixels.chunks_exact(stride);
+                        self.cropped.clear();
+                        for row in rows.skip(rect.y as usize).take(rect.height as usize) {
+                            self.cropped.extend_from_slice(&row[left..left + row_len]);
+                        }
+                        &self.cropped
+                    };
                     sink.present(&Frame {
-                        width: resource.width,
-                        height: resource.height,
+                        width: rect.width,
+                        height: rect.height,
                         format: resource.format,
-                        pixels: &resource.pixels,
+                        pixels,
                     });
                 }
             }
@@ -486,6 +511,7 @@ impl VirtioDevice for Gpu {
             sink: self.sink.clone(),
             resources: HashMap::new(),
             scanout: None,
+            cropped: Vec::new(),
         };
         let thread = thread::Builder::new()
             .name(copy::GPU_WORKER_NAME.into())
@@ -591,6 +617,7 @@ mod tests {
             sink: sink.map(|sink| sink as Arc<dyn FrameSink>),
             resources: HashMap::new(),
             scanout: None,
+            cropped: Vec::new(),
         }
     }
 
@@ -736,8 +763,48 @@ mod tests {
         assert_eq!(run(&mut display, &mem, CMD_FLUSH, &flush), RESP_OK_NODATA);
         assert_eq!(
             *sink.0.lock().unwrap(),
-            [(WIDTH, HEIGHT, FORMAT_BGRX, image)]
+            [(WIDTH, HEIGHT, FORMAT_BGRX, image.clone())]
         );
+
+        // A scanout that shows only part of the resource: the middle two columns of the lower rows.
+        let part = [1, 1, 2, HEIGHT - 1];
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_SET_SCANOUT,
+                &words(&[part[0], part[1], part[2], part[3], 0, IMAGE])
+            ),
+            RESP_OK_NODATA
+        );
+        assert_eq!(run(&mut display, &mem, CMD_FLUSH, &flush), RESP_OK_NODATA);
+        let stride = WIDTH as usize * BYTES_PER_PIXEL;
+        let expected: Vec<u8> = image
+            .chunks_exact(stride)
+            .skip(1)
+            .flat_map(|row| row[BYTES_PER_PIXEL..3 * BYTES_PER_PIXEL].to_vec())
+            .collect();
+        assert_eq!(
+            sink.0.lock().unwrap().last().unwrap(),
+            &(2, HEIGHT - 1, FORMAT_BGRX, expected)
+        );
+
+        // A shown part that reaches outside the resource, or has no area, is refused.
+        for rect in [
+            [1, 0, WIDTH, HEIGHT],
+            [0, 0, WIDTH, HEIGHT + 1],
+            [0, 0, 0, HEIGHT],
+        ] {
+            assert_eq!(
+                run(
+                    &mut display,
+                    &mem,
+                    CMD_SET_SCANOUT,
+                    &words(&[rect[0], rect[1], rect[2], rect[3], 0, IMAGE])
+                ),
+                RESP_ERR_INVALID_PARAMETER
+            );
+        }
     }
 
     #[test]
@@ -907,12 +974,12 @@ mod tests {
             CMD_SET_SCANOUT,
             &words(&[0, 0, WIDTH, HEIGHT, 0, IMAGE]),
         );
-        assert_eq!(display.scanout, Some(IMAGE));
+        assert_eq!(display.scanout.map(|(id, _)| id), Some(IMAGE));
         assert_eq!(
             run(&mut display, &mem, CMD_UNREF, &words(&[IMAGE, 0])),
             RESP_OK_NODATA
         );
-        assert_eq!(display.scanout, None);
+        assert!(display.scanout.is_none());
 
         for id in 1..=MAX_RESOURCES as u32 {
             assert_eq!(

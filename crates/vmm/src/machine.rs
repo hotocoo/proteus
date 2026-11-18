@@ -36,7 +36,7 @@ use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 
 use crate::config::{
     BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_POLL,
-    SERIAL_INPUT_RETRY, STOP_KICK_INTERVAL,
+    SERIAL_INPUT_RETRY, SPARE_NIC_MACS, STOP_KICK_INTERVAL,
 };
 use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::input::{self, Touch};
@@ -537,12 +537,24 @@ pub fn run_in(
     };
     let console_slot = config.android.as_ref().map(|_| layout::VIRTIO_CONSOLE_SLOT);
     let sound_slot = config.sound.then_some(layout::VIRTIO_SOUND_SLOT);
-    let highest_slot = console_slot
-        .or(net_slot)
-        .or(sound_slot)
-        .or(display_slots.iter().copied().max())
-        .or(disk_slots.checked_sub(1));
-    let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
+    // An Android image expects its network card to be the third one; two cards with no cable
+    // come before it. They are only there with a real card to give a name to.
+    let spare_net_slots: &[u32] = match (&config.android, net_slot) {
+        (Some(_), Some(_)) => &layout::VIRTIO_SPARE_NET_SLOTS,
+        _ => &[],
+    };
+    // In slot order, which is the order the guest finds and numbers the devices in.
+    let mut virtio_slots: Vec<u32> = (0..disk_slots)
+        .chain(display_slots.iter().copied())
+        .chain(sound_slot)
+        .chain(console_slot)
+        .chain(spare_net_slots.iter().copied())
+        .chain(net_slot)
+        .collect();
+    virtio_slots.sort_unstable();
+    let highest_spi = virtio_slots
+        .last()
+        .map_or(layout::RTC_SPI, |slot| layout::virtio_spi(*slot));
     check_gic(&irqchip, highest_spi)?;
     let line = |spi: u32| -> Arc<dyn InterruptLine> {
         Arc::new(SpiLine {
@@ -619,6 +631,9 @@ pub fn run_in(
     if let Some(slot) = sound_slot {
         attach(slot, Box::new(Sound::new(Box::new(Silence::default()))))?;
     }
+    for (slot, mac) in spare_net_slots.iter().zip(SPARE_NIC_MACS) {
+        attach(*slot, Box::new(Net::unplugged(mac)))?;
+    }
     if let Some(options) = &config.net {
         let (network, mac) = network(options, resolver)?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
@@ -678,12 +693,6 @@ pub fn run_in(
     let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
     getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
     let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
-    let virtio_slots: Vec<u32> = (0..disk_slots)
-        .chain(display_slots.iter().copied())
-        .chain(sound_slot)
-        .chain(net_slot)
-        .chain(console_slot)
-        .collect();
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,
         vcpus: config.vcpus,

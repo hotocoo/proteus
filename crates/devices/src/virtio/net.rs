@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use virtio_bindings::virtio_ids::VIRTIO_ID_NET;
-use virtio_bindings::virtio_net::VIRTIO_NET_F_MAC;
+use virtio_bindings::virtio_net::{VIRTIO_NET_F_MAC, VIRTIO_NET_F_STATUS};
 use virtio_queue::{Queue, QueueT};
 use vm_memory::{Address, Bytes, GuestMemoryMmap};
 
@@ -137,14 +137,57 @@ pub trait NetBackend: Send {
     fn stop(&mut self);
 }
 
+/// A network card with no cable: what the guest sends is dropped, and nothing ever arrives.
+#[derive(Default)]
+pub struct Unplugged {
+    link: Option<NetLink>,
+    dropped: Vec<u8>,
+}
+
+impl NetBackend for Unplugged {
+    fn start(&mut self, link: NetLink) -> Result<(), DeviceError> {
+        self.link = Some(link);
+        Ok(())
+    }
+
+    fn notify(&mut self) {
+        if let Some(link) = &mut self.link {
+            // Taking the frames gives their buffers back, so the guest's send queue never fills up.
+            while link.next_from_guest(&mut self.dropped) {}
+            link.flush();
+        }
+    }
+
+    fn stop(&mut self) {
+        self.link = None;
+    }
+}
+
 pub struct Net<B: NetBackend> {
     backend: B,
     mac: [u8; MAC_LEN],
+    /// Whether the card reports a link. A card that does not say is taken to have one.
+    cable: bool,
 }
 
 impl<B: NetBackend> Net<B> {
     pub fn new(backend: B, mac: [u8; MAC_LEN]) -> Self {
-        Self { backend, mac }
+        Self {
+            backend,
+            mac,
+            cable: true,
+        }
+    }
+}
+
+impl Net<Unplugged> {
+    /// A card that tells the guest it has no link, so the guest does not try to use it.
+    pub fn unplugged(mac: [u8; MAC_LEN]) -> Self {
+        Self {
+            backend: Unplugged::default(),
+            mac,
+            cable: false,
+        }
     }
 }
 
@@ -158,11 +201,13 @@ impl<B: NetBackend> VirtioDevice for Net<B> {
     }
 
     fn features(&self) -> u64 {
-        1 << VIRTIO_NET_F_MAC
+        // The link status field is only offered by the card that has something to say in it.
+        1 << VIRTIO_NET_F_MAC | u64::from(!self.cable) << VIRTIO_NET_F_STATUS
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
-        // `struct virtio_net_config` starts with the MAC address; the fields after it are unused.
+        // `struct virtio_net_config` starts with the MAC address and the link status, which stays
+        // zero ("link down") on a card with no cable. The fields after them are unused.
         for (at, byte) in (offset..).zip(data.iter_mut()) {
             *byte = usize::try_from(at)
                 .ok()
@@ -437,6 +482,13 @@ mod tests {
         net.read_config(0, &mut config);
         assert_eq!(config, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0, 0]);
         assert_ne!(net.features() & 1 << VIRTIO_NET_F_MAC, 0);
+        assert_eq!(net.features() & 1 << VIRTIO_NET_F_STATUS, 0);
+        // A card with no cable offers the status field and reports no link in it.
+        let spare = Net::unplugged([2, 0, 0, 0, 0, 9]);
+        assert_ne!(spare.features() & 1 << VIRTIO_NET_F_STATUS, 0);
+        let mut config = [0xffu8; 8];
+        spare.read_config(0, &mut config);
+        assert_eq!(config, [2, 0, 0, 0, 0, 9, 0, 0]);
 
         let ctx = |queues| Activate {
             mem: rig.mem.clone(),
