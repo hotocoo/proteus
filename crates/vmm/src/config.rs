@@ -33,7 +33,12 @@ pub const BOOTCONFIG_ARG: &str = "bootconfig";
 pub const RNG_SEED_LEN: usize = 64;
 /// How long the serial input pump waits when the guest has not drained its receive FIFO.
 pub const SERIAL_INPUT_RETRY: Duration = Duration::from_millis(1);
-/// Read size of the serial input pump.
+/// How often the serial input pump checks whether its machine has stopped.
+pub const SERIAL_INPUT_POLL: Duration = Duration::from_millis(100);
+/// A guest that resets this soon after starting did not boot; this many in a row and the VMM gives up.
+pub const QUICK_RESET_WINDOW: Duration = Duration::from_secs(30);
+pub const MAX_QUICK_RESETS: u32 = 3;
+/// Read size of the console input reader.
 pub const SERIAL_INPUT_CHUNK: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

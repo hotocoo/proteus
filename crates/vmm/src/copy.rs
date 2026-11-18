@@ -118,6 +118,9 @@ pub const VCPU_PANICKED: &str = "a vCPU thread panicked";
 
 pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
+pub const CONSOLE_INPUT_THREAD: &str = "console-in";
+pub const REBOOTING: &str = "emu: guest asked to restart; booting again";
+pub const RESET_LOOP: &str = "the guest keeps resetting right after it starts; giving up";
 /// Prefix of the serial number each disk reports to the guest, followed by its slot.
 pub const DISK_ID_PREFIX: &str = "emu-disk-";
 /// Serial number the Android system disk reports to the guest.

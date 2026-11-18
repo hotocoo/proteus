@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use net::Resolver;
 use vmm::VmmError;
 use vmm::config::{Config, DiskConfig, NetOptions};
-use vmm::console::Console;
+use vmm::console::{Console, ConsoleInput};
 use vmm::machine::{self, Outcome, Stop};
 
 const KERNEL_ENV: &str = "EMU_TEST_KERNEL";
@@ -173,7 +173,7 @@ impl Session {
         let (typist, typed) = mpsc::channel();
         let console = Console {
             output: Box::new(TranscriptWriter(Arc::clone(&transcript))),
-            input: Some(Box::new(Typed(typed, Vec::new()))),
+            input: Some(ConsoleInput::from_reader(Typed(typed, Vec::new())).unwrap()),
         };
         let (finished, outcome) = mpsc::channel();
         thread::spawn(move || {

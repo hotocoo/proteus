@@ -1,20 +1,65 @@
 //! Host side of the debug serial console.
 
 use std::io::{self, Read, Write};
-use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::config::SERIAL_INPUT_CHUNK;
+use crate::copy;
+
+/// Console input that outlives one boot of the machine, so that a guest reboot keeps the keyboard.
+///
+/// One thread reads the source for as long as the process lives. Whichever machine is running takes
+/// bytes from it, and can stop taking them without losing any.
+#[derive(Clone)]
+pub struct ConsoleInput(Arc<Mutex<Receiver<Vec<u8>>>>);
+
+/// The input source reached its end; no more bytes will ever arrive.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InputEnded;
+
+impl ConsoleInput {
+    pub fn from_reader(mut source: impl Read + Send + 'static) -> io::Result<Self> {
+        let (bytes, queue) = mpsc::channel();
+        let pump = move || {
+            let mut chunk = [0u8; SERIAL_INPUT_CHUNK];
+            while let Ok(read @ 1..) = source.read(&mut chunk) {
+                if bytes.send(chunk[..read].to_vec()).is_err() {
+                    return;
+                }
+            }
+        };
+        thread::Builder::new()
+            .name(copy::CONSOLE_INPUT_THREAD.into())
+            .spawn(pump)?;
+        Ok(Self(Arc::new(Mutex::new(queue))))
+    }
+
+    /// The next bytes typed, or `None` if nothing arrived within `wait`.
+    pub fn next(&self, wait: Duration) -> Result<Option<Vec<u8>>, InputEnded> {
+        let queue = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match queue.recv_timeout(wait) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(InputEnded),
+        }
+    }
+}
 
 /// Where guest serial output goes and where its input comes from.
 pub struct Console {
     pub output: Box<dyn Write + Send>,
-    pub input: Option<Box<dyn Read + Send>>,
+    pub input: Option<ConsoleInput>,
 }
 
 impl Console {
-    pub fn stdio() -> Self {
+    /// This process's standard output, with input from `input` if there is any.
+    pub fn stdout(input: Option<ConsoleInput>) -> Self {
         Self {
             output: Box::new(io::stdout()),
-            input: Some(Box::new(io::stdin())),
+            input,
         }
     }
 }
@@ -91,6 +136,34 @@ mod tests {
         let found = seen.get().is_some();
         drop(watch);
         (out, found)
+    }
+
+    #[test]
+    fn input_is_delivered_in_order_then_reports_its_end() {
+        let input = ConsoleInput::from_reader(&b"hello"[..]).unwrap();
+        let wait = Duration::from_secs(5);
+        let mut seen = Vec::new();
+        loop {
+            match input.next(wait) {
+                Ok(Some(bytes)) => seen.extend(bytes),
+                Ok(None) => panic!("input stalled"),
+                Err(InputEnded) => break,
+            }
+        }
+        assert_eq!(seen, b"hello");
+        assert_eq!(input.next(Duration::ZERO), Err(InputEnded));
+    }
+
+    #[test]
+    fn waiting_for_input_times_out_without_ending_it() {
+        let (reader, mut writer) = io::pipe().unwrap();
+        let input = ConsoleInput::from_reader(reader).unwrap();
+        assert_eq!(input.next(Duration::from_millis(10)), Ok(None));
+        writer.write_all(b"x").unwrap();
+        assert_eq!(
+            input.clone().next(Duration::from_secs(5)),
+            Ok(Some(b"x".to_vec()))
+        );
     }
 
     #[test]

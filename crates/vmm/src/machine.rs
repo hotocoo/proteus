@@ -1,7 +1,7 @@
 //! Builds the ARM64 board on the host hypervisor and runs it until the guest powers off or resets.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,10 +31,10 @@ use net::{HostResolver, Network, Resolver};
 use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 
 use crate::config::{
-    BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_CHUNK,
+    BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_POLL,
     SERIAL_INPUT_RETRY,
 };
-use crate::console::{Console, MarkerWatch};
+use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::{VmmError, android, copy};
 
 type HostVm = <Host as HypervisorBackend>::Vm;
@@ -307,19 +307,26 @@ impl Machine {
     }
 }
 
-/// Copies host console input into the guest UART until the input ends.
+/// Copies host console input into the guest UART until the input ends or `stop` is set.
+/// Bytes are only taken from `input` when they can be handed on, so a stop loses none.
 fn spawn_input_pump<W>(
-    mut input: Box<dyn Read + Send>,
+    input: ConsoleInput,
     serial: Arc<Serial<W>>,
+    stop: Arc<AtomicBool>,
 ) -> Result<(), VmmError>
 where
     W: Write + Send + 'static,
 {
+    let stopping = move || stop.load(Ordering::SeqCst);
     let pump = move || {
-        let mut chunk = [0u8; SERIAL_INPUT_CHUNK];
-        while let Ok(read @ 1..) = input.read(&mut chunk) {
-            let mut pending = &chunk[..read];
-            while !pending.is_empty() {
+        while !stopping() {
+            let bytes = match input.next(SERIAL_INPUT_POLL) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => continue,
+                Err(_) => return,
+            };
+            let mut pending = bytes.as_slice();
+            while !pending.is_empty() && !stopping() {
                 let taken = serial.enqueue(pending);
                 pending = &pending[taken..];
                 if taken == 0 {
@@ -474,6 +481,8 @@ pub fn run_with(
         })
     };
 
+    // Set when this boot of the machine is over, so that its console pump lets go of the input.
+    let input_stop = Arc::new(AtomicBool::new(false));
     let mut bus = MmioBus::default();
     let (output, marker_seen) = MarkerWatch::new(console.output, config.boot_marker.as_deref());
     if config.serial {
@@ -484,7 +493,7 @@ pub fn run_with(
             Arc::clone(&serial) as Arc<dyn MmioDevice>,
         )?;
         if let Some(input) = console.input {
-            spawn_input_pump(input, serial)?;
+            spawn_input_pump(input, serial, Arc::clone(&input_stop))?;
         }
     }
     bus.insert(layout::RTC_BASE, layout::RTC_SIZE, Arc::new(Rtc::default()))?;
@@ -587,7 +596,9 @@ pub fn run_with(
     let fdt_addr = boot::load_fdt(&mem, &blob)?;
 
     let machine = Machine::new(vm, bus, config.vcpus);
-    let stop = machine.run(boot::primary_regs(entry, fdt_addr))?;
+    let stop = machine.run(boot::primary_regs(entry, fdt_addr));
+    input_stop.store(true, Ordering::SeqCst);
+    let stop = stop?;
     let boot_marker_after = marker_seen
         .get()
         .map(|seen| seen.saturating_duration_since(started));

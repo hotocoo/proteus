@@ -66,14 +66,43 @@ impl From<devices::bus::BusError> for VmmError {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
-    let outcome = machine::run(config, console::Console::stdio(), started)?;
-    if config.boot_marker.is_some() {
-        match outcome.boot_marker_after {
-            Some(elapsed) => eprintln!("{}", copy::boot_time(elapsed)),
-            None => eprintln!("{}", copy::BOOT_MARKER_NOT_SEEN),
+    use config::{MAX_QUICK_RESETS, QUICK_RESET_WINDOW};
+    use machine::Stop;
+
+    let input = config
+        .serial
+        .then(|| console::ConsoleInput::from_reader(std::io::stdin()))
+        .transpose();
+    let input = input.map_err(VmmError::Thread)?;
+    let mut quick_resets = 0;
+    let mut boot_started = started;
+    loop {
+        let outcome = machine::run(
+            config,
+            console::Console::stdout(input.clone()),
+            boot_started,
+        )?;
+        if boot_started == started && config.boot_marker.is_some() {
+            match outcome.boot_marker_after {
+                Some(elapsed) => eprintln!("{}", copy::boot_time(elapsed)),
+                None => eprintln!("{}", copy::BOOT_MARKER_NOT_SEEN),
+            }
         }
+        if outcome.stop == Stop::PowerOff {
+            return Ok(());
+        }
+        // A reset is a reboot request, unless the guest never got anywhere: then rebooting only loops.
+        quick_resets = if boot_started.elapsed() < QUICK_RESET_WINDOW {
+            quick_resets + 1
+        } else {
+            0
+        };
+        if quick_resets >= MAX_QUICK_RESETS {
+            return Err(VmmError::Config(copy::RESET_LOOP));
+        }
+        eprintln!("{}", copy::REBOOTING);
+        boot_started = Instant::now();
     }
-    Ok(())
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
