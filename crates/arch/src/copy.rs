@@ -62,5 +62,7 @@ pub const X86_NOT_A_KERNEL: &str = "not an x86_64 kernel (neither an ELF vmlinux
 pub const X86_NO_64_BIT_ENTRY: &str =
     "this bzImage has no 64-bit entry point (boot protocol 2.12 or later)";
 pub const X86_BAD_ELF: &str = "this ELF file is not a 64-bit kernel the loader can read";
+pub const X86_RAMDISK_TOO_LARGE: &str =
+    "the ramdisk does not fit below where the kernel accepts it";
 pub const X86_CMDLINE_TOO_LONG: &str = "the kernel command line is too long";
 pub const MPTABLE_TOO_MANY_CPUS: &str = "too many CPUs for the MP table (at most 32)";

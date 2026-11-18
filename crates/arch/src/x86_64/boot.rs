@@ -184,10 +184,14 @@ where
     })
 }
 
-/// Copies the ramdisk in as high as the kernel accepts, below `ram_end`, page-aligned.
-pub fn load_initrd<M, F>(
+pub use crate::ramdisk::RamdiskPart;
+
+/// Copies the ramdisk parts and the bootconfig trailer in, as high as the kernel accepts below
+/// `ram_end`, page-aligned. Returns where they landed.
+pub fn load_ramdisk<M, F>(
     mem: &M,
-    initrd: &mut F,
+    parts: &mut [RamdiskPart<'_, F>],
+    bootconfig: &[(String, String)],
     kernel: &Kernel,
     ram_end: u64,
 ) -> Result<Range<u64>, ArchError>
@@ -195,8 +199,7 @@ where
     M: GuestMemory,
     F: ReadVolatile + Seek,
 {
-    let len = initrd.seek(SeekFrom::End(0))?;
-    initrd.rewind()?;
+    let len = crate::ramdisk::total_len(parts, bootconfig)?;
     let header_max = kernel.setup_header.as_ref().and_then(|header| {
         let at = BP_INITRD_ADDR_MAX - BP_SETUP_SECTS;
         (header.len() >= at + 4).then(|| u64::from(le_u32(header, at)))
@@ -210,9 +213,35 @@ where
     let start = limit.checked_sub(len).map(|start| start & !(PAGE - 1));
     let start = start
         .filter(|start| *start >= HIMEM_START)
-        .ok_or(ArchError::Layout(copy::RAM_TOO_SMALL))?;
-    mem.read_exact_volatile_from(GuestAddress(start), initrd, len as usize)?;
-    Ok(start..start + len)
+        .ok_or(ArchError::Layout(copy::X86_RAMDISK_TOO_LARGE))?;
+    crate::ramdisk::write(
+        mem,
+        start,
+        limit - start,
+        parts,
+        bootconfig,
+        copy::X86_RAMDISK_TOO_LARGE,
+    )
+}
+
+/// As `load_ramdisk`, for a ramdisk that is one whole file.
+pub fn load_initrd<M, F>(
+    mem: &M,
+    initrd: &mut F,
+    bootconfig: &[(String, String)],
+    kernel: &Kernel,
+    ram_end: u64,
+) -> Result<Range<u64>, ArchError>
+where
+    M: GuestMemory,
+    F: ReadVolatile + Seek,
+{
+    let len = initrd.seek(SeekFrom::End(0))?;
+    let mut parts = [RamdiskPart::Stream {
+        stream: initrd,
+        range: 0..len,
+    }];
+    load_ramdisk(mem, &mut parts, bootconfig, kernel, ram_end)
 }
 
 /// RAM as the guest sees it: below the device hole, and above 4 GiB for what does not fit under it.
@@ -450,8 +479,22 @@ mod tests {
     fn boot_params_carry_the_memory_map_command_line_and_ramdisk() {
         let mem = memory();
         let kernel = load_kernel(&mem, &mut Cursor::new(bzimage(4, 0x020f, 1)), RAM).unwrap();
-        let initrd = load_initrd(&mem, &mut Cursor::new(vec![7u8; 5000]), &kernel, RAM).unwrap();
+        let initrd =
+            load_initrd(&mem, &mut Cursor::new(vec![7u8; 5000]), &[], &kernel, RAM).unwrap();
         assert_eq!(initrd.end - initrd.start, 5000);
+        let params = [("androidboot.hardware".to_owned(), "emu".to_owned())];
+        let with_config = load_initrd(
+            &mem,
+            &mut Cursor::new(vec![7u8; 5000]),
+            &params,
+            &kernel,
+            RAM,
+        )
+        .unwrap();
+        let mut magic = [0u8; 12];
+        mem.read_slice(&mut magic, GuestAddress(with_config.end - 12))
+            .unwrap();
+        assert_eq!(&magic, b"#BOOTCONFIG\n");
         assert_eq!(initrd.start % PAGE, 0);
         assert!(initrd.end <= RAM);
         write_boot_params(&mem, &kernel, "console=ttyS0", Some(initrd.clone()), RAM).unwrap();

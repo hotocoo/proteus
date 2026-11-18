@@ -6,7 +6,6 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 pub mod adb;
-#[cfg(target_arch = "aarch64")]
 mod android;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod audio;

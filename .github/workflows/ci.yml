@@ -93,6 +93,61 @@ jobs:
           scripts/no-connect.sh target/release/emu 20 \
             --kernel "$RUNNER_TEMP/vmlinux" --initrd "$RUNNER_TEMP/initramfs.cpio" --serial
 
+  android:
+    # Milestone 2's check on Linux: Google's x86_64 Cuttlefish image with this repository's guest
+    # kernel boots to sys.boot_completed on KVM, headless, and adb answers without a prompt.
+    name: Android on KVM (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain and adb
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          sudo apt-get update -qq && sudo apt-get install -y -qq android-tools-adb >/dev/null
+      - name: Open /dev/kvm to this user
+        run: sudo chmod 666 /dev/kvm
+      - name: Build emu
+        run: cargo build --release --locked -p vmm
+      - name: Fetch the guest kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow kernel.yml --branch main --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+          gh run download "$run" -n kernel-x86_64 -D "$RUNNER_TEMP/kernel"
+      - name: Fetch the Android image
+        run: scripts/fetch-cuttlefish.sh aosp_cf_x86_64_only_phone-userdebug "$RUNNER_TEMP/image"
+      - name: Boot Android
+        run: |
+          target/release/emu --kernel "$RUNNER_TEMP/kernel/kernel-x86_64" \
+            --android "$RUNNER_TEMP/image" --data-dir "$RUNNER_TEMP/data" \
+            --serial --logcat "$RUNNER_TEMP/logcat.txt" --ctl "$RUNNER_TEMP/emu.sock" \
+            </dev/null >"$RUNNER_TEMP/console.txt" 2>&1 &
+          deadline=$(( $(date +%s) + 1800 ))
+          until [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
+            if [ "$(date +%s)" -gt "$deadline" ]; then echo "Android did not finish booting"; exit 1; fi
+            adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            sleep 10
+          done
+          echo "booted in $(( $(date +%s) - deadline + 1800 )) s"
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi
+          target/release/emu ctl "$RUNNER_TEMP/emu.sock" screenshot "$RUNNER_TEMP/screen.png"
+          target/release/emu ctl "$RUNNER_TEMP/emu.sock" stop
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-kvm
+          path: |
+            ${{ runner.temp }}/console.txt
+            ${{ runner.temp }}/logcat.txt
+            ${{ runner.temp }}/screen.png
+          if-no-files-found: ignore
+
   policy:
     name: Dependency policy
     runs-on: ubuntu-24.04

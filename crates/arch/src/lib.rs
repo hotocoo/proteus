@@ -7,6 +7,7 @@ pub mod aarch64;
 pub mod android;
 pub mod bootconfig;
 mod copy;
+pub mod ramdisk;
 pub mod slots;
 /// Built on every host: it is plain data layout, so its tests run anywhere.
 pub mod x86_64;

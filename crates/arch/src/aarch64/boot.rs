@@ -9,7 +9,7 @@ use hv::aarch64::PSTATE_EL1H_DAIF_MASKED;
 use vm_memory::{Bytes, GuestAddress, GuestMemory, ReadVolatile};
 
 use super::layout;
-use crate::{ArchError, bootconfig, copy};
+use crate::{ArchError, copy};
 
 const HEADER_LEN: usize = 64;
 const TEXT_OFFSET_AT: usize = 8;
@@ -87,22 +87,10 @@ where
     Ok(entry)
 }
 
-/// One archive of the ramdisk. The kernel unpacks them in order, and a later file replaces an earlier
-/// one with the same path.
-pub enum RamdiskPart<'a, F> {
-    /// A byte range of a file: a ramdisk inside a boot image, or a whole ramdisk file.
-    Stream {
-        stream: &'a mut F,
-        range: Range<u64>,
-    },
-    Bytes(&'a [u8]),
-}
+pub use crate::ramdisk::RamdiskPart;
 
 /// Copies the ramdisk parts in, back to back with nothing between them, and appends the bootconfig
 /// trailer when there are parameters. Returns the guest range the device tree must advertise.
-///
-/// The parts must be archives the kernel can tell apart on its own. In particular, whatever follows an
-/// LZ4 legacy archive must be another one: that format has no end marker, so its decoder reads on.
 pub fn load_ramdisk<M, F>(
     mem: &M,
     parts: &mut [RamdiskPart<'_, F>],
@@ -114,38 +102,14 @@ where
 {
     let start = layout::RAM_BASE + layout::INITRD_OFFSET;
     let room = layout::FDT_OFFSET - layout::INITRD_OFFSET;
-    let too_big = || ArchError::Layout(copy::INITRD_OVERLAPS_FDT);
-    let mut len = 0u64;
-    for part in parts {
-        let part_len = match part {
-            RamdiskPart::Stream { range, .. } => range.end.saturating_sub(range.start),
-            RamdiskPart::Bytes(bytes) => bytes.len() as u64,
-        };
-        if len.checked_add(part_len).is_none_or(|end| end > room) {
-            return Err(too_big());
-        }
-        match part {
-            RamdiskPart::Stream { stream, range } => {
-                stream.seek(SeekFrom::Start(range.start))?;
-                let count = usize::try_from(part_len).map_err(|_| too_big())?;
-                mem.read_exact_volatile_from(GuestAddress(start + len), *stream, count)?;
-            }
-            RamdiskPart::Bytes(bytes) => mem.write_slice(bytes, GuestAddress(start + len))?,
-        }
-        len += part_len;
-    }
-    let host_len = usize::try_from(len).map_err(|_| too_big())?;
-    let trailer = if bootconfig.is_empty() {
-        Vec::new()
-    } else {
-        bootconfig::trailer(bootconfig, host_len)?
-    };
-    let total = len + trailer.len() as u64;
-    if total > room {
-        return Err(too_big());
-    }
-    mem.write_slice(&trailer, GuestAddress(start + len))?;
-    Ok(start..start + total)
+    crate::ramdisk::write(
+        mem,
+        start,
+        room,
+        parts,
+        bootconfig,
+        copy::INITRD_OVERLAPS_FDT,
+    )
 }
 
 /// As `load_ramdisk`, for a ramdisk that is one whole file.

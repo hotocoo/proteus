@@ -10,6 +10,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_arch = "aarch64")]
 use arch::aarch64::layout;
 use arch::android::bootimg::{self, BOOT_HEADER_LEN, VENDOR_HEADER_LEN};
 use arch::android::{cpio, lz4};
@@ -199,6 +200,9 @@ const CONSOLE_ON: &[(&str, &str)] = &[
     ("androidboot.serialconsole", "1"),
 ];
 const CONSOLE_OFF: &[(&str, &str)] = &[("androidboot.serialconsole", "0")];
+/// The first device `virtio_mmio.device=` creates.
+#[cfg(not(target_arch = "aarch64"))]
+const BOOT_DEVICE_FROM_CMDLINE: &str = "virtio-mmio.0";
 /// Tells init which block device holds the named partitions: the disk in virtio slot 0.
 const BOOT_DEVICES_KEY: &str = "androidboot.boot_devices";
 /// Kernel arguments the vendor image asks for that this board must not pass on.
@@ -346,7 +350,12 @@ pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), Vm
     for (key, value) in BOOTCONFIG {
         set(&mut bootconfig, key, value);
     }
+    // The platform device of the disk in slot 0, as it is named under /sys/devices/platform: by
+    // address when a device tree describes it, by number when the command line does.
+    #[cfg(target_arch = "aarch64")]
     let boot_device = format!("{:x}.virtio_mmio", layout::virtio_mmio_base(0));
+    #[cfg(not(target_arch = "aarch64"))]
+    let boot_device = BOOT_DEVICE_FROM_CMDLINE.to_owned();
     set(&mut bootconfig, BOOT_DEVICES_KEY, &boot_device);
 
     let cmdline: Vec<&str> = vendor

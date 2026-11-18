@@ -13,11 +13,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(target_arch = "aarch64")]
-use arch::aarch64::boot::RamdiskPart;
-#[cfg(target_arch = "aarch64")]
 use arch::aarch64::psci::{self, Call};
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::{boot, fdt, layout};
+use arch::ramdisk::RamdiskPart;
 #[cfg(target_arch = "x86_64")]
 use arch::x86_64::{boot, layout, mptable};
 use devices::bus::MmioBus;
@@ -26,7 +25,6 @@ use devices::rtc::Rtc;
 use devices::serial::Serial;
 use devices::virtio::VirtioDevice;
 use devices::virtio::blk::{Block, DiskImage};
-#[cfg(target_arch = "aarch64")]
 use devices::virtio::console::{Console as VirtioConsole, PortSink};
 use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
 use devices::virtio::input::{Input, InputHandle};
@@ -52,16 +50,11 @@ use crate::config::{
 use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::input::{self, Touch};
 use crate::session::{PowerSwitch, Session};
-use crate::{VmmError, copy};
-#[cfg(target_arch = "aarch64")]
-use crate::{android, location, sensors};
+use crate::{VmmError, android, copy, location, sensors};
 
 // The terminals the VMM answers on have to be ones the console device has.
-#[cfg(target_arch = "aarch64")]
 const _: () = assert!(sensors::CONTROL_PORT < android::CONSOLE_PORTS);
-#[cfg(target_arch = "aarch64")]
 const _: () = assert!(sensors::DATA_PORT < android::CONSOLE_PORTS);
-#[cfg(target_arch = "aarch64")]
 const _: () = assert!(location::PORT < android::CONSOLE_PORTS);
 
 type HostVm = <Host as HypervisorBackend>::Vm;
@@ -605,14 +598,7 @@ pub fn run_in(
     if config.vcpus == 0 || config.vcpus > caps.max_vcpus.min(layout::MAX_VCPUS) {
         return Err(VmmError::Config(copy::TOO_MANY_VCPUS));
     }
-    #[cfg(target_arch = "aarch64")]
     let android = config.android.as_ref().map(android::assemble).transpose()?;
-    // shortcut: no x86_64 Android image is assembled yet; add one with the x86_64 Cuttlefish image.
-    #[cfg(target_arch = "x86_64")]
-    let android: Option<(DiskImage, ())> = match config.android {
-        Some(_) => return Err(VmmError::Config(copy::ANDROID_NOT_ON_THIS_HOST)),
-        None => None,
-    };
     let (android_disk, android_boot) = android.unzip();
     let disk_count = config.disks.len() + usize::from(android_disk.is_some());
     let disk_slots = u32::try_from(disk_count)
@@ -621,10 +607,6 @@ pub fn run_in(
         .ok_or(VmmError::Config(copy::TOO_MANY_DISKS))?;
     if config.initrd.is_none() && !config.bootconfig.is_empty() {
         return Err(VmmError::Config(copy::BOOTCONFIG_NEEDS_INITRD));
-    }
-    #[cfg(target_arch = "x86_64")]
-    if !config.bootconfig.is_empty() {
-        return Err(VmmError::Config(copy::BOOTCONFIG_NOT_ON_THIS_HOST));
     }
     let ram_bytes = config
         .ram_bytes
@@ -826,7 +808,6 @@ pub fn run_in(
         let (network, mac) = network(options, resolver, Arc::clone(&controller.adb_port))?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
     }
-    #[cfg(target_arch = "aarch64")]
     if let Some(slot) = console_slot {
         let mut sinks: Vec<Option<PortSink>> = Vec::new();
         sinks.resize_with(android::CONSOLE_PORTS, || None);
@@ -850,36 +831,52 @@ pub fn run_in(
         attach(slot, Box::new(console))?;
     }
 
+    // The ramdisk: the image's archives and overlay, or the user's file; with the bootconfig.
+    let mut bootconfig = config.bootconfig.clone();
+    let mut image_cmdline = String::new();
+    let mut android_boot = android_boot;
+    let mut initrd_file = match (&android_boot, &config.initrd) {
+        (None, Some(path)) => Some(open(path)?),
+        _ => None,
+    };
+    let mut parts: Vec<RamdiskPart<'_, File>> = Vec::new();
+    if let Some(image) = android_boot.as_mut() {
+        bootconfig = std::mem::take(&mut image.bootconfig);
+        bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
+        image_cmdline = std::mem::take(&mut image.cmdline);
+        // The user's parameters replace the image's where both set a key.
+        bootconfig.retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));
+        bootconfig.extend(config.bootconfig.iter().cloned());
+        parts.extend(
+            image
+                .ramdisks
+                .iter_mut()
+                .map(|(stream, range)| RamdiskPart::Stream {
+                    stream,
+                    range: range.clone(),
+                }),
+        );
+        parts.push(RamdiskPart::Bytes(&image.overlay));
+    } else if let (Some(file), Some(path)) = (initrd_file.as_mut(), &config.initrd) {
+        let len = std::io::Seek::seek(file, std::io::SeekFrom::End(0)).map_err(|source| {
+            VmmError::File {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        parts.push(RamdiskPart::Stream {
+            stream: file,
+            range: 0..len,
+        });
+    }
+
     #[cfg(target_arch = "aarch64")]
     let primary = {
         let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
-        let mut bootconfig = Vec::new();
-        let mut image_cmdline = String::new();
-        let initrd = match (android_boot, &config.initrd) {
-            (Some(mut image), _) => {
-                bootconfig = std::mem::take(&mut image.bootconfig);
-                bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
-                image_cmdline = std::mem::take(&mut image.cmdline);
-                // The user's parameters replace the image's where both set a key.
-                bootconfig
-                    .retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));
-                bootconfig.extend(config.bootconfig.iter().cloned());
-                let mut parts: Vec<RamdiskPart<'_, File>> = image
-                    .ramdisks
-                    .iter_mut()
-                    .map(|(stream, range)| RamdiskPart::Stream {
-                        stream,
-                        range: range.clone(),
-                    })
-                    .collect();
-                parts.push(RamdiskPart::Bytes(&image.overlay));
-                Some(boot::load_ramdisk(&mem, &mut parts, &bootconfig)?)
-            }
-            (None, Some(path)) => {
-                bootconfig.clone_from(&config.bootconfig);
-                Some(boot::load_initrd(&mem, &mut open(path)?, &bootconfig)?)
-            }
-            (None, None) => None,
+        let initrd = if parts.is_empty() {
+            None
+        } else {
+            Some(boot::load_ramdisk(&mem, &mut parts, &bootconfig)?)
         };
         let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
         getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
@@ -901,16 +898,22 @@ pub fn run_in(
     };
     #[cfg(target_arch = "x86_64")]
     let primary = {
-        let _ = android_boot;
         let low_end = ram_bytes.min(layout::MMIO_GAP_START);
         let kernel = boot::load_kernel(&mem, &mut open(&config.kernel)?, low_end)?;
-        let initrd = match &config.initrd {
-            Some(path) => Some(boot::load_initrd(&mem, &mut open(path)?, &kernel, low_end)?),
-            None => None,
+        let initrd = if parts.is_empty() {
+            None
+        } else {
+            Some(boot::load_ramdisk(
+                &mem,
+                &mut parts,
+                &bootconfig,
+                &kernel,
+                low_end,
+            )?)
         };
         let devices = x86_virtio_cmdline(&virtio_slots);
-        let board = format!("{} {devices}", layout::BOARD_CMDLINE);
-        let cmdline = kernel_cmdline(config, &board, false);
+        let board = [layout::BOARD_CMDLINE, &devices, &image_cmdline].join(" ");
+        let cmdline = kernel_cmdline(config, &board, !bootconfig.is_empty());
         boot::write_boot_params(&mem, &kernel, &cmdline, initrd, ram_bytes)?;
         boot::write_tables(&mem)?;
         mptable::write(&mem, config.vcpus)?;
