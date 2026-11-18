@@ -17,6 +17,8 @@ lexopt.workspace = true
 libc.workspace = true
 log.workspace = true
 net.workspace = true
+serde.workspace = true
+toml.workspace = true
 vm-memory.workspace = true
 
 # The window and the sound output. Only hosts that have a hypervisor backend build them.

@@ -19,7 +19,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several virtual CPUs, disks, a serial console.
 - Plain Linux kernels boot too, to a shell on the serial console.
 
-Not there yet: GPU acceleration, key mapping for games, macros, several instances,
+Not there yet: GPU acceleration, gamepads, macros, several instances,
 Linux and Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
@@ -73,6 +73,13 @@ emu ctl /tmp/emu.sock stop
 ```
 
 The socket is created for your user only. Anyone who can connect to it controls the guest.
+
+### Playing with keyboard and mouse
+
+A key map says which keys and mouse movements stand for which touches: taps, a virtual joystick on
+four keys, and a "look" mode in which the mouse drags the view. `assets/keymaps/example.toml` explains
+the format; copy it, put your game's button positions in, and start with `--keymap <file>`. Keys the
+map does not use still reach Android as a keyboard.
 
 ## Build
 
@@ -150,8 +157,8 @@ Honest list, most important first:
 
 - **GPU acceleration.** Android draws with the guest's CPU. Games need the host's GPU; that work
   (gfxstream over virtio-gpu) has not started.
-- **Game controls.** Keys reach Android as a keyboard. Mapping keys and mouse to touch controls,
-  gamepads and macros are not built.
+- **More game controls.** Key maps cover taps, a joystick and mouse look. Gamepads, macros, pinch
+  zoom and a map that follows the app in front are not built, and maps are written by hand.
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed with `adb install`.

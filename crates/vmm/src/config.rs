@@ -142,6 +142,8 @@ pub struct Config {
     pub sound: bool,
     /// Play nothing on the host; the guest's sound card stays.
     pub mute: bool,
+    /// Keys and mouse movements that stand for touches, read from this file.
+    pub keymap: Option<PathBuf>,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
     /// Write Android's system log to this file.
@@ -170,6 +172,7 @@ impl Config {
             window: true,
             sound: true,
             mute: false,
+            keymap: None,
             ctl: None,
             logcat: None,
             android: None,
@@ -287,6 +290,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
             Long("headless") => config.window = false,
+            Long("keymap") => config.keymap = Some(parser.value()?.into()),
             Long("no-sound") => config.sound = false,
             Long("mute") => config.mute = true,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),

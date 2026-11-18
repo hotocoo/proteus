@@ -11,13 +11,15 @@ use std::sync::Arc;
 use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
+use crate::input::button_code;
+use crate::keymap::{Mapper, Touch};
 use crate::{VmmError, copy};
 
 /// The finger the mouse stands for.
@@ -123,112 +125,10 @@ fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32]) -> bool {
 }
 
 /// The Linux key code the guest's keyboard sends for a key of the host's keyboard, by position.
-/// `None` for keys the guest's keyboard does not have.
+/// `None` for keys the guest's keyboard does not have. The window system's name for a key is the
+/// name the key table and key maps use.
 fn linux_key(key: KeyCode) -> Option<u16> {
-    use KeyCode::*;
-    let code = match key {
-        Escape => 1,
-        Digit1 => 2,
-        Digit2 => 3,
-        Digit3 => 4,
-        Digit4 => 5,
-        Digit5 => 6,
-        Digit6 => 7,
-        Digit7 => 8,
-        Digit8 => 9,
-        Digit9 => 10,
-        Digit0 => 11,
-        Minus => 12,
-        Equal => 13,
-        Backspace => 14,
-        Tab => 15,
-        KeyQ => 16,
-        KeyW => 17,
-        KeyE => 18,
-        KeyR => 19,
-        KeyT => 20,
-        KeyY => 21,
-        KeyU => 22,
-        KeyI => 23,
-        KeyO => 24,
-        KeyP => 25,
-        BracketLeft => 26,
-        BracketRight => 27,
-        Enter => 28,
-        ControlLeft => 29,
-        KeyA => 30,
-        KeyS => 31,
-        KeyD => 32,
-        KeyF => 33,
-        KeyG => 34,
-        KeyH => 35,
-        KeyJ => 36,
-        KeyK => 37,
-        KeyL => 38,
-        Semicolon => 39,
-        Quote => 40,
-        Backquote => 41,
-        ShiftLeft => 42,
-        Backslash => 43,
-        KeyZ => 44,
-        KeyX => 45,
-        KeyC => 46,
-        KeyV => 47,
-        KeyB => 48,
-        KeyN => 49,
-        KeyM => 50,
-        Comma => 51,
-        Period => 52,
-        Slash => 53,
-        ShiftRight => 54,
-        NumpadMultiply => 55,
-        AltLeft => 56,
-        Space => 57,
-        CapsLock => 58,
-        F1 => 59,
-        F2 => 60,
-        F3 => 61,
-        F4 => 62,
-        F5 => 63,
-        F6 => 64,
-        F7 => 65,
-        F8 => 66,
-        F9 => 67,
-        F10 => 68,
-        Numpad7 => 71,
-        Numpad8 => 72,
-        Numpad9 => 73,
-        NumpadSubtract => 74,
-        Numpad4 => 75,
-        Numpad5 => 76,
-        Numpad6 => 77,
-        NumpadAdd => 78,
-        Numpad1 => 79,
-        Numpad2 => 80,
-        Numpad3 => 81,
-        Numpad0 => 82,
-        NumpadDecimal => 83,
-        F11 => 87,
-        F12 => 88,
-        NumpadEnter => 96,
-        ControlRight => 97,
-        NumpadDivide => 98,
-        AltRight => 100,
-        Home => 102,
-        ArrowUp => 103,
-        PageUp => 104,
-        ArrowLeft => 105,
-        ArrowRight => 106,
-        End => 107,
-        ArrowDown => 108,
-        PageDown => 109,
-        Insert => 110,
-        Delete => 111,
-        SuperLeft => 125,
-        SuperRight => 126,
-        _ => return None,
-    };
-    Some(code)
+    crate::input::key_code(&format!("{key:?}"))
 }
 
 struct Shown {
@@ -244,6 +144,10 @@ struct App {
     pointer: PhysicalPosition<f64>,
     /// Whether the mouse's finger is on the guest's screen.
     touching: bool,
+    /// Keys and mouse movements that stand for touches, if the user gave a key map.
+    mapper: Option<Mapper>,
+    /// Whether the window is keeping the pointer for the key map.
+    grabbed: bool,
     /// Why the window could not be made, if it could not.
     failed: Option<String>,
 }
@@ -252,6 +156,49 @@ impl App {
     fn send(&self, command: Command) {
         if let Err(why) = self.controller.execute(&command) {
             log::debug!("{}", copy::window_input_dropped(&why));
+        }
+    }
+
+    /// Gives a key or mouse button to the key map. Returns false if the map has no use for it.
+    fn mapped(&mut self, code: u16, down: bool) -> bool {
+        let touches = self.mapper.as_mut().and_then(|map| map.key(code, down));
+        let Some(touches) = touches else {
+            return false;
+        };
+        self.apply(&touches);
+        self.sync_pointer();
+        true
+    }
+
+    fn apply(&self, touches: &[Touch]) {
+        for touch in touches {
+            self.send(match *touch {
+                Touch::Place { finger, x, y } => Command::Touch { finger, x, y },
+                Touch::Lift { finger } => Command::Lift { finger },
+            });
+        }
+    }
+
+    /// Keeps and hides the pointer while the key map is using the mouse, and gives it back after.
+    fn sync_pointer(&mut self) {
+        let wanted = self.mapper.as_ref().is_some_and(Mapper::wants_pointer);
+        let Some(shown) = self.shown.as_ref().filter(|_| wanted != self.grabbed) else {
+            return;
+        };
+        let mode = if wanted {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        };
+        match shown.window.set_cursor_grab(mode) {
+            Ok(()) => {
+                shown.window.set_cursor_visible(!wanted);
+                self.grabbed = wanted;
+            }
+            Err(err) => log::warn!("{}", copy::window_grab_failed(&err)),
+        }
+        if wanted && self.touching {
+            self.touch(false);
         }
     }
 
@@ -350,6 +297,12 @@ impl ApplicationHandler<Notice> for App {
         }
     }
 
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            self.mouse_moved(dx, dy);
+        }
+    }
+
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             // The machine is switched off; the window closes when it has stopped.
@@ -366,24 +319,48 @@ impl ApplicationHandler<Notice> for App {
                     self.touch(true);
                 }
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => self.touch(state == ElementState::Pressed),
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = state == ElementState::Pressed;
+                let index = match button {
+                    MouseButton::Left => Some(0),
+                    MouseButton::Right => Some(1),
+                    MouseButton::Middle => Some(2),
+                    _ => None,
+                };
+                let taken = index
+                    .and_then(button_code)
+                    .is_some_and(|code| self.mapped(code, pressed));
+                // The left button is the finger, unless the key map has the mouse or the button.
+                if !taken && !self.grabbed && button == MouseButton::Left {
+                    self.touch(pressed);
+                }
+            }
             WindowEvent::CursorLeft { .. } => self.touch(false),
             WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 let PhysicalKey::Code(key) = event.physical_key else {
                     return;
                 };
-                if let Some(code) = linux_key(key) {
+                let down = event.state == ElementState::Pressed;
+                if let Some(code) = linux_key(key)
+                    && !self.mapped(code, down)
+                {
                     self.send(Command::Key {
                         code,
-                        down: Some(event.state == ElementState::Pressed),
+                        down: Some(down),
                     });
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    /// The mouse moved by this much, wherever the pointer is.
+    fn mouse_moved(&mut self, dx: f64, dy: f64) {
+        let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
+        if let Some(touches) = touches.map(|map| map.pointer(dx, dy)) {
+            self.apply(&touches);
         }
     }
 }
@@ -411,13 +388,20 @@ impl WindowLoop {
 
     /// Shows a window for a guest display of `guest` pixels and serves it until it is told
     /// `Notice::Stopped`. Closing the window switches the machine off through `controller`.
-    pub fn run(self, controller: Arc<Controller>, guest: (u32, u32)) -> Result<(), VmmError> {
+    pub fn run(
+        self,
+        controller: Arc<Controller>,
+        guest: (u32, u32),
+        mapper: Option<Mapper>,
+    ) -> Result<(), VmmError> {
         let mut app = App {
             controller,
             guest,
             shown: None,
             pointer: PhysicalPosition::default(),
             touching: false,
+            mapper,
+            grabbed: false,
             failed: None,
         };
         let ran = self.0.run_app(&mut app);

@@ -99,6 +99,133 @@ pub fn keyboard() -> InputDescription {
     }
 }
 
+/// Keys by name and Linux key code. The names are the ones the W3C gives physical keys ("KeyW",
+/// "Space", "ArrowUp"), which is also what the window system calls them; key maps use them too.
+const KEY_NAMES: [(&str, u16); 99] = [
+    ("Escape", 1),
+    ("Digit1", 2),
+    ("Digit2", 3),
+    ("Digit3", 4),
+    ("Digit4", 5),
+    ("Digit5", 6),
+    ("Digit6", 7),
+    ("Digit7", 8),
+    ("Digit8", 9),
+    ("Digit9", 10),
+    ("Digit0", 11),
+    ("Minus", 12),
+    ("Equal", 13),
+    ("Backspace", 14),
+    ("Tab", 15),
+    ("KeyQ", 16),
+    ("KeyW", 17),
+    ("KeyE", 18),
+    ("KeyR", 19),
+    ("KeyT", 20),
+    ("KeyY", 21),
+    ("KeyU", 22),
+    ("KeyI", 23),
+    ("KeyO", 24),
+    ("KeyP", 25),
+    ("BracketLeft", 26),
+    ("BracketRight", 27),
+    ("Enter", 28),
+    ("ControlLeft", 29),
+    ("KeyA", 30),
+    ("KeyS", 31),
+    ("KeyD", 32),
+    ("KeyF", 33),
+    ("KeyG", 34),
+    ("KeyH", 35),
+    ("KeyJ", 36),
+    ("KeyK", 37),
+    ("KeyL", 38),
+    ("Semicolon", 39),
+    ("Quote", 40),
+    ("Backquote", 41),
+    ("ShiftLeft", 42),
+    ("Backslash", 43),
+    ("KeyZ", 44),
+    ("KeyX", 45),
+    ("KeyC", 46),
+    ("KeyV", 47),
+    ("KeyB", 48),
+    ("KeyN", 49),
+    ("KeyM", 50),
+    ("Comma", 51),
+    ("Period", 52),
+    ("Slash", 53),
+    ("ShiftRight", 54),
+    ("NumpadMultiply", 55),
+    ("AltLeft", 56),
+    ("Space", 57),
+    ("CapsLock", 58),
+    ("F1", 59),
+    ("F2", 60),
+    ("F3", 61),
+    ("F4", 62),
+    ("F5", 63),
+    ("F6", 64),
+    ("F7", 65),
+    ("F8", 66),
+    ("F9", 67),
+    ("F10", 68),
+    ("Numpad7", 71),
+    ("Numpad8", 72),
+    ("Numpad9", 73),
+    ("NumpadSubtract", 74),
+    ("Numpad4", 75),
+    ("Numpad5", 76),
+    ("Numpad6", 77),
+    ("NumpadAdd", 78),
+    ("Numpad1", 79),
+    ("Numpad2", 80),
+    ("Numpad3", 81),
+    ("Numpad0", 82),
+    ("NumpadDecimal", 83),
+    ("F11", 87),
+    ("F12", 88),
+    ("NumpadEnter", 96),
+    ("ControlRight", 97),
+    ("NumpadDivide", 98),
+    ("AltRight", 100),
+    ("Home", 102),
+    ("ArrowUp", 103),
+    ("PageUp", 104),
+    ("ArrowLeft", 105),
+    ("ArrowRight", 106),
+    ("End", 107),
+    ("ArrowDown", 108),
+    ("PageDown", 109),
+    ("Insert", 110),
+    ("Delete", 111),
+    ("SuperLeft", 125),
+    ("SuperRight", 126),
+];
+/// Mouse buttons, for key maps. The guest's keyboard does not have these.
+const BUTTON_NAMES: [(&str, u16); 3] = [
+    ("MouseLeft", 0x110),
+    ("MouseRight", 0x111),
+    ("MouseMiddle", 0x112),
+];
+
+/// The Linux key code of the keyboard key with this name.
+pub fn key_code(name: &str) -> Option<u16> {
+    let found = KEY_NAMES.iter().find(|(known, _)| *known == name);
+    found.map(|(_, code)| *code)
+}
+
+/// The code of the key or mouse button with this name, for key maps.
+pub fn key_or_button_code(name: &str) -> Option<u16> {
+    let found = BUTTON_NAMES.iter().find(|(known, _)| *known == name);
+    found.map(|(_, code)| *code).or_else(|| key_code(name))
+}
+
+/// The code a key map knows this mouse button by: 0 is the left button, 1 the right, 2 the middle.
+pub fn button_code(button: usize) -> Option<u16> {
+    BUTTON_NAMES.get(button).map(|(_, code)| *code)
+}
+
 /// Whether the keyboard has this key.
 pub fn is_key(code: u16) -> bool {
     KEYBOARD_CODES.contains(&code) || code == KEY_APPSELECT
@@ -262,6 +389,23 @@ mod tests {
         for code in [0, BTN_MOUSE, BTN_GAMEPAD, BTN_TOUCH] {
             assert!(!codes.contains(&code) && !is_key(code));
         }
+    }
+
+    #[test]
+    fn every_named_key_is_one_the_keyboard_has_and_no_name_or_code_repeats() {
+        for (index, (name, code)) in KEY_NAMES.iter().enumerate() {
+            assert!(is_key(*code), "{name}");
+            assert_eq!(key_code(name), Some(*code));
+            let later = &KEY_NAMES[index + 1..];
+            assert!(later.iter().all(|(n, c)| n != name && c != code), "{name}");
+        }
+        assert_eq!(key_code("KeyW"), Some(17));
+        assert_eq!(key_code("MouseLeft"), None);
+        assert_eq!(key_or_button_code("MouseLeft"), button_code(0));
+        assert_eq!(key_or_button_code("KeyW"), Some(17));
+        assert_eq!(key_or_button_code("NoSuchKey"), None);
+        // Mouse buttons are not keyboard keys, so they are never sent to the guest's keyboard.
+        assert!(BUTTON_NAMES.iter().all(|(_, code)| !is_key(*code)));
     }
 
     #[test]

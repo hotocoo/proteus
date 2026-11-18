@@ -15,6 +15,7 @@ mod copy;
 pub mod ctl;
 pub mod frames;
 pub mod input;
+pub mod keymap;
 pub mod location;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -81,7 +82,21 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
 
     let session = session::Session::new(config)?;
     let Some(display) = config.display.filter(|_| config.window) else {
+        if config.keymap.is_some() {
+            return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
+        }
         return boot_loop(config, &session, started);
+    };
+    let mapper = match &config.keymap {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|source| VmmError::File {
+                path: path.clone(),
+                source,
+            })?;
+            let parsed = keymap::Mapper::parse(&text, display);
+            Some(parsed.map_err(|why| VmmError::Device(copy::keymap_refused(path, &why)))?)
+        }
+        None => None,
     };
     let window = WindowLoop::new()?;
     let notify = window.notifier();
@@ -99,7 +114,7 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
                 ran
             })
             .map_err(VmmError::Thread)?;
-        let shown = window.run(std::sync::Arc::clone(&session.controller), display);
+        let shown = window.run(std::sync::Arc::clone(&session.controller), display, mapper);
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
         let ran = machine.join();

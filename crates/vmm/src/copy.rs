@@ -31,6 +31,7 @@ Usage: emu --kernel <file> [options]
   --display <WxH>         Size of the guest display in pixels (default 1280x720)
   --no-display            Give the guest no display device
   --headless              Open no window; the display can still be captured
+  --keymap <file>         Keys and mouse movements that stand for touches (see the README)
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
   --logcat <file>         Write Android's system log to this file
@@ -142,6 +143,34 @@ pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
 pub const POWER_THREAD: &str = "power";
 pub const MACHINE_THREAD: &str = "machine";
+pub fn keymap_unknown_key(name: &str) -> String {
+    format!("key map: there is no key called `{name}`")
+}
+
+pub fn keymap_key_twice(name: &str) -> String {
+    format!("key map: `{name}` is used more than once")
+}
+
+pub fn keymap_off_screen(x: u32, y: u32) -> String {
+    format!("key map: position {x}, {y} is not on the guest's screen")
+}
+
+pub fn keymap_circle_off_screen(x: u32, y: u32, radius: u32) -> String {
+    format!(
+        "key map: a circle of radius {radius} around {x}, {y} does not fit on the guest's screen"
+    )
+}
+
+pub const KEYMAP_TOO_MANY: &str =
+    "key map: more touches than the touchscreen has fingers for (eight)";
+pub const KEYMAP_BAD_SENSITIVITY: &str = "key map: sensitivity has to be a number above zero";
+pub const KEYMAP_NEEDS_WINDOW: &str =
+    "--keymap needs a window; do not combine it with --headless or --no-display";
+
+pub fn keymap_refused(path: &Path, why: &dyn Display) -> String {
+    format!("{}: {why}", path.display())
+}
+
 pub const AUDIO_THREAD: &str = "audio";
 pub const AUDIO_NO_DEVICE: &str = "this machine has no sound output";
 pub const AUDIO_OPENED: &str = "sound output opened: the guest has started playing";
@@ -157,6 +186,10 @@ pub fn window_failed(err: &dyn Display) -> String {
 
 pub fn window_draw_failed(err: &dyn Display) -> String {
     format!("the window could not be drawn: {err}")
+}
+
+pub fn window_grab_failed(err: &dyn Display) -> String {
+    format!("the window could not keep the pointer for the key map: {err}")
 }
 
 pub fn window_input_dropped(why: &dyn Display) -> String {

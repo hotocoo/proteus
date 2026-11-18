@@ -1,0 +1,41 @@
+# An example key map for a 1280x720 guest display. Start with: emu ... --keymap assets/keymaps/example.toml
+#
+# Positions are pixels of the guest's display. Find them with a screenshot:
+#   emu ctl <socket> screenshot shot.png
+# Keys are named by their position on a US keyboard: KeyA..KeyZ, Digit0..Digit9, Space, Enter, Tab,
+# Escape, ShiftLeft, ControlLeft, AltLeft, ArrowUp, F1..F12, and so on. The mouse buttons are
+# MouseLeft, MouseRight and MouseMiddle.
+
+# Switches the whole map off and on, for typing.
+toggle = "F12"
+
+# A finger that is down while the key is held.
+[[tap]]
+key = "Space"
+at = [1100, 600]
+
+[[tap]]
+key = "KeyE"
+at = [1000, 450]
+
+# Fire with the left mouse button (while the mouse is steering, see [look]).
+[[tap]]
+key = "MouseLeft"
+at = [1150, 420]
+
+# Four keys push one finger away from a centre: a virtual joystick.
+[[stick]]
+up = "KeyW"
+left = "KeyA"
+down = "KeyS"
+right = "KeyD"
+center = [200, 550]
+radius = 100
+
+# Press the key to give the mouse to a finger that drags the view around; press it again to get the
+# pointer back.
+[look]
+key = "Backquote"
+center = [860, 300]
+radius = 250
+sensitivity = 1.0
