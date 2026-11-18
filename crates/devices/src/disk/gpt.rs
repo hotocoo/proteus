@@ -47,8 +47,8 @@ fn refuse(what: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what)
 }
 
-/// CRC-32 as GPT uses it (IEEE 802.3, reflected).
-fn crc32(bytes: &[u8]) -> u32 {
+/// CRC-32 as GPT, PNG and zlib use it (IEEE 802.3, reflected).
+pub fn crc32(bytes: &[u8]) -> u32 {
     const POLYNOMIAL: u32 = 0xedb8_8320;
     !bytes.iter().fold(u32::MAX, |crc, byte| {
         (0..u8::BITS).fold(crc ^ u32::from(*byte), |crc, _| {

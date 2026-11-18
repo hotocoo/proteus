@@ -29,6 +29,7 @@ Usage: emu --kernel <file> [options]
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 1280x720)
   --no-display            Give the guest no display device
+  --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
@@ -125,3 +126,5 @@ pub const RESET_LOOP: &str = "the guest keeps resetting right after it starts; g
 pub const DISK_ID_PREFIX: &str = "emu-disk-";
 /// Serial number the Android system disk reports to the guest.
 pub const ANDROID_DISK_ID: &str = "emu-android";
+/// Extension of the temporary file a frame dump is written to before it replaces the real one.
+pub const FRAME_DUMP_PARTIAL_EXTENSION: &str = "partial";

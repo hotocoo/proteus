@@ -33,6 +33,8 @@ pub const BOOTCONFIG_ARG: &str = "bootconfig";
 pub const RNG_SEED_LEN: usize = 64;
 /// How long the serial input pump waits when the guest has not drained its receive FIFO.
 pub const SERIAL_INPUT_RETRY: Duration = Duration::from_millis(1);
+/// The frame dump file is rewritten at most this often.
+pub const FRAME_DUMP_INTERVAL: Duration = Duration::from_secs(1);
 /// How often the serial input pump checks whether its machine has stopped.
 pub const SERIAL_INPUT_POLL: Duration = Duration::from_millis(100);
 /// A guest that resets this soon after starting did not boot; this many in a row and the VMM gives up.
@@ -99,6 +101,8 @@ pub struct Config {
     pub net: Option<NetOptions>,
     /// Width and height of the guest's display, or `None` for no display device.
     pub display: Option<(u32, u32)>,
+    /// Keep this PNG file up to date with what the guest's display shows.
+    pub frame_dump: Option<PathBuf>,
     /// Boot Android from an image directory instead of a plain ramdisk.
     pub android: Option<AndroidOptions>,
     pub bootconfig: Vec<(String, String)>,
@@ -119,6 +123,7 @@ impl Config {
             serial: false,
             net: Some(NetOptions::default()),
             display: Some(DEFAULT_DISPLAY),
+            frame_dump: None,
             android: None,
             bootconfig: Vec::new(),
             boot_marker: None,
@@ -212,6 +217,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("userdata-gib") => userdata_gib = positive(&mut parser, "userdata-gib")?,
             Long("no-net") => no_net = true,
             Long("no-display") => config.display = None,
+            Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;
                 let size = text

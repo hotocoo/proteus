@@ -35,6 +35,7 @@ use crate::config::{
     SERIAL_INPUT_RETRY,
 };
 use crate::console::{Console, ConsoleInput, MarkerWatch};
+use crate::frames::FrameDump;
 use crate::{VmmError, android, copy};
 
 type HostVm = <Host as HypervisorBackend>::Vm;
@@ -524,7 +525,11 @@ pub fn run_with(
 
     if let Some((width, height)) = config.display {
         let slot = layout::VIRTIO_GPU_SLOT;
-        let gpu = Gpu::headless(DisplayMode { width, height });
+        let mode = DisplayMode { width, height };
+        let gpu = match &config.frame_dump {
+            Some(path) => Gpu::with_sink(mode, Arc::new(FrameDump::new(path.clone()))),
+            None => Gpu::headless(mode),
+        };
         let transport =
             MmioTransport::new(Box::new(gpu), mem.clone(), line(layout::virtio_spi(slot)))
                 .map_err(|err| VmmError::Device(err.to_string()))?;

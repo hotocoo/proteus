@@ -1,10 +1,13 @@
-//! virtio-gpu in its plain 2D form with nowhere to show pixels: a headless display.
+//! virtio-gpu in its plain 2D form: the guest renders in software and hands over finished frames.
 //!
-//! The guest's display driver gets a mode, creates its framebuffers and flushes them, and every
-//! command is acknowledged without the pixels being read. That is enough for a guest that renders in
-//! software to finish booting, on machines with no GPU or window at all.
-//! Requests come from the guest; only their fixed-size header is read.
+//! With nowhere to show them (headless), every command is acknowledged without the pixels being read.
+//! That is enough for a guest to finish booting on a machine with no GPU or window at all.
+//! With a `FrameSink`, the device keeps the guest's 2D resources, copies what the guest transfers out
+//! of guest memory, and presents the scanout each time the guest flushes it.
+//!
+//! Every field of every command comes from the guest and is checked before it sizes or indexes anything.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -13,15 +16,26 @@ use std::thread::{self, JoinHandle};
 use virtio_bindings::virtio_gpu::{
     VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_DISPLAY_INFO as CMD_GET_DISPLAY_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING as CMD_ATTACH_BACKING,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D as CMD_FIRST_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D as CMD_CREATE_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING as CMD_DETACH_BACKING,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING as CMD_LAST_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_FLUSH as CMD_FLUSH,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_UNREF as CMD_UNREF,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_SET_SCANOUT as CMD_SET_SCANOUT,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D as CMD_TRANSFER_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER as RESP_ERR_INVALID_PARAMETER,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID as RESP_ERR_INVALID_RESOURCE_ID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID as RESP_ERR_INVALID_SCANOUT_ID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY as RESP_ERR_OUT_OF_MEMORY,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_UNSPEC as RESP_ERR_UNSPEC,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_DISPLAY_INFO as RESP_OK_DISPLAY_INFO,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_NODATA as RESP_OK_NODATA,
 };
 use virtio_bindings::virtio_ids::VIRTIO_ID_GPU;
 use virtio_queue::{Queue, QueueT};
-use vm_memory::GuestMemoryMmap;
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
 use super::{Activate, DeviceError, VirtioDevice, VirtioInterrupt};
 use crate::copy;
@@ -42,6 +56,265 @@ const DISPLAY_ENABLED_AT: usize = 16;
 const CONFIG_NUM_SCANOUTS_AT: usize = 8;
 const CONFIG_LEN: usize = 16;
 const SCANOUTS: u32 = 1;
+/// Every pixel format virtio-gpu defines for 2D resources is four bytes wide.
+pub const BYTES_PER_PIXEL: usize = 4;
+/// Limits on what a guest can make the device allocate.
+const MAX_DIMENSION: u32 = 8192;
+const MAX_RESOURCES: usize = 256;
+const MAX_BACKING_ENTRIES: u32 = 16_384;
+
+/// A finished frame: `width * height` pixels of four bytes each, rows top to bottom.
+pub struct Frame<'a> {
+    pub width: u32,
+    pub height: u32,
+    /// One of the `VIRTIO_GPU_FORMAT_*` values; it says which byte is which channel.
+    pub format: u32,
+    pub pixels: &'a [u8],
+}
+
+/// Where finished frames go. Called on the display's worker thread, once per guest flush.
+pub trait FrameSink: Send + Sync {
+    fn present(&self, frame: &Frame<'_>);
+}
+
+/// A 2D image the guest created, with the host's copy of its pixels.
+struct Resource {
+    width: u32,
+    height: u32,
+    format: u32,
+    /// Where in guest memory the guest keeps its copy.
+    backing: Vec<(GuestAddress, u32)>,
+    pixels: Vec<u8>,
+}
+
+/// A rectangle as commands carry it: x, y, width, height.
+#[derive(Clone, Copy)]
+struct Rect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+/// Reads little-endian fields off a command body. A short body reads as an error.
+struct Body<'a, R: Read>(&'a mut R);
+
+impl<R: Read> Body<'_, R> {
+    fn u32(&mut self) -> Result<u32, u32> {
+        let mut raw = [0u8; size_of::<u32>()];
+        self.0
+            .read_exact(&mut raw)
+            .map_err(|_| RESP_ERR_INVALID_PARAMETER)?;
+        Ok(u32::from_le_bytes(raw))
+    }
+
+    fn u64(&mut self) -> Result<u64, u32> {
+        let mut raw = [0u8; size_of::<u64>()];
+        self.0
+            .read_exact(&mut raw)
+            .map_err(|_| RESP_ERR_INVALID_PARAMETER)?;
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn rect(&mut self) -> Result<Rect, u32> {
+        Ok(Rect {
+            x: self.u32()?,
+            y: self.u32()?,
+            width: self.u32()?,
+            height: self.u32()?,
+        })
+    }
+}
+
+/// Copies `out.len()` bytes starting `offset` bytes into the guest's backing store.
+fn read_backing(
+    mem: &GuestMemoryMmap,
+    backing: &[(GuestAddress, u32)],
+    mut offset: u64,
+    mut out: &mut [u8],
+) -> Option<()> {
+    for (addr, len) in backing {
+        let len = u64::from(*len);
+        if offset >= len {
+            offset -= len;
+            continue;
+        }
+        let take = usize::try_from(len - offset).ok()?.min(out.len());
+        let (now, later) = out.split_at_mut(take);
+        mem.read_slice(now, addr.checked_add(offset)?).ok()?;
+        out = later;
+        offset = 0;
+        if out.is_empty() {
+            return Some(());
+        }
+    }
+    out.is_empty().then_some(())
+}
+
+/// The state behind the control queue.
+struct Display {
+    mode: DisplayMode,
+    sink: Option<Arc<dyn FrameSink>>,
+    resources: HashMap<u32, Resource>,
+    /// The resource the guest attached to the one scanout.
+    scanout: Option<u32>,
+}
+
+impl Display {
+    fn resource(&mut self, id: u32) -> Result<&mut Resource, u32> {
+        self.resources
+            .get_mut(&id)
+            .ok_or(RESP_ERR_INVALID_RESOURCE_ID)
+    }
+
+    /// Carries out one 2D command. Returns the error response code if the guest got something wrong.
+    fn execute(
+        &mut self,
+        mem: &GuestMemoryMmap,
+        kind: u32,
+        body: &mut impl Read,
+    ) -> Result<(), u32> {
+        let mut body = Body(body);
+        match kind {
+            CMD_CREATE_2D => {
+                let (id, format, width, height) =
+                    (body.u32()?, body.u32()?, body.u32()?, body.u32()?);
+                let sane = id != 0
+                    && (1..=MAX_DIMENSION).contains(&width)
+                    && (1..=MAX_DIMENSION).contains(&height);
+                if !sane {
+                    return Err(RESP_ERR_INVALID_PARAMETER);
+                }
+                if self.resources.len() >= MAX_RESOURCES && !self.resources.contains_key(&id) {
+                    return Err(RESP_ERR_OUT_OF_MEMORY);
+                }
+                let pixels = vec![0u8; width as usize * height as usize * BYTES_PER_PIXEL];
+                self.resources.insert(
+                    id,
+                    Resource {
+                        width,
+                        height,
+                        format,
+                        backing: Vec::new(),
+                        pixels,
+                    },
+                );
+            }
+            CMD_UNREF => {
+                let id = body.u32()?;
+                self.resources
+                    .remove(&id)
+                    .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
+                if self.scanout == Some(id) {
+                    self.scanout = None;
+                }
+            }
+            CMD_SET_SCANOUT => {
+                let _rect = body.rect()?;
+                let (scanout, id) = (body.u32()?, body.u32()?);
+                if scanout >= SCANOUTS {
+                    return Err(RESP_ERR_INVALID_SCANOUT_ID);
+                }
+                // Resource zero turns the scanout off.
+                self.scanout = match id {
+                    0 => None,
+                    id => {
+                        self.resource(id)?;
+                        Some(id)
+                    }
+                };
+            }
+            CMD_ATTACH_BACKING => {
+                let (id, entries) = (body.u32()?, body.u32()?);
+                if entries > MAX_BACKING_ENTRIES {
+                    return Err(RESP_ERR_INVALID_PARAMETER);
+                }
+                let mut backing = Vec::with_capacity(entries as usize);
+                for _ in 0..entries {
+                    let (addr, len, _padding) = (body.u64()?, body.u32()?, body.u32()?);
+                    backing.push((GuestAddress(addr), len));
+                }
+                self.resource(id)?.backing = backing;
+            }
+            CMD_DETACH_BACKING => {
+                let id = body.u32()?;
+                self.resource(id)?.backing = Vec::new();
+            }
+            CMD_TRANSFER_2D => {
+                let rect = body.rect()?;
+                let (offset, id) = (body.u64()?, body.u32()?);
+                let resource = self.resource(id)?;
+                let inside = rect
+                    .x
+                    .checked_add(rect.width)
+                    .is_some_and(|right| right <= resource.width)
+                    && rect
+                        .y
+                        .checked_add(rect.height)
+                        .is_some_and(|bottom| bottom <= resource.height);
+                if !inside {
+                    return Err(RESP_ERR_INVALID_PARAMETER);
+                }
+                let stride = resource.width as usize * BYTES_PER_PIXEL;
+                let row_len = rect.width as usize * BYTES_PER_PIXEL;
+                for row in 0..rect.height as usize {
+                    // The guest's copy has the same layout as ours; `offset` is where the rectangle starts in it.
+                    let from = offset
+                        .checked_add((row * stride) as u64)
+                        .ok_or(RESP_ERR_INVALID_PARAMETER)?;
+                    let to = (rect.y as usize + row) * stride + rect.x as usize * BYTES_PER_PIXEL;
+                    read_backing(
+                        mem,
+                        &resource.backing,
+                        from,
+                        &mut resource.pixels[to..to + row_len],
+                    )
+                    .ok_or(RESP_ERR_INVALID_PARAMETER)?;
+                }
+            }
+            CMD_FLUSH => {
+                let _rect = body.rect()?;
+                let id = body.u32()?;
+                let shown = self.scanout == Some(id);
+                let resource = self
+                    .resources
+                    .get(&id)
+                    .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
+                if let (true, Some(sink)) = (shown, &self.sink) {
+                    sink.present(&Frame {
+                        width: resource.width,
+                        height: resource.height,
+                        format: resource.format,
+                        pixels: &resource.pixels,
+                    });
+                }
+            }
+            _ => return Err(RESP_ERR_UNSPEC),
+        }
+        Ok(())
+    }
+
+    /// The device's answer to one control command.
+    fn handle(
+        &mut self,
+        mem: &GuestMemoryMmap,
+        request: &[u8; HEADER_LEN],
+        body: &mut impl Read,
+    ) -> Vec<u8> {
+        let kind = word(request, 0);
+        let outcome = match kind {
+            CMD_GET_DISPLAY_INFO => RESP_OK_DISPLAY_INFO,
+            // With nowhere to show frames, there is nothing to keep track of.
+            CMD_FIRST_2D..=CMD_LAST_2D if self.sink.is_none() => RESP_OK_NODATA,
+            CMD_FIRST_2D..=CMD_LAST_2D => self
+                .execute(mem, kind, body)
+                .map_or_else(|error| error, |()| RESP_OK_NODATA),
+            // 3D, capability sets and EDID are not offered, so a driver has no business asking.
+            _ => RESP_ERR_UNSPEC,
+        };
+        respond(self.mode, request, outcome)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayMode {
@@ -57,16 +330,12 @@ fn word(bytes: &[u8], at: usize) -> u32 {
     )
 }
 
-/// The device's answer to one control command, from that command's header alone.
-fn respond(mode: DisplayMode, request: &[u8; HEADER_LEN]) -> Vec<u8> {
-    let (kind, body_len) = match word(request, 0) {
-        CMD_GET_DISPLAY_INFO => (
-            RESP_OK_DISPLAY_INFO,
-            DISPLAY_ENTRY_LEN * VIRTIO_GPU_MAX_SCANOUTS as usize,
-        ),
-        CMD_FIRST_2D..=CMD_LAST_2D => (RESP_OK_NODATA, 0),
-        // 3D, capability sets and EDID are not offered, so a driver has no business asking.
-        _ => (RESP_ERR_UNSPEC, 0),
+/// Builds the response of the given kind to `request`.
+fn respond(mode: DisplayMode, request: &[u8; HEADER_LEN], kind: u32) -> Vec<u8> {
+    let body_len = if kind == RESP_OK_DISPLAY_INFO {
+        DISPLAY_ENTRY_LEN * VIRTIO_GPU_MAX_SCANOUTS as usize
+    } else {
+        0
     };
     let mut response = vec![0u8; HEADER_LEN + body_len];
     response[..size_of::<u32>()].copy_from_slice(&kind.to_le_bytes());
@@ -91,24 +360,22 @@ fn respond(mode: DisplayMode, request: &[u8; HEADER_LEN]) -> Vec<u8> {
 fn drain_control(
     queue: &mut Queue,
     mem: &GuestMemoryMmap,
-    mode: DisplayMode,
+    display: &mut Display,
 ) -> Result<bool, virtio_queue::Error> {
     let mut used_any = false;
     while let Some(chain) = queue.pop_descriptor_chain(mem) {
         let head = chain.head_index();
         let mut request = [0u8; HEADER_LEN];
         // A chain too short to hold a header, or with no room for an answer, is returned unused.
-        let written = chain
-            .clone()
-            .reader(mem)
-            .ok()
-            .and_then(|mut reader| reader.read_exact(&mut request).ok())
-            .and_then(|()| chain.writer(mem).ok())
-            .and_then(|mut writer| {
-                writer
-                    .write_all(&respond(mode, &request))
-                    .ok()
-                    .map(|()| writer.bytes_written())
+        let response = chain.clone().reader(mem).ok().and_then(|mut reader| {
+            reader.read_exact(&mut request).ok()?;
+            Some(display.handle(mem, &request, &mut reader))
+        });
+        let written = response
+            .and_then(|response| {
+                let mut writer = chain.writer(mem).ok()?;
+                writer.write_all(&response).ok()?;
+                Some(writer.bytes_written())
             })
             .unwrap_or(0);
         queue.add_used(mem, head, written as u32)?;
@@ -133,7 +400,7 @@ enum Wake {
 }
 
 fn serve(
-    mode: DisplayMode,
+    mut display: Display,
     mut control: Queue,
     mut cursor: Queue,
     mem: GuestMemoryMmap,
@@ -141,7 +408,7 @@ fn serve(
     wake: Receiver<Wake>,
 ) {
     while let Ok(Wake::Queue) = wake.recv() {
-        let drained = drain_control(&mut control, &mem, mode)
+        let drained = drain_control(&mut control, &mem, &mut display)
             .and_then(|a| drain_cursor(&mut cursor, &mem).map(|b| a | b));
         match drained {
             Ok(true) => irq.signal_used(),
@@ -153,12 +420,27 @@ fn serve(
 
 pub struct Gpu {
     mode: DisplayMode,
+    sink: Option<Arc<dyn FrameSink>>,
     worker: Option<(Sender<Wake>, JoinHandle<()>)>,
 }
 
 impl Gpu {
+    /// A display that acknowledges everything and keeps nothing.
     pub fn headless(mode: DisplayMode) -> Self {
-        Self { mode, worker: None }
+        Self {
+            mode,
+            sink: None,
+            worker: None,
+        }
+    }
+
+    /// A display whose frames go to `sink`.
+    pub fn with_sink(mode: DisplayMode, sink: Arc<dyn FrameSink>) -> Self {
+        Self {
+            mode,
+            sink: Some(sink),
+            worker: None,
+        }
     }
 }
 
@@ -199,10 +481,15 @@ impl VirtioDevice for Gpu {
             return Err(DeviceError::MissingQueue);
         };
         let (wake, wakes) = mpsc::channel();
-        let mode = self.mode;
+        let display = Display {
+            mode: self.mode,
+            sink: self.sink.clone(),
+            resources: HashMap::new(),
+            scanout: None,
+        };
         let thread = thread::Builder::new()
             .name(copy::GPU_WORKER_NAME.into())
-            .spawn(move || serve(mode, control, cursor, ctx.mem, ctx.irq, wakes))?;
+            .spawn(move || serve(display, control, cursor, ctx.mem, ctx.irq, wakes))?;
         self.worker = Some((wake, thread));
         Ok(())
     }
@@ -231,15 +518,16 @@ impl Drop for Gpu {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use virtio_bindings::virtio_gpu::{
-        virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_FLUSH as CMD_RESOURCE_FLUSH,
         virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_SUBMIT_3D as CMD_SUBMIT_3D,
+        virtio_gpu_formats_VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM as FORMAT_BGRX,
     };
     use virtio_bindings::virtio_ring::VRING_DESC_F_WRITE;
     use virtio_queue::desc::RawDescriptor;
     use virtio_queue::desc::split::Descriptor;
     use virtio_queue::mock::MockSplitQueue;
-    use vm_memory::{Address, Bytes, GuestAddress};
 
     use super::*;
 
@@ -250,8 +538,15 @@ mod tests {
     const MEM_SIZE: usize = 2 << 20;
     const REQUEST_AT: u64 = 0x10_0000;
     const RESPONSE_AT: u64 = 0x11_0000;
+    /// Where the guest keeps its copy of the test image, in two pieces.
+    const BACKING_A: u64 = 0x12_0000;
+    const BACKING_B: u64 = 0x13_0000;
     const QUEUE_LEN: u16 = 16;
     const DISPLAY_INFO_LEN: usize = HEADER_LEN + DISPLAY_ENTRY_LEN * 16;
+    const IMAGE: u32 = 7;
+    const WIDTH: u32 = 4;
+    const HEIGHT: u32 = 3;
+    const IMAGE_BYTES: usize = (WIDTH * HEIGHT) as usize * BYTES_PER_PIXEL;
 
     fn header(kind: u32, flags: u32, fence: u64, ctx: u32) -> [u8; HEADER_LEN] {
         let mut header = [0u8; HEADER_LEN];
@@ -262,9 +557,87 @@ mod tests {
         header
     }
 
+    fn words(values: &[u32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    /// Width, height, format and pixels of one presented frame.
+    type Presented = (u32, u32, u32, Vec<u8>);
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<Presented>>);
+
+    impl FrameSink for Recorder {
+        fn present(&self, frame: &Frame<'_>) {
+            self.0.lock().unwrap().push((
+                frame.width,
+                frame.height,
+                frame.format,
+                frame.pixels.to_vec(),
+            ));
+        }
+    }
+
+    fn memory() -> GuestMemoryMmap {
+        GuestMemoryMmap::from_ranges(&[(GuestAddress(0), MEM_SIZE)]).unwrap()
+    }
+
+    fn display(sink: Option<Arc<Recorder>>) -> Display {
+        Display {
+            mode: MODE,
+            sink: sink.map(|sink| sink as Arc<dyn FrameSink>),
+            resources: HashMap::new(),
+            scanout: None,
+        }
+    }
+
+    /// Runs one command and returns the response's type.
+    fn run(display: &mut Display, mem: &GuestMemoryMmap, kind: u32, body: &[u8]) -> u32 {
+        word(
+            &display.handle(mem, &header(kind, 0, 0, 0), &mut &body[..]),
+            0,
+        )
+    }
+
+    /// The guest's image: pixel `n` is the four bytes `n, n, n, n`, split over two backing pieces.
+    fn guest_image(mem: &GuestMemoryMmap) -> Vec<u8> {
+        let image: Vec<u8> = (0..WIDTH * HEIGHT)
+            .flat_map(|pixel| [pixel as u8; BYTES_PER_PIXEL])
+            .collect();
+        let split = 20;
+        mem.write_slice(&image[..split], GuestAddress(BACKING_A))
+            .unwrap();
+        mem.write_slice(&image[split..], GuestAddress(BACKING_B))
+            .unwrap();
+        image
+    }
+
+    fn attach(display: &mut Display, mem: &GuestMemoryMmap) -> u32 {
+        let mut body = words(&[IMAGE, 2]);
+        body.extend(BACKING_A.to_le_bytes());
+        body.extend(words(&[20, 0]));
+        body.extend(BACKING_B.to_le_bytes());
+        body.extend(words(&[IMAGE_BYTES as u32 - 20, 0]));
+        run(display, mem, CMD_ATTACH_BACKING, &body)
+    }
+
+    fn transfer(display: &mut Display, mem: &GuestMemoryMmap, rect: [u32; 4], offset: u64) -> u32 {
+        let mut body = words(&rect);
+        body.extend(offset.to_le_bytes());
+        body.extend(words(&[IMAGE, 0]));
+        run(display, mem, CMD_TRANSFER_2D, &body)
+    }
+
     #[test]
     fn display_info_reports_one_enabled_scanout_of_the_configured_size() {
-        let response = respond(MODE, &header(CMD_GET_DISPLAY_INFO, 0, 0, 0));
+        let response = display(None).handle(
+            &memory(),
+            &header(CMD_GET_DISPLAY_INFO, 0, 0, 0),
+            &mut &[][..],
+        );
         assert_eq!(response.len(), DISPLAY_INFO_LEN);
         assert_eq!(word(&response, 0), RESP_OK_DISPLAY_INFO);
         let first = &response[HEADER_LEN..];
@@ -287,18 +660,20 @@ mod tests {
     }
 
     #[test]
-    fn two_d_commands_are_acknowledged_and_everything_else_is_an_error() {
+    fn headless_display_acknowledges_two_d_commands_without_reading_them() {
+        let mut headless = display(None);
+        let mem = memory();
         for kind in CMD_FIRST_2D..=CMD_LAST_2D {
-            let response = respond(MODE, &header(kind, 0, 0, 0));
             assert_eq!(
-                (response.len(), word(&response, 0)),
-                (HEADER_LEN, RESP_OK_NODATA),
+                run(&mut headless, &mem, kind, &[]),
+                RESP_OK_NODATA,
                 "command {kind:#x}"
             );
         }
+        assert!(headless.resources.is_empty());
         for kind in [0, CMD_SUBMIT_3D, CMD_LAST_2D + 1, u32::MAX] {
             assert_eq!(
-                word(&respond(MODE, &header(kind, 0, 0, 0)), 0),
+                run(&mut headless, &mem, kind, &[]),
                 RESP_ERR_UNSPEC,
                 "command {kind:#x}"
             );
@@ -307,15 +682,8 @@ mod tests {
 
     #[test]
     fn fenced_command_gets_its_fence_back_and_an_unfenced_one_gets_zeros() {
-        let fenced = respond(
-            MODE,
-            &header(
-                CMD_RESOURCE_FLUSH,
-                VIRTIO_GPU_FLAG_FENCE | 0x80,
-                0xfeed_beef,
-                7,
-            ),
-        );
+        let request = header(CMD_FLUSH, VIRTIO_GPU_FLAG_FENCE | 0x80, 0xfeed_beef, 7);
+        let fenced = respond(MODE, &request, RESP_OK_NODATA);
         assert_eq!(
             word(&fenced, 4),
             VIRTIO_GPU_FLAG_FENCE,
@@ -326,13 +694,247 @@ mod tests {
             0xfeed_beef
         );
         assert_eq!(word(&fenced, 16), 7);
-        let plain = respond(MODE, &header(CMD_RESOURCE_FLUSH, 0, 0xfeed_beef, 7));
+        let plain = respond(MODE, &header(CMD_FLUSH, 0, 0xfeed_beef, 7), RESP_OK_NODATA);
         assert!(plain[4..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
+    fn flushed_scanout_reaches_the_sink_with_the_guests_pixels() {
+        let sink = Arc::new(Recorder::default());
+        let mut display = display(Some(sink.clone()));
+        let mem = memory();
+        let image = guest_image(&mem);
+
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_CREATE_2D,
+                &words(&[IMAGE, FORMAT_BGRX, WIDTH, HEIGHT])
+            ),
+            RESP_OK_NODATA
+        );
+        assert_eq!(attach(&mut display, &mem), RESP_OK_NODATA);
+        assert_eq!(
+            transfer(&mut display, &mem, [0, 0, WIDTH, HEIGHT], 0),
+            RESP_OK_NODATA
+        );
+        // Flushing before the resource is on the scanout shows nothing.
+        let flush = words(&[0, 0, WIDTH, HEIGHT, IMAGE, 0]);
+        assert_eq!(run(&mut display, &mem, CMD_FLUSH, &flush), RESP_OK_NODATA);
+        assert!(sink.0.lock().unwrap().is_empty());
+
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_SET_SCANOUT,
+                &words(&[0, 0, WIDTH, HEIGHT, 0, IMAGE])
+            ),
+            RESP_OK_NODATA
+        );
+        assert_eq!(run(&mut display, &mem, CMD_FLUSH, &flush), RESP_OK_NODATA);
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            [(WIDTH, HEIGHT, FORMAT_BGRX, image)]
+        );
+    }
+
+    #[test]
+    fn partial_transfer_updates_only_its_rectangle() {
+        let sink = Arc::new(Recorder::default());
+        let mut display = display(Some(sink.clone()));
+        let mem = memory();
+        let image = guest_image(&mem);
+        run(
+            &mut display,
+            &mem,
+            CMD_CREATE_2D,
+            &words(&[IMAGE, FORMAT_BGRX, WIDTH, HEIGHT]),
+        );
+        attach(&mut display, &mem);
+        // A 2x1 rectangle at (1, 2): its first pixel is number 2 * 4 + 1 = 9 in the image.
+        let offset = (9 * BYTES_PER_PIXEL) as u64;
+        assert_eq!(
+            transfer(&mut display, &mem, [1, 2, 2, 1], offset),
+            RESP_OK_NODATA
+        );
+        let pixels = &display.resources[&IMAGE].pixels;
+        let start = 9 * BYTES_PER_PIXEL;
+        assert_eq!(&pixels[start..start + 8], &image[start..start + 8]);
+        assert!(
+            pixels[..start]
+                .iter()
+                .chain(&pixels[start + 8..])
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    #[test]
+    fn commands_that_do_not_add_up_are_refused() {
+        let mut display = display(Some(Arc::new(Recorder::default())));
+        let mem = memory();
+        let create = |display: &mut Display, id, width, height| {
+            run(
+                display,
+                &mem,
+                CMD_CREATE_2D,
+                &words(&[id, FORMAT_BGRX, width, height]),
+            )
+        };
+        assert_eq!(
+            create(&mut display, 0, 4, 4),
+            RESP_ERR_INVALID_PARAMETER,
+            "resource id zero"
+        );
+        assert_eq!(
+            create(&mut display, 1, 0, 4),
+            RESP_ERR_INVALID_PARAMETER,
+            "empty"
+        );
+        assert_eq!(
+            create(&mut display, 1, MAX_DIMENSION + 1, 4),
+            RESP_ERR_INVALID_PARAMETER,
+            "too wide"
+        );
+        assert_eq!(
+            run(&mut display, &mem, CMD_CREATE_2D, &words(&[1, FORMAT_BGRX])),
+            RESP_ERR_INVALID_PARAMETER,
+            "short body"
+        );
+
+        assert_eq!(create(&mut display, IMAGE, WIDTH, HEIGHT), RESP_OK_NODATA);
+        assert_eq!(
+            transfer(&mut display, &mem, [0, 0, WIDTH, HEIGHT], 0),
+            RESP_ERR_INVALID_PARAMETER,
+            "no backing yet"
+        );
+        guest_image(&mem);
+        attach(&mut display, &mem);
+        assert_eq!(
+            transfer(&mut display, &mem, [1, 0, WIDTH, HEIGHT], 0),
+            RESP_ERR_INVALID_PARAMETER,
+            "off the right edge"
+        );
+        assert_eq!(
+            transfer(&mut display, &mem, [u32::MAX, 0, 2, 1], 0),
+            RESP_ERR_INVALID_PARAMETER,
+            "overflowing x"
+        );
+        assert_eq!(
+            transfer(&mut display, &mem, [0, 0, WIDTH, HEIGHT], 4),
+            RESP_ERR_INVALID_PARAMETER,
+            "past the backing"
+        );
+        assert_eq!(
+            transfer(&mut display, &mem, [0, 0, WIDTH, HEIGHT], u64::MAX),
+            RESP_ERR_INVALID_PARAMETER
+        );
+
+        assert_eq!(
+            run(&mut display, &mem, CMD_FLUSH, &words(&[0, 0, 1, 1, 99, 0])),
+            RESP_ERR_INVALID_RESOURCE_ID
+        );
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_SET_SCANOUT,
+                &words(&[0, 0, 1, 1, 0, 99])
+            ),
+            RESP_ERR_INVALID_RESOURCE_ID
+        );
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_SET_SCANOUT,
+                &words(&[0, 0, 1, 1, 1, IMAGE])
+            ),
+            RESP_ERR_INVALID_SCANOUT_ID
+        );
+        assert_eq!(
+            run(
+                &mut display,
+                &mem,
+                CMD_ATTACH_BACKING,
+                &words(&[IMAGE, MAX_BACKING_ENTRIES + 1])
+            ),
+            RESP_ERR_INVALID_PARAMETER
+        );
+        assert_eq!(
+            run(&mut display, &mem, CMD_UNREF, &words(&[99, 0])),
+            RESP_ERR_INVALID_RESOURCE_ID
+        );
+    }
+
+    #[test]
+    fn backing_outside_guest_memory_fails_the_transfer() {
+        let mut display = display(Some(Arc::new(Recorder::default())));
+        let mem = memory();
+        run(
+            &mut display,
+            &mem,
+            CMD_CREATE_2D,
+            &words(&[IMAGE, FORMAT_BGRX, WIDTH, HEIGHT]),
+        );
+        let mut body = words(&[IMAGE, 1]);
+        body.extend((MEM_SIZE as u64).to_le_bytes());
+        body.extend(words(&[IMAGE_BYTES as u32, 0]));
+        assert_eq!(
+            run(&mut display, &mem, CMD_ATTACH_BACKING, &body),
+            RESP_OK_NODATA
+        );
+        assert_eq!(
+            transfer(&mut display, &mem, [0, 0, WIDTH, HEIGHT], 0),
+            RESP_ERR_INVALID_PARAMETER
+        );
+    }
+
+    #[test]
+    fn unreferencing_the_shown_resource_turns_the_scanout_off_and_resources_are_capped() {
+        let mut display = display(Some(Arc::new(Recorder::default())));
+        let mem = memory();
+        run(
+            &mut display,
+            &mem,
+            CMD_CREATE_2D,
+            &words(&[IMAGE, FORMAT_BGRX, WIDTH, HEIGHT]),
+        );
+        run(
+            &mut display,
+            &mem,
+            CMD_SET_SCANOUT,
+            &words(&[0, 0, WIDTH, HEIGHT, 0, IMAGE]),
+        );
+        assert_eq!(display.scanout, Some(IMAGE));
+        assert_eq!(
+            run(&mut display, &mem, CMD_UNREF, &words(&[IMAGE, 0])),
+            RESP_OK_NODATA
+        );
+        assert_eq!(display.scanout, None);
+
+        for id in 1..=MAX_RESOURCES as u32 {
+            assert_eq!(
+                run(
+                    &mut display,
+                    &mem,
+                    CMD_CREATE_2D,
+                    &words(&[id, FORMAT_BGRX, 1, 1])
+                ),
+                RESP_OK_NODATA
+            );
+        }
+        let one_more = words(&[MAX_RESOURCES as u32 + 1, FORMAT_BGRX, 1, 1]);
+        assert_eq!(
+            run(&mut display, &mem, CMD_CREATE_2D, &one_more),
+            RESP_ERR_OUT_OF_MEMORY
+        );
+    }
+
+    #[test]
     fn control_queue_answers_in_the_guests_buffer_and_survives_bad_chains() {
-        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), MEM_SIZE)]).unwrap();
+        let mem = memory();
         let mock = MockSplitQueue::new(&mem, QUEUE_LEN);
         mem.write_slice(
             &header(CMD_GET_DISPLAY_INFO, 0, 0, 0),
@@ -352,8 +954,9 @@ mod tests {
         ];
         mock.add_desc_chains(&chains, 0).unwrap();
         let mut queue: Queue = mock.create_queue().unwrap();
+        let mut display = display(None);
 
-        assert!(drain_control(&mut queue, &mem, MODE).unwrap());
+        assert!(drain_control(&mut queue, &mem, &mut display).unwrap());
         let used_len = |index: u64| -> u32 {
             mem.read_obj(mock.used_addr().unchecked_add(4 + index * 8 + 4))
                 .unwrap()
@@ -367,10 +970,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             response,
-            respond(MODE, &header(CMD_GET_DISPLAY_INFO, 0, 0, 0))
+            respond(
+                MODE,
+                &header(CMD_GET_DISPLAY_INFO, 0, 0, 0),
+                RESP_OK_DISPLAY_INFO
+            )
         );
         assert!(
-            !drain_control(&mut queue, &mem, MODE).unwrap(),
+            !drain_control(&mut queue, &mem, &mut display).unwrap(),
             "nothing left"
         );
     }

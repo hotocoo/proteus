@@ -10,6 +10,8 @@ mod android;
 pub mod config;
 pub mod console;
 mod copy;
+#[cfg(target_arch = "aarch64")]
+mod frames;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
