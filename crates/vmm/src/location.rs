@@ -1,8 +1,8 @@
 //! Where the guest believes it is.
 //!
 //! The Android image's location service asks one of its terminals for a position about once a
-//! second by writing a command to it, and reads back two NMEA sentences. Until a position has been
-//! set here nothing is answered, and the image reports its built-in default.
+//! second by writing a command to it, and reads back one line describing a fix. Until a position
+//! has been set here nothing is answered, and the image reports its built-in default.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,10 +16,9 @@ pub const PORT: usize = 7;
 const REQUEST: &[u8] = b"CMD_GET_LOCATION";
 /// What the image reads as the end of an answer.
 const END_OF_ANSWER: &str = "\n\n\n\n";
-const SECONDS_PER_DAY: u64 = 86_400;
-const SECONDS_PER_HOUR: u64 = 3600;
-const SECONDS_PER_MINUTE: u64 = 60;
-const MINUTES_PER_DEGREE: f64 = 60.0;
+const PROVIDER: &str = "GPS";
+/// How exact the guest is told the position is.
+const ACCURACY_METRES: f64 = 3.0;
 const MAX_LATITUDE: f64 = 90.0;
 const MAX_LONGITUDE: f64 = 180.0;
 
@@ -45,64 +44,18 @@ impl Fix {
     }
 }
 
-/// Year, month, day of a count of days since 1970-01-01 (the usual civil-calendar arithmetic).
-fn date(days: u64) -> (u64, u64, u64) {
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    (year, month, day)
-}
-
-/// An angle as NMEA writes it: whole degrees, then minutes with a fraction, in one number.
-fn angle(degrees: f64, degree_digits: usize) -> String {
-    let degrees = degrees.abs();
-    let whole = degrees.trunc();
-    let minutes = (degrees - whole) * MINUTES_PER_DEGREE;
-    format!("{whole:0degree_digits$}{minutes:09.6}")
-}
-
-fn sentence(body: &str) -> String {
-    let checksum = body.bytes().fold(0u8, |sum, byte| sum ^ byte);
-    format!("${body}*{checksum:02X}\n")
-}
-
-/// The answer to one position request: a GGA and an RMC sentence for `fix` at `unix_seconds`.
-fn answer(fix: &Fix, unix_seconds: u64) -> String {
-    let time_of_day = unix_seconds % SECONDS_PER_DAY;
-    let time = format!(
-        "{:02}{:02}{:02}.00",
-        time_of_day / SECONDS_PER_HOUR,
-        time_of_day % SECONDS_PER_HOUR / SECONDS_PER_MINUTE,
-        time_of_day % SECONDS_PER_MINUTE
-    );
-    let (year, month, day) = date(unix_seconds / SECONDS_PER_DAY);
-    let latitude = angle(fix.latitude, 2);
-    let north = if fix.latitude >= 0.0 { 'N' } else { 'S' };
-    let longitude = angle(fix.longitude, 3);
-    let east = if fix.longitude >= 0.0 { 'E' } else { 'W' };
-    let position = format!("{latitude},{north},{longitude},{east}");
-    // Fix quality 1 (a satellite fix), eight satellites, horizontal dilution 0.9, no geoid offset.
-    let gga = format!(
-        "GPGGA,{time},{position},1,08,0.9,{:.1},M,0.0,M,,",
-        fix.altitude
-    );
-    // Status A (valid), standing still, no heading.
-    let rmc = format!(
-        "GPRMC,{time},A,{position},000.0,000.0,{day:02}{month:02}{:02},,,A",
-        year % 100
-    );
-    format!("{}{}{END_OF_ANSWER}", sentence(&gga), sentence(&rmc))
+/// The answer to one position request, at `unix_millis`: one line of twelve comma-separated fields.
+/// In order: the word "Fix", the provider, latitude, longitude, altitude, speed, accuracy in metres,
+/// bearing, the time, speed accuracy, bearing accuracy, and a clock reading the image ignores.
+fn answer(fix: &Fix, unix_millis: u128) -> String {
+    let Fix {
+        latitude,
+        longitude,
+        altitude,
+    } = fix;
+    format!(
+        "Fix,{PROVIDER},{latitude},{longitude},{altitude},0,{ACCURACY_METRES},0,{unix_millis},0,0,0{END_OF_ANSWER}"
+    )
 }
 
 /// The position to report, shared between whoever sets it and the terminal that answers with it.
@@ -154,7 +107,7 @@ impl Write for Requests {
         self.tail.drain(..self.tail.len() - keep);
         if let (true, Some(fix)) = (asked > 0, self.location.get()) {
             let now = SystemTime::now().duration_since(UNIX_EPOCH);
-            let text = answer(&fix, now.map_or(0, |since| since.as_secs()));
+            let text = answer(&fix, now.map_or(0, |since| since.as_millis()));
             self.answers.send(PORT, text.as_bytes());
         }
         Ok(bytes.len())
@@ -171,43 +124,16 @@ mod tests {
 
     use super::*;
 
-    /// 2019-08-29 21:32:04 UTC, the moment in the NMEA example the image's parser documents.
-    const EXAMPLE_TIME: u64 = 1_567_114_324;
-
     #[test]
-    fn dates_follow_the_calendar_across_leap_years() {
-        assert_eq!(date(0), (1970, 1, 1));
-        assert_eq!(date(EXAMPLE_TIME / SECONDS_PER_DAY), (2019, 8, 29));
-        // 2024-02-29 and the day after.
-        assert_eq!(date(19_782), (2024, 2, 29));
-        assert_eq!(date(19_783), (2024, 3, 1));
-    }
-
-    #[test]
-    fn answer_is_the_two_sentences_the_image_parses() {
-        let fix = Fix::new(37.422_854, -122.093_153_983, 12.34).unwrap();
-        let text = answer(&fix, EXAMPLE_TIME);
-        let mut lines = text.split('\n');
-        let gga = lines.next().unwrap();
-        let rmc = lines.next().unwrap();
+    fn answer_is_the_one_line_the_image_parses() {
+        let fix = Fix::new(3.139_003, -101.686_855, 60.5).unwrap();
+        let text = answer(&fix, 1_795_000_000_123);
         assert_eq!(
-            gga,
-            "$GPGGA,213204.00,3725.371240,N,12205.589239,W,1,08,0.9,12.3,M,0.0,M,,*71"
+            text,
+            "Fix,GPS,3.139003,-101.686855,60.5,0,3,0,1795000000123,0,0,0\n\n\n\n"
         );
-        assert_eq!(
-            rmc,
-            "$GPRMC,213204.00,A,3725.371240,N,12205.589239,W,000.0,000.0,290819,,,A*49"
-        );
-        assert!(text.ends_with(END_OF_ANSWER));
-        // The image needs at least thirteen comma-separated fields in each.
-        assert!(gga.split(',').count() >= 13 && rmc.split(',').count() >= 13);
-    }
-
-    #[test]
-    fn southern_and_eastern_positions_change_the_hemisphere_letters() {
-        let fix = Fix::new(-33.5, 151.25, 0.0).unwrap();
-        let text = answer(&fix, 0);
-        assert!(text.contains(",3330.000000,S,15115.000000,E,"));
+        // The image needs at least twelve fields on the first line.
+        assert_eq!(text.lines().next().unwrap().split(',').count(), 12);
     }
 
     #[test]
@@ -229,7 +155,7 @@ mod tests {
 
         location.set(Fix::new(1.0, 2.0, 3.0).unwrap());
         // A request split across writes, with echoed text around it.
-        requests.write_all(b"$GPGGA,echo\nCMD_GET_LO").unwrap();
+        requests.write_all(b"Fix,GPS,echo\nCMD_GET_LO").unwrap();
         assert_eq!(console.pending(PORT), 0);
         requests.write_all(b"CATION").unwrap();
         let one_answer = console.pending(PORT);
