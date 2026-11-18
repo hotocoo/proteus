@@ -30,16 +30,26 @@ pub fn io(err: &dyn Display) -> String {
     format!("reading boot file: {err}")
 }
 
+#[cfg(target_arch = "aarch64")]
 pub const KERNEL_TOO_SHORT: &str = "file is shorter than an ARM64 Image header";
+#[cfg(target_arch = "aarch64")]
 pub const KERNEL_BAD_MAGIC: &str =
     "missing the ARM64 Image magic; an uncompressed Image is required";
+#[cfg(target_arch = "aarch64")]
 pub const KERNEL_BAD_OFFSET: &str = "load offset is not 2 MiB aligned";
+#[cfg(target_arch = "aarch64")]
 pub const KERNEL_OVERLAPS_INITRD: &str = "kernel image reaches into the ramdisk area";
+#[cfg(target_arch = "aarch64")]
 pub const INITRD_OVERLAPS_FDT: &str = "ramdisk and bootconfig reach into the device tree area";
+#[cfg(target_arch = "aarch64")]
 pub const FDT_TOO_LARGE: &str = "device tree exceeds 2 MiB";
+#[cfg(target_arch = "aarch64")]
 pub const RAM_TOO_SMALL: &str = "RAM is smaller than the fixed boot layout needs";
+#[cfg(target_arch = "aarch64")]
 pub const RAM_TOO_LARGE: &str = "RAM would run into the GPU shared-memory window";
+#[cfg(target_arch = "aarch64")]
 pub const TOO_MANY_VCPUS: &str = "vCPU count is zero or exceeds what the redistributor area holds";
+#[cfg(target_arch = "aarch64")]
 pub const TOO_MANY_VIRTIO: &str = "more virtio devices than the board has slots";
 pub const BOOTCONFIG_BAD_KEY: &str = "keys may hold only letters, digits, '.', '-' and '_'";
 pub const BOOTCONFIG_BAD_VALUE: &str = "values may not contain a double quote, newline or NUL";

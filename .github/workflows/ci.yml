@@ -37,14 +37,12 @@ jobs:
         run: cargo build --release --locked -p vmm
 
   portable:
-    # No hypervisor backend exists for these hosts yet. Everything that does not need one
-    # (devices, networking, boot image handling) is built and tested so that it stays portable.
-    name: Build and test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
+    # No hypervisor backend exists for Linux yet. Everything that does not need one (devices,
+    # networking, boot image handling) is built and tested there so that it stays portable.
+    # Windows is absent on purpose: the virtio-queue crate enables a vm-memory feature that refuses
+    # to compile for Windows, so the device crates cannot build there until that is replaced.
+    name: Build and test (Linux x86_64)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
