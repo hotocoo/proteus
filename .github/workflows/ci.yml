@@ -74,10 +74,12 @@ jobs:
       - name: Hypervisor tests
         run: cargo test --locked -p hv
       - name: Fetch a test kernel and ramdisk
-        # Firecracker's CI images: a vmlinux with virtio-mmio and 8250, and a BusyBox ramdisk.
+        # Firecracker's CI images: a BusyBox ramdisk, and a vmlinux from before Firecracker moved to
+        # ACPI, so it finds CPUs in the MP table and virtio-mmio devices on its command line, as this
+        # board describes them.
         run: |
           base=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci
-          curl -sSfL --retry 3 -o "$RUNNER_TEMP/vmlinux" "$base/v1.11/x86_64/vmlinux-6.1.102"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/vmlinux" "$base/v1.7/x86_64/vmlinux-6.1.77"
           curl -sSfL --retry 3 -o "$RUNNER_TEMP/initramfs.cpio" "$base/v1.10/x86_64/initramfs.cpio"
       - name: Boot Linux on KVM
         env:
