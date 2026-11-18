@@ -1,0 +1,35 @@
+# Config fragment applied on top of gki_defconfig for the emulator's guest kernel.
+# The board is virtio-mmio only, and stock GKI has no virtio-mmio at all, so every driver the boot
+# path needs is built in here. Nothing has to be loaded as a module before the root disk is mounted.
+
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_DRM=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_SND_VIRTIO=y
+
+CONFIG_EROFS_FS=y
+CONFIG_F2FS_FS=y
+
+# Debug console. GKI ships with zero 8250 ports; one is enough.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_RUNTIME_UARTS=1
+
+# Build-time only: none of these change what the guest can do, and they multiply build time or tie
+# the build to one exact compiler.
+CONFIG_LTO_NONE=y
+# CONFIG_LTO_CLANG_THIN is not set
+# CONFIG_LTO_CLANG_FULL is not set
+# CONFIG_CFI_CLANG is not set
+# CONFIG_WERROR is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT is not set
+# CONFIG_DEBUG_INFO_DWARF4 is not set
+# CONFIG_DEBUG_INFO_DWARF5 is not set
+# CONFIG_DEBUG_INFO_BTF is not set

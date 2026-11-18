@@ -1,0 +1,9 @@
+# x86_64 additions: no ACPI and no PCI on this board, so CPUs and the IOAPIC come from an MP table,
+# time comes from the hypervisor's paravirtual clock, and the wall clock from a CMOS RTC.
+CONFIG_X86_MPPARSE=y
+CONFIG_X86_X2APIC=y
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_KVM_GUEST=y
+CONFIG_HYPERV=y
+CONFIG_RTC_DRV_CMOS=y

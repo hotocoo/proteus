@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  EMU_SKIP_HV_TESTS: "1"
+
+jobs:
+  macos:
+    name: macOS arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install toolchain and device tree compiler
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          brew install dtc
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Build
+        run: cargo build --release --locked -p vmm
+      - name: Sign with the hypervisor entitlement
+        run: codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/release/emu
+      - name: Package
+        run: |
+          name="emu-${GITHUB_REF_NAME}-macos-arm64"
+          mkdir "$name"
+          cp target/release/emu README.md packaging/macos/hv.entitlements "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag $prerelease \
+            --title "emu ${GITHUB_REF_NAME#v}" emu-*.tar.gz emu-*.tar.gz.sha256
