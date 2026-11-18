@@ -11,7 +11,9 @@ use std::sync::Arc;
 use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -19,7 +21,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
 use crate::input::button_code;
-use crate::keymap::{Mapper, Touch};
+use crate::keymap::{Mapper, Scroll, Touch};
 use crate::{VmmError, copy};
 
 /// The finger the mouse stands for.
@@ -336,6 +338,16 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => self.touch(false),
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => Scroll::Turns(f64::from(lines)),
+                    MouseScrollDelta::PixelDelta(moved) => Scroll::Pixels(moved.y),
+                };
+                if let Some(map) = self.mapper.as_mut() {
+                    let touches = map.scroll(scroll);
+                    self.apply(&touches);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 let PhysicalKey::Code(key) = event.physical_key else {
                     return;

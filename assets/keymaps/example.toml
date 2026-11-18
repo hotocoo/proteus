@@ -39,3 +39,9 @@ key = "Backquote"
 center = [860, 300]
 radius = 250
 sensitivity = 1.0
+
+# Each turn of the mouse wheel is a pinch of two fingers around the centre: away from you zooms in.
+[zoom]
+center = [640, 360]
+spread = 120
+step = 60

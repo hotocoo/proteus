@@ -24,6 +24,11 @@
 //! center = [900, 300]
 //! radius = 250
 //! sensitivity = 1.0
+//!
+//! [zoom]                    # each turn of the mouse wheel is a pinch of two fingers
+//! center = [640, 360]
+//! spread = 120              # how far from the centre each finger lands
+//! step = 60                 # how far each finger moves per turn
 //! ```
 //!
 //! The map is a plain state machine from key and pointer events to touches, so that it can be
@@ -38,6 +43,11 @@ use crate::input::{TOUCH_SLOTS, key_or_button_code};
 const FIRST_FINGER: u32 = 1;
 const LAST_FINGER: u32 = TOUCH_SLOTS - 2;
 const DEFAULT_SENSITIVITY: f64 = 1.0;
+/// Moves each finger of a pinch makes between landing and lifting; a pinch that jumps in one move
+/// is not always read as one.
+const ZOOM_MOVES: u32 = 4;
+/// Scrolling by pixels (a trackpad) this far is one turn of a wheel.
+const ZOOM_PIXELS_PER_TURN: f64 = 40.0;
 
 /// One thing the map does to the guest's touchscreen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +72,15 @@ struct File {
     #[serde(default)]
     stick: Vec<StickEntry>,
     look: Option<LookEntry>,
+    zoom: Option<ZoomEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ZoomEntry {
+    center: [u32; 2],
+    spread: u32,
+    step: u32,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +135,24 @@ struct Look {
     at: Option<(f64, f64)>,
 }
 
+struct Zoom {
+    center: (u32, u32),
+    spread: u32,
+    step: u32,
+    fingers: [u32; 2],
+    /// Pixels scrolled that do not yet add up to a turn.
+    pixels: f64,
+}
+
+/// How far the mouse wheel turned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scroll {
+    /// Turns of a wheel; positive is away from the user.
+    Turns(f64),
+    /// Pixels, from a trackpad; positive is away from the user.
+    Pixels(f64),
+}
+
 /// A key map, and what it is doing right now.
 pub struct Mapper {
     display: (u32, u32),
@@ -126,6 +163,7 @@ pub struct Mapper {
     tapping: Vec<bool>,
     sticks: Vec<Stick>,
     look: Option<Look>,
+    zoom: Option<Zoom>,
 }
 
 fn key(name: &str, used: &mut Vec<u16>) -> Result<u16, String> {
@@ -209,6 +247,22 @@ impl Mapper {
             }
             None => None,
         };
+        let zoom = match &file.zoom {
+            Some(entry) => {
+                // Zooming out moves the fingers in by a step, so they must not meet or cross.
+                if entry.step == 0 || entry.step >= entry.spread {
+                    return Err(copy::KEYMAP_BAD_ZOOM.to_owned());
+                }
+                Some(Zoom {
+                    center: circle(entry.center, entry.spread + entry.step, display)?,
+                    spread: entry.spread,
+                    step: entry.step,
+                    fingers: [finger()?, finger()?],
+                    pixels: 0.0,
+                })
+            }
+            None => None,
+        };
         Ok(Self {
             display,
             toggle,
@@ -217,7 +271,31 @@ impl Mapper {
             taps,
             sticks,
             look,
+            zoom,
         })
+    }
+
+    /// The mouse wheel turned. Each whole turn away from the user is a pinch that zooms in, each
+    /// turn towards the user one that zooms out. Without a `[zoom]` the wheel does nothing.
+    pub fn scroll(&mut self, scroll: Scroll) -> Vec<Touch> {
+        let Some(zoom) = self.zoom.as_mut().filter(|_| self.enabled) else {
+            return Vec::new();
+        };
+        let turns = match scroll {
+            Scroll::Turns(turns) => turns.trunc(),
+            Scroll::Pixels(pixels) => {
+                zoom.pixels += pixels;
+                let turns = (zoom.pixels / ZOOM_PIXELS_PER_TURN).trunc();
+                zoom.pixels -= turns * ZOOM_PIXELS_PER_TURN;
+                turns
+            }
+        };
+        let outwards = turns > 0.0;
+        let mut touches = Vec::new();
+        for _ in 0..turns.abs() as u32 {
+            touches.extend(zoom.pinch(outwards));
+        }
+        touches
     }
 
     /// Whether the mouse belongs to the map right now (it is dragging the view). The window should
@@ -351,6 +429,36 @@ impl Mapper {
     }
 }
 
+impl Zoom {
+    /// Two fingers on either side of the centre, moved apart or together by a step, then lifted.
+    fn pinch(&self, outwards: bool) -> Vec<Touch> {
+        let (x, y) = self.center;
+        let [left, right] = self.fingers;
+        let mut touches = Vec::new();
+        for moved in 0..=ZOOM_MOVES {
+            let travel = self.step * moved / ZOOM_MOVES;
+            let reach = if outwards {
+                self.spread + travel
+            } else {
+                self.spread - travel
+            };
+            touches.push(Touch::Place {
+                finger: left,
+                x: x - reach,
+                y,
+            });
+            touches.push(Touch::Place {
+                finger: right,
+                x: x + reach,
+                y,
+            });
+        }
+        touches.push(Touch::Lift { finger: left });
+        touches.push(Touch::Lift { finger: right });
+        touches
+    }
+}
+
 impl Stick {
     /// Where the finger goes for the keys that are held, or `None` if none is (or they cancel out).
     fn target(&self) -> Option<(u32, u32)> {
@@ -415,6 +523,11 @@ mod tests {
         key = "Backquote"
         center = [900, 300]
         radius = 250
+
+        [zoom]
+        center = [640, 360]
+        spread = 120
+        step = 60
     "#;
 
     fn code(name: &str) -> u16 {
@@ -513,6 +626,40 @@ mod tests {
     }
 
     #[test]
+    fn each_wheel_turn_is_a_pinch_out_or_in_and_trackpad_pixels_add_up_to_turns() {
+        let mut map = mapper();
+        let pinch = map.scroll(Scroll::Turns(1.0));
+        // Down at the spread, moved out by the step, lifted.
+        assert_eq!(pinch.len(), 2 * (ZOOM_MOVES as usize + 1) + 2);
+        assert_eq!(&pinch[..2], &[place(5, 520, 360), place(6, 760, 360)]);
+        let last_move = 2 * ZOOM_MOVES as usize;
+        assert_eq!(
+            &pinch[last_move..],
+            &[
+                place(5, 460, 360),
+                place(6, 820, 360),
+                Touch::Lift { finger: 5 },
+                Touch::Lift { finger: 6 }
+            ]
+        );
+        let pinch = map.scroll(Scroll::Turns(-2.0));
+        assert_eq!(pinch.len(), 2 * (2 * (ZOOM_MOVES as usize + 1) + 2));
+        assert_eq!(
+            &pinch[last_move..last_move + 2],
+            &[place(5, 580, 360), place(6, 700, 360)]
+        );
+        // A part of a turn is nothing.
+        assert!(map.scroll(Scroll::Turns(0.5)).is_empty());
+        // Trackpad pixels count up until they make a turn, and the rest carries over.
+        assert!(map.scroll(Scroll::Pixels(30.0)).is_empty());
+        assert_eq!(map.scroll(Scroll::Pixels(30.0)).len(), pinch.len() / 2);
+        assert_eq!(map.scroll(Scroll::Pixels(20.0)).len(), pinch.len() / 2);
+        // Switched off, the wheel does nothing.
+        map.key(code("F12"), true);
+        assert!(map.scroll(Scroll::Turns(1.0)).is_empty());
+    }
+
+    #[test]
     fn toggle_lifts_every_finger_and_passes_keys_through_until_toggled_back() {
         let mut map = mapper();
         let toggle = code("F12");
@@ -563,6 +710,15 @@ mod tests {
         assert_eq!(
             refused("[look]\nkey = \"F1\"\ncenter = [600, 300]\nradius = 100\nsensitivity = 0"),
             copy::KEYMAP_BAD_SENSITIVITY
+        );
+        let zoom = "[zoom]\ncenter = [640, 360]\n";
+        assert_eq!(
+            refused(&format!("{zoom}spread = 50\nstep = 50")),
+            copy::KEYMAP_BAD_ZOOM
+        );
+        assert_eq!(
+            refused(&format!("{zoom}spread = 300\nstep = 100")),
+            copy::keymap_circle_off_screen(640, 360, 400)
         );
         // More bindings than there are fingers.
         let keys = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9"];
