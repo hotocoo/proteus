@@ -60,7 +60,12 @@ Usage: emu --kernel <file> [options]
                                          0 0 0 is upright, -90 0 0 is flat on a table
   shake                                  Shake the device
   stop                                   Turn the machine off at once, like pulling the plug;
-                                         shut Android down from inside when you can";
+                                         shut Android down from inside when you can
+  record <file>                          Record the touches and keys that follow as a macro
+  record-stop                            End the recording and write the file
+  run <file> [<times>]                   Play a macro: a file of these commands, one per line,
+                                         with `wait <ms>` for pauses and `#` for comments
+  cancel                                 Stop the macro that is playing";
 
 pub const USAGE_HINT: &str = "run `emu --help` for usage";
 
@@ -236,6 +241,20 @@ pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";
 pub const CTL_NO_KEYBOARD: &str = "this instance has no keyboard";
 pub const CTL_NO_DISPLAY: &str = "this instance has no display to capture";
 pub const CTL_NO_SENSORS: &str = "this instance has no motion sensors";
+pub const CTL_MACRO_TOO_LARGE: &str = "that macro file is larger than a macro can be";
+pub const CTL_MACRO_CANCELLED: &str = "the macro was cancelled";
+pub const CTL_ALREADY_RECORDING: &str =
+    "a macro is already being recorded; end it with record-stop";
+pub const CTL_NOT_RECORDING: &str = "no macro is being recorded";
+/// First line of a recorded macro file.
+pub const MACRO_HEADER: &str = "# Recorded by emu. One command per line; see `emu --help`.";
+
+pub fn ctl_bad_macro_line(path: &Path, line: usize) -> String {
+    format!(
+        "{}: line {line} is not a command a macro can contain",
+        path.display()
+    )
+}
 pub const CTL_NO_LOCATION: &str = "this instance has no location service";
 pub const CTL_BAD_LOCATION: &str =
     "a location needs a latitude from -90 to 90 and a longitude from -180 to 180";

@@ -14,7 +14,16 @@
 //! rotate <x> <y> <z>
 //! shake
 //! stop
+//! wait <milliseconds>
+//! run <file> [<times>]
+//! record <file>
+//! record-stop
+//! cancel
 //! ```
+//!
+//! A macro is a file of these commands, one per line; `#` starts a comment. `record` writes one
+//! from the touches and keys that follow, with the pauses between them, until `record-stop`. `run`
+//! plays one, and `cancel` stops a macro that is playing.
 //!
 //! Positions are display pixels, key codes are Linux key codes, and angles are degrees. The answer is `ok`, or `error:`
 //! followed by the reason. Unix sockets only; a Windows host will need a named pipe here.
@@ -26,11 +35,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devices::virtio::input::{InputEvent, InputHandle};
 
-use crate::config::{DEFAULT_SWIPE, SWIPE_STEP, TAP_HOLD};
+use crate::config::{DEFAULT_SWIPE, MACRO_CANCEL_POLL, MACRO_MAX_BYTES, SWIPE_STEP, TAP_HOLD};
 use crate::copy;
 use crate::frames::Screen;
 use crate::input::{self, TOUCH_SLOTS, Touch};
@@ -48,6 +57,12 @@ const WORD_LOCATION: &str = "location";
 const WORD_ROTATE: &str = "rotate";
 const WORD_SHAKE: &str = "shake";
 const WORD_STOP: &str = "stop";
+const WORD_WAIT: &str = "wait";
+const WORD_RUN: &str = "run";
+const WORD_RECORD: &str = "record";
+const WORD_RECORD_STOP: &str = "record-stop";
+const WORD_CANCEL: &str = "cancel";
+const MACRO_COMMENT: char = '#';
 const WORD_DOWN: &str = "down";
 const WORD_UP: &str = "up";
 
@@ -91,6 +106,72 @@ pub enum Command {
     Shake,
     /// Turn the machine off without asking the guest.
     Stop,
+    Wait(Duration),
+    /// Play the macro in a file this many times.
+    Run {
+        path: PathBuf,
+        times: u32,
+    },
+    /// Start recording a macro into a file.
+    Record(PathBuf),
+    RecordStop,
+    /// Stop the macro that is playing.
+    Cancel,
+}
+
+impl Command {
+    /// Whether this is something a macro recording keeps: what the player did to the guest.
+    fn is_input(&self) -> bool {
+        matches!(
+            self,
+            Self::Tap { .. }
+                | Self::Swipe { .. }
+                | Self::Touch { .. }
+                | Self::Lift { .. }
+                | Self::Key { .. }
+        )
+    }
+}
+
+/// The command as it is typed. `parse` reads this back to the same command.
+impl std::fmt::Display for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tap { x, y } => write!(f, "{WORD_TAP} {x} {y}"),
+            Self::Swipe { from, to, duration } => {
+                let millis = duration.as_millis();
+                write!(
+                    f,
+                    "{WORD_SWIPE} {} {} {} {} {millis}",
+                    from.0, from.1, to.0, to.1
+                )
+            }
+            Self::Touch { finger, x, y } => write!(f, "{WORD_TOUCH} {finger} {x} {y}"),
+            Self::Lift { finger } => write!(f, "{WORD_LIFT} {finger}"),
+            Self::Key { code, down: None } => write!(f, "{WORD_KEY} {code}"),
+            Self::Key {
+                code,
+                down: Some(down),
+            } => {
+                let state = if *down { WORD_DOWN } else { WORD_UP };
+                write!(f, "{WORD_KEY} {code} {state}")
+            }
+            Self::Screenshot(path) => write!(f, "{WORD_SCREENSHOT} {}", path.display()),
+            Self::Location {
+                latitude,
+                longitude,
+                altitude,
+            } => write!(f, "{WORD_LOCATION} {latitude} {longitude} {altitude}"),
+            Self::Rotate([x, y, z]) => write!(f, "{WORD_ROTATE} {x} {y} {z}"),
+            Self::Shake => f.write_str(WORD_SHAKE),
+            Self::Stop => f.write_str(WORD_STOP),
+            Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
+            Self::Run { path, times } => write!(f, "{WORD_RUN} {} {times}", path.display()),
+            Self::Record(path) => write!(f, "{WORD_RECORD} {}", path.display()),
+            Self::RecordStop => f.write_str(WORD_RECORD_STOP),
+            Self::Cancel => f.write_str(WORD_CANCEL),
+        }
+    }
 }
 
 /// Reads one command line. `None` if it is not a command in the form the module text gives.
@@ -118,6 +199,8 @@ pub fn parse(line: &str) -> Option<Command> {
         (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
         (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
         (WORD_STOP, Some(&[])) => return Some(Command::Stop),
+        (WORD_RECORD_STOP, Some(&[])) => return Some(Command::RecordStop),
+        (WORD_CANCEL, Some(&[])) => return Some(Command::Cancel),
         _ => {}
     }
     match (word, numbers.as_deref()) {
@@ -149,8 +232,56 @@ pub fn parse(line: &str) -> Option<Command> {
                 .then_some(Command::Key { code, down })
         }
         (WORD_SCREENSHOT, _) if !rest.is_empty() => Some(Command::Screenshot(rest.into())),
+        (WORD_WAIT, Some(&[millis])) => Some(Command::Wait(Duration::from_millis(millis.into()))),
+        (WORD_RECORD, _) if !rest.is_empty() => Some(Command::Record(rest.into())),
+        (WORD_RUN, _) if !rest.is_empty() => {
+            // The file name may have spaces in it; a last word that is a number is the count.
+            let counted = rest
+                .rsplit_once(char::is_whitespace)
+                .and_then(|(path, last)| {
+                    let times = last.parse().ok()?;
+                    Some((path.trim_end(), times))
+                });
+            let (path, times) = counted.unwrap_or((rest, 1));
+            Some(Command::Run {
+                path: path.into(),
+                times,
+            })
+        }
         _ => None,
     }
+}
+
+/// A macro being recorded: the commands so far, as lines of a macro file.
+pub struct Recording {
+    path: PathBuf,
+    lines: Vec<String>,
+    /// When the last command was recorded, to write the pause before the next one.
+    last: Option<Instant>,
+}
+
+/// Reads a macro file into its commands. Macros do not start other macros or recordings.
+fn read_macro(path: &Path) -> Result<Vec<Command>, String> {
+    let too_large = std::fs::metadata(path).is_ok_and(|file| file.len() > MACRO_MAX_BYTES);
+    if too_large {
+        return Err(copy::CTL_MACRO_TOO_LARGE.to_owned());
+    }
+    let text = std::fs::read_to_string(path).map_err(|err| copy::file(path, &err))?;
+    let mut commands = Vec::new();
+    for (number, line) in (1..).zip(text.lines()) {
+        let line = line.split(MACRO_COMMENT).next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let command = parse(line).filter(|command| {
+            !matches!(
+                command,
+                Command::Run { .. } | Command::Record(_) | Command::RecordStop | Command::Cancel
+            )
+        });
+        commands.push(command.ok_or_else(|| copy::ctl_bad_macro_line(path, number))?);
+    }
+    Ok(commands)
 }
 
 fn send(device: &InputHandle, events: &[InputEvent]) -> Result<(), String> {
@@ -180,6 +311,10 @@ pub struct Controller {
     pub location: Option<Arc<Location>>,
     pub motion: Option<Arc<Motion>>,
     pub power: Arc<PowerSwitch>,
+    /// The macro being recorded, if one is.
+    pub recording: Mutex<Option<Recording>>,
+    /// Set to stop the macro that is playing.
+    pub cancel: AtomicBool,
     /// Held for the length of a tap or swipe, so that two of them do not share the gesture finger.
     pub gesture: Mutex<()>,
 }
@@ -204,8 +339,42 @@ impl Controller {
         send(keyboard, &input::key(code, down))
     }
 
-    /// Carries out one command. Gestures take as long as they last.
+    /// Carries out one command. Gestures, waits and macros take as long as they last.
     pub fn execute(&self, command: &Command) -> Result<(), String> {
+        // The pause before a command is measured to when it starts, not to when it has finished.
+        let started = Instant::now();
+        self.perform(command)?;
+        let mut recording = self
+            .recording
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(recording) = recording.as_mut().filter(|_| command.is_input()) {
+            if let Some(last) = recording.last {
+                let pause = started.saturating_duration_since(last);
+                recording.lines.push(Command::Wait(pause).to_string());
+            }
+            recording.last = Some(started);
+            recording.lines.push(command.to_string());
+        }
+        Ok(())
+    }
+
+    /// Waits, in short steps so that a cancelled macro stops soon.
+    fn wait(&self, duration: Duration) -> Result<(), String> {
+        let until = Instant::now() + duration;
+        loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(copy::CTL_MACRO_CANCELLED.to_owned());
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            thread::sleep(left.min(MACRO_CANCEL_POLL));
+        }
+    }
+
+    fn perform(&self, command: &Command) -> Result<(), String> {
         match *command {
             Command::Touch { finger, x, y } => self.touch(|touch| touch.place(finger, x, y)),
             Command::Lift { finger } => self.touch(|touch| touch.lift(finger)),
@@ -271,6 +440,50 @@ impl Controller {
             }
             Command::Stop => {
                 self.power.off();
+                Ok(())
+            }
+            Command::Wait(duration) => self.wait(duration),
+            Command::Run { ref path, times } => {
+                let commands = read_macro(path)?;
+                self.cancel.store(false, Ordering::SeqCst);
+                for _ in 0..times {
+                    for command in &commands {
+                        if self.cancel.load(Ordering::SeqCst) {
+                            return Err(copy::CTL_MACRO_CANCELLED.to_owned());
+                        }
+                        self.execute(command)?;
+                    }
+                }
+                Ok(())
+            }
+            Command::Record(ref path) => {
+                let mut recording = self
+                    .recording
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if recording.is_some() {
+                    return Err(copy::CTL_ALREADY_RECORDING.to_owned());
+                }
+                // Made now, so that a path that cannot be written is reported before the recording.
+                std::fs::write(path, "").map_err(|err| copy::file(path, &err))?;
+                *recording = Some(Recording {
+                    path: path.clone(),
+                    lines: vec![copy::MACRO_HEADER.to_owned()],
+                    last: None,
+                });
+                Ok(())
+            }
+            Command::RecordStop => {
+                let mut recording = self
+                    .recording
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let done = recording.take().ok_or(copy::CTL_NOT_RECORDING)?;
+                let text = done.lines.join("\n") + "\n";
+                std::fs::write(&done.path, text).map_err(|err| copy::file(&done.path, &err))
+            }
+            Command::Cancel => {
+                self.cancel.store(true, Ordering::SeqCst);
                 Ok(())
             }
         }
@@ -578,6 +791,136 @@ mod tests {
                 error(copy::CTL_NO_SENSORS)
             ]
         );
+    }
+
+    #[test]
+    fn every_command_reads_back_from_how_it_is_written() {
+        let commands = [
+            Command::Tap { x: 1, y: 2 },
+            Command::Swipe {
+                from: (1, 2),
+                to: (3, 4),
+                duration: Duration::from_millis(250),
+            },
+            Command::Touch {
+                finger: 3,
+                x: 4,
+                y: 5,
+            },
+            Command::Lift { finger: 3 },
+            Command::Key {
+                code: 30,
+                down: None,
+            },
+            Command::Key {
+                code: 30,
+                down: Some(false),
+            },
+            Command::Screenshot("a b.png".into()),
+            Command::Location {
+                latitude: -3.5,
+                longitude: 101.25,
+                altitude: 60.0,
+            },
+            Command::Rotate([-90.0, 0.0, 12.5]),
+            Command::Shake,
+            Command::Stop,
+            Command::Wait(Duration::from_millis(1500)),
+            Command::Run {
+                path: "my macro.txt".into(),
+                times: 3,
+            },
+            Command::Record("out.txt".into()),
+            Command::RecordStop,
+            Command::Cancel,
+        ];
+        for command in commands {
+            assert_eq!(parse(&command.to_string()), Some(command));
+        }
+        assert_eq!(
+            parse("run farm.txt"),
+            Some(Command::Run {
+                path: "farm.txt".into(),
+                times: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_recording_plays_back_as_the_same_inputs_with_their_pauses() {
+        let controller = controller(None);
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("emu-macro-test-{}.txt", std::process::id()));
+        let record = format!("record {}\n", path.display());
+        let ok = copy::CTL_OK.to_owned();
+        let error = |why: &str| copy::ctl_error(&why);
+        assert_eq!(
+            replies(&controller, "record-stop\n"),
+            [error(copy::CTL_NOT_RECORDING)]
+        );
+        assert_eq!(replies(&controller, &record), std::slice::from_ref(&ok));
+        assert_eq!(
+            replies(&controller, &record),
+            [error(copy::CTL_ALREADY_RECORDING)]
+        );
+        // The screenshot is not an input and is left out; the failed touch is too.
+        let played =
+            "touch 0 5 5\nwait 30\nlift 0\nscreenshot x.png\ntouch 0 99 99\nkey 30\nrecord-stop\n";
+        let answers = replies(&controller, played);
+        assert_eq!(answers[0], ok);
+        assert_eq!(answers[4], error(copy::CTL_BAD_TOUCH));
+        assert_eq!(answers[6], ok);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], copy::MACRO_HEADER);
+        assert_eq!(lines[1], "touch 0 5 5");
+        let pause: u64 = lines[2].strip_prefix("wait ").unwrap().parse().unwrap();
+        assert!((30..1000).contains(&pause), "{pause}");
+        assert_eq!(lines[3], "lift 0");
+        assert!(lines[4].starts_with("wait "));
+        assert_eq!(lines[5], "key 30");
+        assert_eq!(lines.len(), 6);
+
+        // Played twice, it runs clean; and what it contains reads back as commands.
+        let run = format!("run {} 2\n", path.display());
+        assert_eq!(replies(&controller, &run), [ok]);
+        assert_eq!(read_macro(&path).unwrap().len(), 5);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn macros_that_cannot_be_played_are_refused_and_a_playing_one_can_be_cancelled() {
+        let controller = controller(None);
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("emu-macro-bad-{}.txt", std::process::id()));
+        std::fs::write(&path, "tap 1 2  # fine\n\nrun other.txt\n").unwrap();
+        assert_eq!(
+            read_macro(&path).err().unwrap(),
+            copy::ctl_bad_macro_line(&path, 3)
+        );
+        std::fs::write(&path, "tap 1 2\nfly away\n").unwrap();
+        assert_eq!(
+            read_macro(&path).err().unwrap(),
+            copy::ctl_bad_macro_line(&path, 2)
+        );
+
+        // A long wait ends early when the macro is cancelled from another connection.
+        std::fs::write(&path, "wait 60000\n").unwrap();
+        let run = format!("run {}\n", path.display());
+        thread::scope(|scope| {
+            let playing = scope.spawn(|| replies(&controller, &run));
+            while !playing.is_finished() {
+                controller.cancel.store(true, Ordering::SeqCst);
+                thread::sleep(MACRO_CANCEL_POLL);
+            }
+            assert_eq!(
+                playing.join().unwrap(),
+                [copy::ctl_error(&copy::CTL_MACRO_CANCELLED)]
+            );
+        });
+        std::fs::remove_file(&path).unwrap();
+        assert!(read_macro(&path).is_err());
     }
 
     #[test]

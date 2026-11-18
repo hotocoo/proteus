@@ -66,6 +66,10 @@ pub const ROTATION_SPEED: f64 = 360.0;
 pub const SHAKE_DURATION: Duration = Duration::from_millis(600);
 pub const SHAKE_HZ: f64 = 8.0;
 pub const SHAKE_ACCELERATION: f64 = 25.0;
+/// How often a waiting macro looks whether it has been cancelled.
+pub const MACRO_CANCEL_POLL: Duration = Duration::from_millis(20);
+/// The largest macro file that is read.
+pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
 /// How often the serial input pump checks whether its machine has stopped.
