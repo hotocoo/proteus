@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -17,15 +17,19 @@ use devices::rtc::Rtc;
 use devices::serial::Serial;
 use devices::virtio::blk::{Block, DiskImage};
 use devices::virtio::mmio::MmioTransport;
+use devices::virtio::net::{MAC_LEN, Net};
 use devices::{InterruptLine, MmioDevice};
 use hv::{
     Exit, Gpa, Host, HypervisorBackend, IoHandler, Irqchip, IrqchipConfig, Kick, Prot, Regs, Vcpu,
     Vm, VmConfig,
 };
+use net::config::{ADB_PORT, AdbForward, NetConfig};
+use net::policy::{DomainSet, Sinkhole};
+use net::{HostResolver, Network, Resolver};
 use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 
 use crate::config::{
-    BOOTCONFIG_ARG, Config, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_CHUNK,
+    BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_CHUNK,
     SERIAL_INPUT_RETRY,
 };
 use crate::console::{Console, MarkerWatch};
@@ -364,16 +368,61 @@ fn kernel_cmdline(config: &Config) -> String {
         .join(" ")
 }
 
+fn load_lists(paths: &[PathBuf]) -> Result<DomainSet, VmmError> {
+    let mut domains = DomainSet::default();
+    for path in paths {
+        let text = std::fs::read_to_string(path).map_err(|source| VmmError::File {
+            path: path.clone(),
+            source,
+        })?;
+        domains.extend_from_list(&text);
+    }
+    Ok(domains)
+}
+
+/// The guest's network and the MAC address its device reports.
+fn network(
+    options: &NetOptions,
+    resolver: Arc<dyn Resolver>,
+) -> Result<(Network, [u8; MAC_LEN]), VmmError> {
+    let policy = Sinkhole {
+        blocked: load_lists(&options.blocklists)?,
+        required: load_lists(&options.allowlists)?,
+        drop_quic: !options.allow_quic,
+        drop_encrypted_dns: true,
+    };
+    let cfg = NetConfig {
+        adb: options.adb_port.map(|host_port| AdbForward {
+            host_port,
+            guest_port: ADB_PORT,
+        }),
+        host_loopback: options.host_loopback,
+        ..NetConfig::default()
+    };
+    let mac = cfg.guest_mac;
+    Ok((Network::new(cfg, Arc::new(policy), resolver), mac))
+}
+
 /// Builds the machine described by `config`, boots it and blocks until the guest stops.
 /// `started` is the instant boot timing is measured from.
 pub fn run(config: &Config, console: Console, started: Instant) -> Result<Outcome, VmmError> {
+    run_with(config, console, started, Arc::new(HostResolver))
+}
+
+/// As `run`, with the guest's host-name lookups answered by `resolver` instead of the host's own.
+pub fn run_with(
+    config: &Config,
+    console: Console,
+    started: Instant,
+    resolver: Arc<dyn Resolver>,
+) -> Result<Outcome, VmmError> {
     let caps = Host::probe()?;
     if config.vcpus == 0 || config.vcpus > caps.max_vcpus.min(layout::MAX_VCPUS) {
         return Err(VmmError::Config(copy::TOO_MANY_VCPUS));
     }
     let disk_slots = u32::try_from(config.disks.len())
         .ok()
-        .filter(|count| *count <= layout::VIRTIO_MMIO_SLOTS)
+        .filter(|count| *count <= layout::VIRTIO_DISK_SLOTS)
         .ok_or(VmmError::Config(copy::TOO_MANY_DISKS))?;
     if config.initrd.is_none() && !config.bootconfig.is_empty() {
         return Err(VmmError::Config(copy::BOOTCONFIG_NEEDS_INITRD));
@@ -402,9 +451,11 @@ pub fn run(config: &Config, console: Console, started: Instant) -> Result<Outcom
         gicd_base: layout::GICD_BASE,
         gicr_base: layout::GICR_BASE,
     })?;
-    let highest_spi = disk_slots
-        .checked_sub(1)
-        .map_or(layout::RTC_SPI, layout::virtio_spi);
+    let highest_slot = match &config.net {
+        Some(_) => Some(layout::VIRTIO_NET_SLOT),
+        None => disk_slots.checked_sub(1),
+    };
+    let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
     check_gic(&irqchip, highest_spi)?;
     let line = |spi: u32| -> Arc<dyn InterruptLine> {
         Arc::new(SpiLine {
@@ -447,6 +498,22 @@ pub fn run(config: &Config, console: Console, started: Instant) -> Result<Outcom
         )?;
     }
 
+    if let Some(options) = &config.net {
+        let (network, mac) = network(options, resolver)?;
+        let slot = layout::VIRTIO_NET_SLOT;
+        let transport = MmioTransport::new(
+            Box::new(Net::new(network, mac)),
+            mem.clone(),
+            line(layout::virtio_spi(slot)),
+        )
+        .map_err(|err| VmmError::Device(err.to_string()))?;
+        bus.insert(
+            layout::virtio_mmio_base(slot),
+            layout::VIRTIO_MMIO_STRIDE,
+            Arc::new(transport),
+        )?;
+    }
+
     let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
     let initrd = match &config.initrd {
         Some(path) => Some(boot::load_initrd(
@@ -459,7 +526,8 @@ pub fn run(config: &Config, console: Console, started: Instant) -> Result<Outcom
     let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
     getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
     let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
-    let virtio_slots: Vec<u32> = (0..disk_slots).collect();
+    let net_slot = config.net.as_ref().map(|_| layout::VIRTIO_NET_SLOT);
+    let virtio_slots: Vec<u32> = (0..disk_slots).chain(net_slot).collect();
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,
         vcpus: config.vcpus,

@@ -87,7 +87,7 @@ pub fn cli_main() -> ExitCode {
             println!("{}", copy::HELP);
             return ExitCode::SUCCESS;
         }
-        Ok(config::Parsed::Run(config)) => config,
+        Ok(config::Parsed::Run(config)) => *config,
         Err(err) => {
             eprintln!("{}\n{}", copy::fatal(&err), copy::USAGE_HINT);
             return ExitCode::from(EXIT_USAGE);

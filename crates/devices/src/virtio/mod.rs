@@ -11,6 +11,7 @@ use crate::{InterruptLine, copy};
 
 pub mod blk;
 pub mod mmio;
+pub mod net;
 
 /// A shared-memory region a device exposes through the transport's SHM registers.
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +26,8 @@ pub enum DeviceError {
     Io(std::io::Error),
     AlreadyActive,
     MissingQueue,
+    /// The host side of the device could not start.
+    Backend(String),
 }
 
 impl fmt::Display for DeviceError {
@@ -33,6 +36,7 @@ impl fmt::Display for DeviceError {
             Self::Io(err) => write!(f, "{}", copy::disk_open_failed(err)),
             Self::AlreadyActive => f.write_str(copy::DISK_ALREADY_ACTIVE),
             Self::MissingQueue => f.write_str(copy::DISK_NO_QUEUE),
+            Self::Backend(why) => f.write_str(why),
         }
     }
 }

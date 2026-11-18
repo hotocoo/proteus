@@ -36,6 +36,33 @@ pub struct DiskConfig {
     pub read_only: bool,
 }
 
+/// The guest's network. Everything here has a default; the command line only overrides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetOptions {
+    /// Lists of domains to sinkhole: trackers, ad networks, public DNS-over-HTTPS resolvers.
+    pub blocklists: Vec<PathBuf>,
+    /// Lists of domains that stay reachable even if a blocklist names them.
+    pub allowlists: Vec<PathBuf>,
+    /// Loopback port `adb` connects to, or `None` for no forward.
+    pub adb_port: Option<u16>,
+    /// Let QUIC through. Off by default, so that clients fall back to TLS, where the server name shows.
+    pub allow_quic: bool,
+    /// Make the gateway address reach the host's own loopback interface.
+    pub host_loopback: bool,
+}
+
+impl Default for NetOptions {
+    fn default() -> Self {
+        Self {
+            blocklists: Vec::new(),
+            allowlists: Vec::new(),
+            adb_port: Some(net::config::ADB_PORT),
+            allow_quic: false,
+            host_loopback: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub kernel: PathBuf,
@@ -46,6 +73,8 @@ pub struct Config {
     /// In virtio slot order.
     pub disks: Vec<DiskConfig>,
     pub serial: bool,
+    /// `None` leaves the guest without a network device.
+    pub net: Option<NetOptions>,
     pub bootconfig: Vec<(String, String)>,
     /// Console text whose first appearance is timed, if boot timing was asked for.
     pub boot_marker: Option<String>,
@@ -62,6 +91,7 @@ impl Config {
             vcpus: DEFAULT_VCPUS,
             disks: Vec::new(),
             serial: false,
+            net: Some(NetOptions::default()),
             bootconfig: Vec::new(),
             boot_marker: None,
             log_level: DEFAULT_LOG_LEVEL,
@@ -71,7 +101,7 @@ impl Config {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
-    Run(Config),
+    Run(Box<Config>),
     Help,
 }
 
@@ -114,6 +144,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     let mut config = Config::new(PathBuf::new());
     let mut boot_timing = false;
     let mut boot_marker = None;
+    let mut net = NetOptions::default();
+    let mut no_net = false;
 
     while let Some(arg) = parser.next()? {
         match arg {
@@ -144,6 +176,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                 config.bootconfig.push((key.to_owned(), value.to_owned()));
             }
             Long("serial") => config.serial = true,
+            Long("no-net") => no_net = true,
+            Long("blocklist") => net.blocklists.push(parser.value()?.into()),
+            Long("allowlist") => net.allowlists.push(parser.value()?.into()),
+            Long("adb-port") => {
+                let text = parser.value()?.string()?;
+                let port: u16 = text
+                    .parse()
+                    .map_err(|_| ConfigError(copy::BAD_ADB_PORT.into()))?;
+                net.adb_port = (port != 0).then_some(port);
+            }
+            Long("allow-quic") => net.allow_quic = true,
+            Long("host-loopback") => net.host_loopback = true,
             Long("boot-timing") => boot_timing = true,
             Long("boot-marker") => boot_marker = Some(parser.value()?.string()?),
             Long("log-level") => {
@@ -161,13 +205,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     }
 
     config.kernel = kernel.ok_or_else(|| ConfigError(copy::MISSING_KERNEL.into()))?;
+    config.net = (!no_net).then_some(net);
     if boot_timing || boot_marker.is_some() {
         if !config.serial {
             return Err(ConfigError(copy::BOOT_MARKER_NEEDS_SERIAL.into()));
         }
         config.boot_marker = Some(boot_marker.unwrap_or_else(|| DEFAULT_BOOT_MARKER.to_owned()));
     }
-    Ok(Parsed::Run(config))
+    Ok(Parsed::Run(Box::new(config)))
 }
 
 #[cfg(test)]
@@ -180,7 +225,7 @@ mod tests {
 
     fn run(args: &[&str]) -> Config {
         match parse_str(args).unwrap() {
-            Parsed::Run(config) => config,
+            Parsed::Run(config) => *config,
             Parsed::Help => panic!("expected a run configuration"),
         }
     }
@@ -216,7 +261,27 @@ mod tests {
             "--boot-timing",
             "--log-level",
             "debug",
+            "--blocklist",
+            "ads.txt",
+            "--blocklist",
+            "trackers.txt",
+            "--allowlist",
+            "required.txt",
+            "--adb-port",
+            "5600",
+            "--allow-quic",
+            "--host-loopback",
         ]);
+        assert_eq!(
+            config.net,
+            Some(NetOptions {
+                blocklists: vec!["ads.txt".into(), "trackers.txt".into()],
+                allowlists: vec!["required.txt".into()],
+                adb_port: Some(5600),
+                allow_quic: true,
+                host_loopback: true,
+            })
+        );
         assert_eq!(config.initrd, Some(PathBuf::from("r")));
         assert_eq!(
             (config.cmdline.as_str(), config.ram_bytes, config.vcpus),
@@ -257,6 +322,14 @@ mod tests {
     }
 
     #[test]
+    fn network_can_be_removed_and_the_adb_forward_switched_off() {
+        assert_eq!(run(&["--kernel", "k", "--no-net"]).net, None);
+        let net = run(&["--kernel", "k", "--adb-port", "0"]).net.unwrap();
+        assert_eq!(net.adb_port, None);
+        assert!(!net.allow_quic && !net.host_loopback);
+    }
+
+    #[test]
     fn help_wins() {
         assert_eq!(parse_str(&["--help"]).unwrap(), Parsed::Help);
     }
@@ -276,6 +349,8 @@ mod tests {
             &["--kernel", "k", "--log-level", "loud"],
             &["--kernel", "k", "--boot-timing"],
             &["--kernel", "k", "--frobnicate"],
+            &["--kernel", "k", "--adb-port", "70000"],
+            &["--kernel", "k", "--adb-port", "adb"],
             &["--kernel", "k", "stray"],
         ];
         for args in cases {

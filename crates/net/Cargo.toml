@@ -1,0 +1,18 @@
+[package]
+name = "net"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+devices.workspace = true
+log.workspace = true
+mio = { version = "1.2", features = ["os-poll", "net"] }
+smoltcp = { version = "0.14", default-features = false, features = [
+    "std",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-dhcpv4",
+    "socket-tcp",
+    "auto-icmp-echo-reply",
+] }

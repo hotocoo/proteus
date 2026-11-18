@@ -11,6 +11,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
@@ -19,8 +20,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use net::Resolver;
 use vmm::VmmError;
-use vmm::config::{Config, DiskConfig};
+use vmm::config::{Config, DiskConfig, NetOptions};
 use vmm::console::Console;
 use vmm::machine::{self, Outcome, Stop};
 
@@ -158,7 +160,11 @@ struct Session {
 }
 
 impl Session {
-    fn boot(mut config: Config, initrd: PathBuf) -> Self {
+    fn boot(config: Config, initrd: PathBuf) -> Self {
+        Self::boot_with(config, initrd, Arc::new(net::HostResolver))
+    }
+
+    fn boot_with(mut config: Config, initrd: PathBuf, resolver: Arc<dyn Resolver>) -> Self {
         config.initrd = Some(initrd);
         config.ram_bytes = RAM_BYTES;
         config.vcpus = VCPUS;
@@ -170,7 +176,14 @@ impl Session {
             input: Some(Box::new(Typed(typed, Vec::new()))),
         };
         let (finished, outcome) = mpsc::channel();
-        thread::spawn(move || finished.send(machine::run(&config, console, Instant::now())));
+        thread::spawn(move || {
+            finished.send(machine::run_with(
+                &config,
+                console,
+                Instant::now(),
+                resolver,
+            ))
+        });
         Self {
             transcript,
             typist,
@@ -226,6 +239,7 @@ fn linux_boots_to_a_shell_uses_two_cpus_and_two_disks_then_powers_off() {
         },
     ];
     config.boot_marker = Some("/bin/sh".into());
+    config.net = None;
     let session = Session::boot(config, initrd);
     let transcript = &session.transcript;
     let type_line = |line: &str| session.type_line(line);
@@ -300,6 +314,7 @@ fn kernel_reads_the_bootconfig_appended_to_the_ramdisk() {
         ("androidboot.hardware".into(), "emu".into()),
         ("androidboot.serialno".into(), "EMU0001".into()),
     ];
+    config.net = None;
     let session = Session::boot(config, initrd);
 
     let at = session.transcript.expect("# ", 0);
@@ -309,4 +324,192 @@ fn kernel_reads_the_bootconfig_appended_to_the_ramdisk() {
         at,
     );
     assert_eq!(session.power_off().stop, Stop::PowerOff);
+}
+
+/// Answers every lookup with one fixed address and remembers what was asked.
+#[derive(Default)]
+struct FixedResolver {
+    asked: Mutex<Vec<String>>,
+}
+
+/// From TEST-NET-3, reserved for documentation, so it can never be a real host.
+const RESOLVED: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
+
+impl Resolver for FixedResolver {
+    fn resolve(&self, name: &str) -> io::Result<Vec<Ipv4Addr>> {
+        self.asked.lock().unwrap().push(name.to_owned());
+        Ok(vec![RESOLVED])
+    }
+}
+
+/// A host server that records the first bytes of every connection and answers `pong:` plus those bytes.
+struct PongServer {
+    port: u16,
+    seen: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl PongServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut first = vec![0u8; 4096];
+                stream.set_read_timeout(Some(STEP_TIMEOUT)).unwrap();
+                let Ok(len) = stream.read(&mut first) else {
+                    continue;
+                };
+                first.truncate(len);
+                let _ = stream.write_all(&[b"pong:", first.as_slice()].concat());
+                record.lock().unwrap().push(first);
+            }
+        });
+        Self { port, seen }
+    }
+
+    fn seen(&self) -> Vec<Vec<u8>> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+// The guest's terminal echoes every typed command. Wherever a command prints a fixed marker, the marker
+// is written with an empty quoted string inside it (`ga''teway=up`), so that the echo of the command
+// cannot be mistaken for its output.
+
+/// A minimal but well-formed TLS ClientHello naming `server`.
+fn client_hello(server: &str) -> Vec<u8> {
+    let len16 = |body: &[u8]| [&(body.len() as u16).to_be_bytes()[..], body].concat();
+    let name_entry = [&[0u8][..], &len16(server.as_bytes())].concat();
+    let extension = [&[0u8, 0][..], &len16(&len16(&name_entry))].concat();
+    let mut hello = vec![3, 3];
+    hello.extend([0xaa; 32]);
+    hello.push(0);
+    hello.extend(len16(&[0x13, 0x01]));
+    hello.extend([1, 0]);
+    hello.extend(len16(&extension));
+    let mut handshake = vec![1];
+    handshake.extend(&(hello.len() as u32).to_be_bytes()[1..]);
+    handshake.extend(hello);
+    [&[0x16u8, 3, 1][..], &len16(&handshake)].concat()
+}
+
+/// The bytes as a shell `printf` format: every byte a `\xHH` escape.
+fn printf_escaped(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+}
+
+fn free_loopback_port() -> u16 {
+    let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a loopback port");
+    probe.local_addr().unwrap().port()
+}
+
+const GUEST_ADB_REPLY: &str = "from-guest";
+const ADB_ATTEMPTS: u32 = 50;
+const ADB_RETRY: Duration = Duration::from_millis(100);
+
+#[test]
+fn guest_network_gets_dhcp_dns_tcp_adb_and_respects_the_sinkhole() {
+    let Some([kernel, initrd]) = fixtures([KERNEL_ENV, INITRD_ENV]) else {
+        return;
+    };
+    let _one_vm = ONE_VM.lock().unwrap();
+    let server = PongServer::start();
+    let resolver = Arc::new(FixedResolver::default());
+    let adb_port = free_loopback_port();
+    let blocklist = std::env::temp_dir().join(format!("emu-blocklist-{}.txt", std::process::id()));
+    std::fs::write(&blocklist, "# test list\n0.0.0.0 tracker.test\n").unwrap();
+
+    let mut config = Config::new(kernel);
+    config.net = Some(NetOptions {
+        blocklists: vec![blocklist.clone()],
+        adb_port: Some(adb_port),
+        host_loopback: true,
+        ..NetOptions::default()
+    });
+    let session = Session::boot_with(config, initrd, Arc::clone(&resolver) as Arc<dyn Resolver>);
+    let transcript = &session.transcript;
+    let port = server.port;
+    let mut at = transcript.expect("# ", 0);
+
+    // DHCP: the lease must carry the guest address, router, DNS server and netmask.
+    session.type_line(
+        "ifconfig eth0 up && printf '#!/bin/sh\\necho lease=$ip router=$router dns=$dns mask=$subnet\\n' > /lease \
+         && chmod +x /lease && udhcpc -i eth0 -n -q -s /lease",
+    );
+    at = transcript.expect(
+        "lease=10.0.2.15 router=10.0.2.2 dns=10.0.2.2 mask=255.255.255.0",
+        at,
+    );
+
+    // The gateway answers ARP and ping.
+    session.type_line(
+        "ifconfig eth0 10.0.2.15 netmask 255.255.255.0 && route add default gw 10.0.2.2 \
+         && ping -c 1 -W 3 10.0.2.2 | grep -q '1 packets received' && echo ga''teway=up",
+    );
+    at = transcript.expect("gateway=up\r\n", at);
+
+    // DNS: an ordinary name resolves through the host resolver; a blocklisted one never reaches it.
+    session.type_line(
+        "nslookup allowed.test 10.0.2.2 2>&1 | grep -q 203.0.113.7 && echo re''solved=yes",
+    );
+    at = transcript.expect("resolved=yes\r\n", at);
+    session.type_line(
+        "nslookup tracker.test 10.0.2.2 2>&1 | grep -q 203.0.113.7 || echo bl''ocked=yes",
+    );
+    at = transcript.expect("blocked=yes\r\n", at);
+    let asked = resolver.asked.lock().unwrap().clone();
+    assert!(asked.iter().any(|name| name == "allowed.test"), "{asked:?}");
+    assert!(
+        !asked.iter().any(|name| name.contains("tracker")),
+        "{asked:?}"
+    );
+
+    // TCP: plain bytes are relayed both ways.
+    session.type_line(&format!("echo ping | nc -w 5 10.0.2.2 {port}; echo"));
+    at = transcript.expect("pong:ping", at);
+
+    // TLS to a blocklisted server name is reset before any host connection exists.
+    let blocked = client_hello("cdn.tracker.test");
+    let connections_before = server.seen().len();
+    session.type_line(&format!(
+        "printf '{}' | nc -w 5 10.0.2.2 {port} | grep -q pong || echo tl''s=refused",
+        printf_escaped(&blocked)
+    ));
+    at = transcript.expect("tls=refused\r\n", at);
+    assert_eq!(
+        server.seen().len(),
+        connections_before,
+        "a blocked flow reached the host"
+    );
+
+    // TLS to any other name passes through byte for byte.
+    let allowed = client_hello("play.allowed.test");
+    session.type_line(&format!(
+        "printf '{}' | nc -w 5 10.0.2.2 {port} | grep -q pong && echo tl''s=relayed",
+        printf_escaped(&allowed)
+    ));
+    at = transcript.expect("tls=relayed\r\n", at);
+    assert_eq!(server.seen().last(), Some(&allowed));
+
+    // adb forward: a host connection to the loopback port lands on guest port 5555.
+    session.type_line(&format!("echo {GUEST_ADB_REPLY} | nc -l -p 5555 &"));
+    transcript.expect("\r\n", at);
+    let mut reply = String::new();
+    for _ in 0..ADB_ATTEMPTS {
+        // Until the guest is listening, the forward connects and is closed at once.
+        if let Ok(mut stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, adb_port)) {
+            stream.set_read_timeout(Some(STEP_TIMEOUT)).unwrap();
+            reply.clear();
+            if stream.read_to_string(&mut reply).is_ok() && !reply.is_empty() {
+                break;
+            }
+        }
+        thread::sleep(ADB_RETRY);
+    }
+    assert_eq!(reply.trim_end(), GUEST_ADB_REPLY);
+
+    assert_eq!(session.power_off().stop, Stop::PowerOff);
+    let _ = std::fs::remove_file(&blocklist);
 }

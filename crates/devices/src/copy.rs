@@ -39,6 +39,6 @@ pub fn disk_open_failed(err: &dyn Display) -> String {
 }
 
 pub const DISK_WORKER_GONE: &str = "disk worker thread ended unexpectedly";
-pub const DISK_ALREADY_ACTIVE: &str = "disk is already active";
-pub const DISK_NO_QUEUE: &str = "disk was activated without its request queue";
+pub const DISK_ALREADY_ACTIVE: &str = "device is already active";
+pub const DISK_NO_QUEUE: &str = "device was activated without all of its queues";
 pub const DISK_WORKER_NAME: &str = "virtio-blk";

@@ -10,9 +10,12 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Boots Linux kernels directly, including a stock Android GKI 6.12 kernel, to a shell on a serial console.
 - Several virtual CPUs, interrupt controller, timer, real-time clock.
 - virtio-blk disks, read-write or read-only.
+- Networking without any host driver or admin rights: DHCP, DNS through the host's resolver, TCP and UDP.
+- A sinkhole that blocks domains you list (trackers, ads) at the DNS and TLS server-name level.
+- `adb` forwarding on a loopback port.
 - Android bootconfig parameters (`androidboot.*`).
 
-Not there yet: Android itself, graphics, sound, input, networking, Linux and Windows hosts.
+Not there yet: Android itself, graphics, sound, input, Linux and Windows hosts.
 
 ## Build and run
 
@@ -33,6 +36,23 @@ macOS refuses hypervisor access to unsigned binaries. `emu --help` lists every o
 The kernel must be an uncompressed ARM64 `Image`. To use the serial console it needs the 8250 driver;
 for disks it needs virtio-mmio and virtio-blk built in.
 
+## Network
+
+The guest gets `10.0.2.15`, with gateway and DNS at `10.0.2.2`. IPv4 only.
+
+| Option | Effect |
+|---|---|
+| `--blocklist <file>` | Block every domain in the file, and its subdomains. Plain domain lists, hosts files and `||domain^` rules are understood. Repeatable. |
+| `--allowlist <file>` | Domains that stay reachable even if a blocklist names them. Repeatable. |
+| `--adb-port <n>` | Loopback port for `adb connect 127.0.0.1:<n>`. Default 5555; 0 turns it off. |
+| `--allow-quic` | Let QUIC through. By default UDP 443 is dropped so apps fall back to TLS, where the server name can be checked. |
+| `--host-loopback` | Let the guest reach this machine's localhost at `10.0.2.2`. Off by default, because every app in the guest could then reach services meant only for this machine. |
+| `--no-net` | No network device at all. |
+
+No blocklist is bundled; pass the lists you want. What the sinkhole cannot do: it cannot see inside encrypted
+traffic, and it cannot block tracking or ads that a game serves from the same host as its own content.
+DNS over TLS is always dropped so that lookups cannot bypass it.
+
 ## Tests
 
 ```sh
@@ -43,7 +63,7 @@ Tests under `crates/hv/tests` run small guests on the real hypervisor. Set `EMU_
 machine that has none, such as a hosted CI runner.
 
 `crates/vmm/tests/linux_boot.rs` boots real kernels when these point at files, and reports itself skipped
-otherwise:
+otherwise. Its network test binds loopback ports on the host.
 
 | Variable | What it needs |
 |---|---|
@@ -62,5 +82,6 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 |---|---|
 | `crates/hv` | Hypervisor traits and the Hypervisor.framework backend |
 | `crates/arch` | Board address map, device tree, kernel loading, PSCI, bootconfig |
-| `crates/devices` | MMIO bus, UART, RTC, virtio-mmio transport, virtio-blk |
+| `crates/devices` | MMIO bus, UART, RTC, virtio-mmio transport, virtio-blk, virtio-net |
+| `crates/net` | Userspace NAT, DHCP, DNS, sinkhole policy, adb forward |
 | `crates/vmm` | The `emu` binary |

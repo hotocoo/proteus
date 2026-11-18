@@ -18,6 +18,12 @@ Usage: emu --kernel <file> [options]
   --ro-disk <file>        Attach a read-only raw disk image (repeatable, in slot order)
   --bootconfig <k=v>      Add a bootconfig parameter, such as androidboot.hardware=emu (repeatable)
   --serial                Attach the debug serial console to this terminal
+  --no-net                Give the guest no network device
+  --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
+  --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
+  --adb-port <n>          Loopback port for adb (default 5555, 0 turns the forward off)
+  --allow-quic            Let QUIC (UDP 443) through; by default it is dropped so TLS is used
+  --host-loopback         Let the guest reach this machine's localhost at 10.0.2.2
   --boot-timing           Report the time from start to the guest's first-stage init
   --boot-marker <text>    Console text that marks the end of boot for --boot-timing
   --log-level <level>     off, error, warn, info, debug or trace
@@ -49,6 +55,7 @@ pub fn bad_number(option: &str) -> String {
 
 pub const MISSING_KERNEL: &str = "--kernel is required";
 pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
+pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";
 pub const BOOT_MARKER_NEEDS_SERIAL: &str =
     "--boot-timing needs --serial, because the marker is read from the console";
@@ -86,7 +93,7 @@ pub const HOST_UNSUPPORTED: &str = "this build has no hypervisor backend for thi
 pub const BOOTCONFIG_NEEDS_INITRD: &str =
     "--bootconfig needs --initrd, because the kernel reads it from the end of the ramdisk";
 pub const TOO_MANY_VCPUS: &str = "more vCPUs requested than the host or the board supports";
-pub const TOO_MANY_DISKS: &str = "more disks than the board has virtio slots";
+pub const TOO_MANY_DISKS: &str = "more disks than the board has disk slots (three)";
 pub const GIC_GEOMETRY: &str =
     "the host's interrupt controller does not fit the board's address map";
 pub const NO_ENTROPY: &str = "the host gave no random bytes to seed the guest";

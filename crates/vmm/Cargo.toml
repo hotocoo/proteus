@@ -15,4 +15,8 @@ getrandom.workspace = true
 hv.workspace = true
 lexopt.workspace = true
 log.workspace = true
+net.workspace = true
 vm-memory.workspace = true
+
+[dev-dependencies]
+net.workspace = true
