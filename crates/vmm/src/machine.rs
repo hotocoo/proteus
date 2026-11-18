@@ -130,10 +130,6 @@ impl IoHandler for BusIo<'_> {
     fn pio_read(&self, port: u16, data: &mut [u8]) {
         match self.0.port_device(port) {
             Some((device, offset)) => device.read(offset, data),
-            // The keyboard controller has nothing to say and is always ready to listen.
-            None if [layout::I8042_DATA_PORT, layout::I8042_COMMAND_PORT].contains(&port) => {
-                data.fill(0);
-            }
             // Nothing there: the bus floats high, as on a PC.
             None => data.fill(u8::MAX),
         }
@@ -911,7 +907,8 @@ pub fn run_in(
             None => None,
         };
         let devices = x86_virtio_cmdline(&virtio_slots);
-        let cmdline = kernel_cmdline(config, &devices, false);
+        let board = format!("{} {devices}", layout::BOARD_CMDLINE);
+        let cmdline = kernel_cmdline(config, &board, false);
         boot::write_boot_params(&mem, &kernel, &cmdline, initrd, ram_bytes)?;
         boot::write_tables(&mem)?;
         mptable::write(&mem, config.vcpus)?;

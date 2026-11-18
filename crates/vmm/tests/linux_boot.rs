@@ -272,6 +272,16 @@ fn linux_boots_to_a_shell_uses_two_cpus_and_two_disks_then_powers_off() {
     type_line("echo cpus=$(grep -c ^processor /proc/cpuinfo)");
     at = transcript.expect(&format!("cpus={VCPUS}\r\n"), at);
 
+    // The first disk's interrupt arrives on the IOAPIC pin its slot is wired to.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let pin = arch::x86_64::layout::virtio_irq(0);
+        type_line(&format!(
+            "echo disk_irq=$(awk '$1==\"{pin}:\" && $NF ~ /virtio0/ && $2+$3>0 {{print \"ok\"}}' /proc/interrupts)"
+        ));
+        at = transcript.expect("disk_irq=ok\r\n", at);
+    }
+
     type_line("echo sectors=$(cat /sys/block/vda/size) serial=$(cat /sys/block/vda/serial)");
     at = transcript.expect(&format!("sectors={DISK_SECTORS} serial=emu-disk-0\r\n"), at);
 

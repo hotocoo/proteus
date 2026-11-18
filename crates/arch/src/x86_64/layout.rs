@@ -36,6 +36,9 @@ pub const IOAPIC_ADDR: u64 = 0xfec0_0000;
 pub const LAPIC_ADDR: u64 = 0xfee0_0000;
 /// IOAPIC input pins.
 pub const IOAPIC_PINS: u32 = 24;
+/// Kernel arguments the board needs: no PCI to probe, and reboot through the keyboard controller,
+/// the only reset this board has.
+pub const BOARD_CMDLINE: &str = "pci=off reboot=k";
 /// The first serial port and its interrupt, as on every PC.
 pub const SERIAL_PORT: u16 = 0x3f8;
 pub const SERIAL_PORT_LEN: u16 = 8;
@@ -43,17 +46,16 @@ pub const SERIAL_IRQ: u32 = 4;
 /// The CMOS clock's index and data ports.
 pub const CMOS_PORT: u16 = 0x70;
 pub const CMOS_PORT_LEN: u16 = 2;
-/// The keyboard controller's data port.
-pub const I8042_DATA_PORT: u16 = 0x60;
 /// The keyboard controller's command port; writing `I8042_RESET` to it resets the machine.
 pub const I8042_COMMAND_PORT: u16 = 0x64;
 pub const I8042_RESET: u8 = 0xfe;
 
 /// virtio-mmio transports: slot `n` at `VIRTIO_MMIO_BASE + n * VIRTIO_MMIO_STRIDE`, on IOAPIC pin
-/// `VIRTIO_FIRST_IRQ + n`. Pins 0 to 4 belong to the timer, keyboard, cascade and serial ports.
+/// `VIRTIO_FIRST_IRQ + n`. Pin 8 is left free because the CMOS clock driver may claim it unshared,
+/// and the pins below it are the legacy ones; so 15 slots, 9 to 23.
 pub const VIRTIO_MMIO_BASE: u64 = MMIO_GAP_START;
 pub const VIRTIO_MMIO_STRIDE: u64 = 0x1000;
-pub const VIRTIO_FIRST_IRQ: u32 = 5;
+pub const VIRTIO_FIRST_IRQ: u32 = 9;
 pub const VIRTIO_MMIO_SLOTS: u32 = IOAPIC_PINS - VIRTIO_FIRST_IRQ;
 
 pub const fn virtio_mmio_base(slot: u32) -> u64 {

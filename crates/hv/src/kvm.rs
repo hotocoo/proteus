@@ -1,7 +1,8 @@
 //! KVM backend (Linux, x86_64).
 //!
-//! The interrupt controllers (PIC, IOAPIC, local APICs) and the PIT live in the kernel, so idle
-//! (`HLT`) never comes back here and interrupt lines are driven with one ioctl. A vCPU is kicked by
+//! The interrupt controllers (IOAPIC, local APICs, and the PIC that comes with them) live in the
+//! kernel, so idle (`HLT`) never comes back here and interrupt lines are driven with one ioctl. There
+//! is no PIT: the guest keeps time with the TSC-deadline local APIC timer and kvmclock. A vCPU is kicked by
 //! setting `immediate_exit` in its shared run area and then signalling its thread: either the
 //! signal interrupts a running `KVM_RUN`, or the flag stops the next one from entering the guest.
 
@@ -9,9 +10,8 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, Once, PoisonError};
 
 use kvm_bindings::{
-    CpuId, KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY, KVM_SYSTEM_EVENT_RESET,
-    KVM_SYSTEM_EVENT_SHUTDOWN, kvm_dtable, kvm_pit_config, kvm_regs, kvm_segment,
-    kvm_userspace_memory_region,
+    CpuId, KVM_MAX_CPUID_ENTRIES, KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN, kvm_dtable,
+    kvm_regs, kvm_segment, kvm_userspace_memory_region,
 };
 use kvm_ioctls::{Cap, Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 
@@ -196,13 +196,6 @@ impl Vm for KvmVm {
         self.fd
             .create_irq_chip()
             .map_err(failed("KVM_CREATE_IRQCHIP"))?;
-        let pit = kvm_pit_config {
-            flags: KVM_PIT_SPEAKER_DUMMY,
-            ..Default::default()
-        };
-        self.fd
-            .create_pit2(pit)
-            .map_err(failed("KVM_CREATE_PIT2"))?;
         Ok(Arc::new(KvmIrqchip(Arc::clone(&self.fd))))
     }
 
