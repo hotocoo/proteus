@@ -23,7 +23,10 @@ pub mod instance;
 pub mod keymap;
 pub mod location;
 mod logger;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 pub mod machine;
 pub mod profiles;
 pub mod sensors;
@@ -141,8 +144,21 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
     })
 }
 
+/// Runs the machine without a window, which this host does not have yet.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
+    if config.keymap.is_some() || config.keymap_dir.is_some() {
+        return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
+    }
+    let session = session::Session::new(config)?;
+    boot_loop(config, &session, started)
+}
+
 /// Boots the machine, and boots it again each time the guest asks to restart.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn boot_loop(
     config: &config::Config,
     session: &session::Session,
@@ -189,7 +205,10 @@ fn boot_loop(
     }
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
 fn run(_config: &config::Config, _started: Instant) -> Result<(), VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }

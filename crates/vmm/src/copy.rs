@@ -273,6 +273,14 @@ pub fn ctl_accept_failed(err: &dyn Display) -> String {
     format!("control socket stopped accepting connections: {err}")
 }
 
+#[cfg(target_arch = "x86_64")]
+pub const ANDROID_NOT_ON_THIS_HOST: &str =
+    "Android images are not supported on this host yet; boot a Linux kernel instead";
+#[cfg(target_arch = "x86_64")]
+pub const BOOTCONFIG_NOT_ON_THIS_HOST: &str = "--bootconfig is not supported on this host yet";
+#[cfg(target_arch = "x86_64")]
+pub const VIRTIO_MMIO_DEVICE_ARG: &str = "virtio_mmio.device=";
+
 pub const CTL_USAGE: &str =
     "unknown command; see `emu --help` for the commands and their arguments";
 pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";

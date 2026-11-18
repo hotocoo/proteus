@@ -1,23 +1,32 @@
-//! Builds the ARM64 board on the host hypervisor and runs it until the guest powers off or resets.
+//! Builds the board (ARM64 on macOS, x86_64 on Linux) on the host hypervisor and runs it until the
+//! guest powers off or resets.
 
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+#[cfg(target_arch = "aarch64")]
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_arch = "aarch64")]
 use arch::aarch64::boot::RamdiskPart;
+#[cfg(target_arch = "aarch64")]
 use arch::aarch64::psci::{self, Call};
+#[cfg(target_arch = "aarch64")]
 use arch::aarch64::{boot, fdt, layout};
+#[cfg(target_arch = "x86_64")]
+use arch::x86_64::{boot, layout, mptable};
 use devices::bus::MmioBus;
+#[cfg(target_arch = "aarch64")]
 use devices::rtc::Rtc;
 use devices::serial::Serial;
 use devices::virtio::VirtioDevice;
 use devices::virtio::blk::{Block, DiskImage};
+#[cfg(target_arch = "aarch64")]
 use devices::virtio::console::{Console as VirtioConsole, PortSink};
 use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
 use devices::virtio::input::{Input, InputHandle};
@@ -34,18 +43,25 @@ use net::policy::{DomainSet, Sinkhole};
 use net::{Network, Resolver};
 use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 
+#[cfg(target_arch = "aarch64")]
+use crate::config::RNG_SEED_LEN;
 use crate::config::{
-    BOOTCONFIG_ARG, Config, NetOptions, RNG_SEED_LEN, SERIAL_CONSOLE_ARG, SERIAL_INPUT_POLL,
-    SERIAL_INPUT_RETRY, SPARE_NIC_MACS, STOP_KICK_INTERVAL,
+    BOOTCONFIG_ARG, Config, NetOptions, SERIAL_CONSOLE_ARG, SERIAL_INPUT_POLL, SERIAL_INPUT_RETRY,
+    SPARE_NIC_MACS, STOP_KICK_INTERVAL,
 };
 use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::input::{self, Touch};
 use crate::session::{PowerSwitch, Session};
-use crate::{VmmError, android, copy, location, sensors};
+use crate::{VmmError, copy};
+#[cfg(target_arch = "aarch64")]
+use crate::{android, location, sensors};
 
 // The terminals the VMM answers on have to be ones the console device has.
+#[cfg(target_arch = "aarch64")]
 const _: () = assert!(sensors::CONTROL_PORT < android::CONSOLE_PORTS);
+#[cfg(target_arch = "aarch64")]
 const _: () = assert!(sensors::DATA_PORT < android::CONSOLE_PORTS);
+#[cfg(target_arch = "aarch64")]
 const _: () = assert!(location::PORT < android::CONSOLE_PORTS);
 
 type HostVm = <Host as HypervisorBackend>::Vm;
@@ -81,19 +97,39 @@ impl InterruptLine for SpiLine {
     }
 }
 
-struct BusIo<'a>(&'a MmioBus);
+/// What the vCPUs reach: the MMIO bus, and on x86_64 the I/O ports.
+struct BusIo<'a>(&'a Machine);
 
 impl IoHandler for BusIo<'_> {
     fn mmio_read(&self, gpa: Gpa, data: &mut [u8]) {
-        self.0.read(gpa, data);
+        self.0.bus.read(gpa, data);
     }
 
     fn mmio_write(&self, gpa: Gpa, data: &[u8]) {
-        self.0.write(gpa, data);
+        self.0.bus.write(gpa, data);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn pio_read(&self, port: u16, data: &mut [u8]) {
+        match self.0.serial_offset(port) {
+            Some((serial, offset)) => serial.read(offset, data),
+            // Nothing there: the bus floats high, as on a PC.
+            None => data.fill(u8::MAX),
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn pio_write(&self, port: u16, data: &[u8]) {
+        if let Some((serial, offset)) = self.0.serial_offset(port) {
+            serial.write(offset, data);
+        } else if port == layout::I8042_COMMAND_PORT && data == [layout::I8042_RESET] {
+            self.0.request_stop(Ok(Stop::Reset));
+        }
     }
 }
 
 /// Where a secondary CPU starts, from the PSCI `CPU_ON` that woke it.
+#[cfg(target_arch = "aarch64")]
 struct Start {
     entry: u64,
     context: u64,
@@ -101,7 +137,12 @@ struct Start {
 
 enum Role {
     Primary(Box<Regs>),
+    /// Waits for PSCI `CPU_ON`.
+    #[cfg(target_arch = "aarch64")]
     Secondary(Receiver<Start>),
+    /// Waits, inside the hypervisor, for the boot CPU's startup IPI.
+    #[cfg(target_arch = "x86_64")]
+    Secondary,
 }
 
 /// State the vCPU threads coordinate through.
@@ -122,8 +163,13 @@ struct Machine {
     progressed: Condvar,
     kickers: Mutex<Vec<HostKick>>,
     /// Per CPU: the way to start it, until the first `CPU_ON` that names it takes it.
+    #[cfg(target_arch = "aarch64")]
     starters: Vec<Mutex<Option<Sender<Start>>>>,
+    #[cfg(target_arch = "aarch64")]
     online: Vec<AtomicBool>,
+    /// The serial port, on its I/O ports.
+    #[cfg(target_arch = "x86_64")]
+    serial: Option<Arc<dyn MmioDevice>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -131,7 +177,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Machine {
-    fn new(vm: HostVm, bus: MmioBus, vcpus: u32) -> Self {
+    fn new(
+        vm: HostVm,
+        bus: MmioBus,
+        vcpus: u32,
+        #[cfg(target_arch = "x86_64")] serial: Option<Arc<dyn MmioDevice>>,
+    ) -> Self {
         Self {
             vm,
             bus,
@@ -143,9 +194,21 @@ impl Machine {
             }),
             progressed: Condvar::new(),
             kickers: Mutex::new(Vec::new()),
+            #[cfg(target_arch = "aarch64")]
             starters: (0..vcpus).map(|_| Mutex::new(None)).collect(),
+            #[cfg(target_arch = "aarch64")]
             online: (0..vcpus).map(|_| AtomicBool::new(false)).collect(),
+            #[cfg(target_arch = "x86_64")]
+            serial,
         }
+    }
+
+    /// The serial port and the register a port number reaches, if it is one of the port's.
+    #[cfg(target_arch = "x86_64")]
+    fn serial_offset(&self, port: u16) -> Option<(&Arc<dyn MmioDevice>, u64)> {
+        let offset = port.checked_sub(layout::SERIAL_PORT)?;
+        let serial = self.serial.as_ref()?;
+        (offset < layout::SERIAL_PORT_LEN).then_some((serial, u64::from(offset)))
     }
 
     fn stopping(&self) -> bool {
@@ -156,6 +219,7 @@ impl Machine {
         lock(&self.progress).stop.get_or_insert(outcome);
         self.progressed.notify_all();
         // Secondaries that were never started are waiting on their channel; dropping the sender wakes them.
+        #[cfg(target_arch = "aarch64")]
         for starter in &self.starters {
             lock(starter).take();
         }
@@ -179,10 +243,12 @@ impl Machine {
             .is_none()
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn cpu_slot<'a, T>(&self, slots: &'a [T], cpu: u32) -> Option<&'a T> {
         slots.get(usize::try_from(cpu).ok()?)
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn cpu_on(&self, cpu: u32, entry: u64, context: u64) -> u64 {
         let Some(starter) = self.cpu_slot(&self.starters, cpu) else {
             return psci::INVALID_PARAMETERS;
@@ -196,6 +262,7 @@ impl Machine {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn affinity_info(&self, cpu: u32) -> u64 {
         match self.cpu_slot(&self.online, cpu) {
             Some(online) if online.load(Ordering::SeqCst) => psci::AFFINITY_ON,
@@ -204,6 +271,7 @@ impl Machine {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn set_online(&self, cpu: u32, online: bool) {
         if let Some(flag) = self.cpu_slot(&self.online, cpu) {
             flag.store(online, Ordering::SeqCst);
@@ -220,18 +288,27 @@ impl Machine {
         if !proceed {
             return Ok(());
         }
-        let regs = match role {
-            Role::Primary(regs) => *regs,
-            Role::Secondary(start) => match start.recv() {
-                Ok(start) => boot::secondary_regs(start.entry, start.context),
-                // The machine is stopping and this CPU was never turned on.
-                Err(_) => return Ok(()),
-            },
-        };
-        vcpu.set_regs(&regs)?;
-        self.set_online(index, true);
+        #[cfg(target_arch = "aarch64")]
+        {
+            let regs = match role {
+                Role::Primary(regs) => *regs,
+                Role::Secondary(start) => match start.recv() {
+                    Ok(start) => boot::secondary_regs(start.entry, start.context),
+                    // The machine is stopping and this CPU was never turned on.
+                    Err(_) => return Ok(()),
+                },
+            };
+            vcpu.set_regs(&regs)?;
+            self.set_online(index, true);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Role::Primary(regs) = role {
+            let system = boot::boot_system_regs(vcpu.system_regs()?);
+            vcpu.set_system_regs(&system)?;
+            vcpu.set_regs(&regs)?;
+        }
 
-        let io = BusIo(&self.bus);
+        let io = BusIo(self);
         loop {
             if self.stopping() {
                 return Ok(());
@@ -239,6 +316,7 @@ impl Machine {
             match vcpu.run(&io)? {
                 Exit::Kicked if self.stopping() => return Ok(()),
                 Exit::Kicked => {}
+                #[cfg(target_arch = "aarch64")]
                 Exit::Hypercall => {
                     let mut regs = vcpu.regs()?;
                     regs.x[0] = match psci::decode(&regs) {
@@ -306,6 +384,7 @@ impl Machine {
             for index in 0..self.vcpus {
                 let role = match primary.take() {
                     Some(regs) => Role::Primary(Box::new(regs)),
+                    #[cfg(target_arch = "aarch64")]
                     None => {
                         let (start, started) = mpsc::channel();
                         if let Some(starter) = self.cpu_slot(&self.starters, index) {
@@ -313,6 +392,8 @@ impl Machine {
                         }
                         Role::Secondary(started)
                     }
+                    #[cfg(target_arch = "x86_64")]
+                    None => Role::Secondary,
                 };
                 let name = format!("{}{index}", copy::VCPU_THREAD_PREFIX);
                 let thread = thread::Builder::new()
@@ -392,6 +473,7 @@ where
 }
 
 /// The board places the GIC and numbers interrupts by its own constants; make sure the host's GIC agrees.
+#[cfg(target_arch = "aarch64")]
 fn check_gic(chip: &HostIrqchip, highest_spi: u32) -> Result<(), VmmError> {
     let geometry = chip.geometry();
     let fits = geometry.distributor_size <= layout::GICD_SIZE
@@ -444,6 +526,18 @@ fn load_lists(paths: &[PathBuf]) -> Result<DomainSet, VmmError> {
     Ok(domains)
 }
 
+/// With no device tree, an x86_64 guest learns of its virtio-mmio devices from the command line.
+#[cfg(target_arch = "x86_64")]
+fn x86_virtio_cmdline(slots: &[u32]) -> String {
+    const KIB: u64 = 1024;
+    let size = layout::VIRTIO_MMIO_STRIDE / KIB;
+    let device = |slot: &u32| {
+        let (base, irq) = (layout::virtio_mmio_base(*slot), layout::virtio_irq(*slot));
+        format!("{}{size}K@{base:#x}:{irq}", copy::VIRTIO_MMIO_DEVICE_ARG)
+    };
+    slots.iter().map(device).collect::<Vec<_>>().join(" ")
+}
+
 /// The guest's network and the MAC address its device reports.
 fn network(
     options: &NetOptions,
@@ -493,7 +587,14 @@ pub fn run_in(
     if config.vcpus == 0 || config.vcpus > caps.max_vcpus.min(layout::MAX_VCPUS) {
         return Err(VmmError::Config(copy::TOO_MANY_VCPUS));
     }
+    #[cfg(target_arch = "aarch64")]
     let android = config.android.as_ref().map(android::assemble).transpose()?;
+    // shortcut: no x86_64 Android image is assembled yet; add one with the x86_64 Cuttlefish image.
+    #[cfg(target_arch = "x86_64")]
+    let android: Option<(DiskImage, ())> = match config.android {
+        Some(_) => return Err(VmmError::Config(copy::ANDROID_NOT_ON_THIS_HOST)),
+        None => None,
+    };
     let (android_disk, android_boot) = android.unzip();
     let disk_count = config.disks.len() + usize::from(android_disk.is_some());
     let disk_slots = u32::try_from(disk_count)
@@ -503,28 +604,51 @@ pub fn run_in(
     if config.initrd.is_none() && !config.bootconfig.is_empty() {
         return Err(VmmError::Config(copy::BOOTCONFIG_NEEDS_INITRD));
     }
+    #[cfg(target_arch = "x86_64")]
+    if !config.bootconfig.is_empty() {
+        return Err(VmmError::Config(copy::BOOTCONFIG_NOT_ON_THIS_HOST));
+    }
     let ram_bytes = config
         .ram_bytes
         .next_multiple_of(caps.host_page_size as u64);
-    boot::check_ram_size(ram_bytes)?;
-    let ram_len = usize::try_from(ram_bytes).map_err(|_| VmmError::Config(copy::RAM_UNMAPPABLE))?;
+    #[cfg(target_arch = "aarch64")]
+    let regions = {
+        boot::check_ram_size(ram_bytes)?;
+        std::iter::once(layout::RAM_BASE..layout::RAM_BASE + ram_bytes).collect::<Vec<_>>()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let regions = boot::ram_regions(ram_bytes);
+    let ranges = regions
+        .iter()
+        .map(|region| {
+            let len = usize::try_from(region.end - region.start);
+            Ok((
+                GuestAddress(region.start),
+                len.map_err(|_| VmmError::Config(copy::RAM_UNMAPPABLE))?,
+            ))
+        })
+        .collect::<Result<Vec<_>, VmmError>>()?;
 
     // Declared before the VM so that it is still alive when the VM, which maps it, is destroyed.
-    let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(layout::RAM_BASE), ram_len)])
+    let mem = GuestMemoryMmap::<()>::from_ranges(&ranges)
         .map_err(|err| VmmError::Device(err.to_string()))?;
     let vm = Host::create_vm(&VmConfig {
         gpa_bits: layout::GPA_BITS,
     })?;
-    let host_ram = mem
-        .get_host_address(GuestAddress(layout::RAM_BASE))
-        .ok()
-        .and_then(NonNull::new)
-        .ok_or(VmmError::Config(copy::RAM_UNMAPPABLE))?;
-    // SAFETY: `mem` owns `host_ram..host_ram+ram_len`, never moves or shrinks it, and outlives `vm`.
-    unsafe { vm.map(layout::RAM_BASE, host_ram, ram_len, Prot::RWX) }?;
+    for (start, len) in ranges {
+        let host_ram = mem
+            .get_host_address(start)
+            .ok()
+            .and_then(NonNull::new)
+            .ok_or(VmmError::Config(copy::RAM_UNMAPPABLE))?;
+        // SAFETY: `mem` owns `host_ram..host_ram+len`, never moves or shrinks it, and outlives `vm`.
+        unsafe { vm.map(start.0, host_ram, len, Prot::RWX) }?;
+    }
 
     let irqchip = vm.create_irqchip(&IrqchipConfig {
+        #[cfg(target_arch = "aarch64")]
         gicd_base: layout::GICD_BASE,
+        #[cfg(target_arch = "aarch64")]
         gicr_base: layout::GICR_BASE,
     })?;
     let net_slot = config.net.as_ref().map(|_| layout::VIRTIO_NET_SLOT);
@@ -560,10 +684,17 @@ pub fn run_in(
         .chain(net_slot)
         .collect();
     virtio_slots.sort_unstable();
-    let highest_spi = virtio_slots
-        .last()
-        .map_or(layout::RTC_SPI, |slot| layout::virtio_spi(*slot));
-    check_gic(&irqchip, highest_spi)?;
+    #[cfg(target_arch = "aarch64")]
+    {
+        let highest_spi = virtio_slots
+            .last()
+            .map_or(layout::RTC_SPI, |slot| layout::virtio_spi(*slot));
+        check_gic(&irqchip, highest_spi)?;
+    }
+    #[cfg(target_arch = "aarch64")]
+    let virtio_line = layout::virtio_spi;
+    #[cfg(target_arch = "x86_64")]
+    let virtio_line = layout::virtio_irq;
     let line = |spi: u32| -> Arc<dyn InterruptLine> {
         Arc::new(SpiLine {
             chip: Arc::clone(&irqchip),
@@ -575,17 +706,28 @@ pub fn run_in(
     let input_stop = Arc::new(AtomicBool::new(false));
     let mut bus = MmioBus::default();
     let (output, marker_seen) = MarkerWatch::new(console.output, config.boot_marker.as_deref());
+    #[cfg(target_arch = "x86_64")]
+    let mut serial_port: Option<Arc<dyn MmioDevice>> = None;
     if config.serial {
+        #[cfg(target_arch = "aarch64")]
         let serial = Arc::new(Serial::new(line(layout::UART_SPI), output));
+        #[cfg(target_arch = "aarch64")]
         bus.insert(
             layout::UART_BASE,
             layout::UART_SIZE,
             Arc::clone(&serial) as Arc<dyn MmioDevice>,
         )?;
+        #[cfg(target_arch = "x86_64")]
+        let serial = Arc::new(Serial::new(line(layout::SERIAL_IRQ), output));
+        #[cfg(target_arch = "x86_64")]
+        {
+            serial_port = Some(Arc::clone(&serial) as Arc<dyn MmioDevice>);
+        }
         if let Some(input) = console.input {
             spawn_input_pump(input, serial, Arc::clone(&input_stop))?;
         }
     }
+    #[cfg(target_arch = "aarch64")]
     bus.insert(layout::RTC_BASE, layout::RTC_SIZE, Arc::new(Rtc::default()))?;
     // An Android system disk goes first, so that it is the disk the guest's boot device setting names.
     let mut images: Vec<DiskImage> = android_disk.into_iter().collect();
@@ -599,7 +741,7 @@ pub fn run_in(
         images.push(image);
     }
     let mut attach = |slot: u32, device: Box<dyn VirtioDevice>| -> Result<(), VmmError> {
-        let transport = MmioTransport::new(device, mem.clone(), line(layout::virtio_spi(slot)))
+        let transport = MmioTransport::new(device, mem.clone(), line(virtio_line(slot)))
             .map_err(|err| VmmError::Device(err.to_string()))?;
         bus.insert(
             layout::virtio_mmio_base(slot),
@@ -641,11 +783,15 @@ pub fn run_in(
     }
 
     if let Some(slot) = sound_slot {
+        #[cfg(target_os = "macos")]
         let sink: Box<dyn AudioSink> = if config.mute {
             Box::new(Silence::default())
         } else {
             Box::new(session.speaker.clone())
         };
+        // shortcut: no host sound output on Linux yet; the guest's sound card plays into silence.
+        #[cfg(not(target_os = "macos"))]
+        let sink: Box<dyn AudioSink> = Box::new(Silence::default());
         attach(slot, Box::new(Sound::new(sink)))?;
     }
     for (slot, mac) in spare_net_slots.iter().zip(SPARE_NIC_MACS) {
@@ -655,6 +801,7 @@ pub fn run_in(
         let (network, mac) = network(options, resolver, Arc::clone(&controller.adb_port))?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
     }
+    #[cfg(target_arch = "aarch64")]
     if let Some(slot) = console_slot {
         let mut sinks: Vec<Option<PortSink>> = Vec::new();
         sinks.resize_with(android::CONSOLE_PORTS, || None);
@@ -678,52 +825,77 @@ pub fn run_in(
         attach(slot, Box::new(console))?;
     }
 
-    let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
-    let mut bootconfig = Vec::new();
-    let mut image_cmdline = String::new();
-    let initrd = match (android_boot, &config.initrd) {
-        (Some(mut image), _) => {
-            bootconfig = std::mem::take(&mut image.bootconfig);
-            bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
-            image_cmdline = std::mem::take(&mut image.cmdline);
-            // The user's parameters replace the image's where both set a key.
-            bootconfig
-                .retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));
-            bootconfig.extend(config.bootconfig.iter().cloned());
-            let mut parts: Vec<RamdiskPart<'_, File>> = image
-                .ramdisks
-                .iter_mut()
-                .map(|(stream, range)| RamdiskPart::Stream {
-                    stream,
-                    range: range.clone(),
-                })
-                .collect();
-            parts.push(RamdiskPart::Bytes(&image.overlay));
-            Some(boot::load_ramdisk(&mem, &mut parts, &bootconfig)?)
-        }
-        (None, Some(path)) => {
-            bootconfig.clone_from(&config.bootconfig);
-            Some(boot::load_initrd(&mem, &mut open(path)?, &bootconfig)?)
-        }
-        (None, None) => None,
+    #[cfg(target_arch = "aarch64")]
+    let primary = {
+        let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
+        let mut bootconfig = Vec::new();
+        let mut image_cmdline = String::new();
+        let initrd = match (android_boot, &config.initrd) {
+            (Some(mut image), _) => {
+                bootconfig = std::mem::take(&mut image.bootconfig);
+                bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
+                image_cmdline = std::mem::take(&mut image.cmdline);
+                // The user's parameters replace the image's where both set a key.
+                bootconfig
+                    .retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));
+                bootconfig.extend(config.bootconfig.iter().cloned());
+                let mut parts: Vec<RamdiskPart<'_, File>> = image
+                    .ramdisks
+                    .iter_mut()
+                    .map(|(stream, range)| RamdiskPart::Stream {
+                        stream,
+                        range: range.clone(),
+                    })
+                    .collect();
+                parts.push(RamdiskPart::Bytes(&image.overlay));
+                Some(boot::load_ramdisk(&mem, &mut parts, &bootconfig)?)
+            }
+            (None, Some(path)) => {
+                bootconfig.clone_from(&config.bootconfig);
+                Some(boot::load_initrd(&mem, &mut open(path)?, &bootconfig)?)
+            }
+            (None, None) => None,
+        };
+        let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
+        getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
+        let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
+        let blob = fdt::build(&fdt::FdtConfig {
+            ram_size: ram_bytes,
+            vcpus: config.vcpus,
+            cmdline: &kernel_cmdline(config, &image_cmdline, !bootconfig.is_empty()),
+            initrd,
+            serial: config.serial,
+            virtio_slots: &virtio_slots,
+            rng_seed,
+            kaslr_seed: u64::from_le_bytes(
+                kaslr_seed.try_into().expect("split leaves eight bytes"),
+            ),
+        })?;
+        let fdt_addr = boot::load_fdt(&mem, &blob)?;
+        boot::primary_regs(entry, fdt_addr)
     };
-    let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
-    getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
-    let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
-    let blob = fdt::build(&fdt::FdtConfig {
-        ram_size: ram_bytes,
-        vcpus: config.vcpus,
-        cmdline: &kernel_cmdline(config, &image_cmdline, !bootconfig.is_empty()),
-        initrd,
-        serial: config.serial,
-        virtio_slots: &virtio_slots,
-        rng_seed,
-        kaslr_seed: u64::from_le_bytes(kaslr_seed.try_into().expect("split leaves eight bytes")),
-    })?;
-    let fdt_addr = boot::load_fdt(&mem, &blob)?;
+    #[cfg(target_arch = "x86_64")]
+    let primary = {
+        let _ = android_boot;
+        let low_end = ram_bytes.min(layout::MMIO_GAP_START);
+        let kernel = boot::load_kernel(&mem, &mut open(&config.kernel)?, low_end)?;
+        let initrd = match &config.initrd {
+            Some(path) => Some(boot::load_initrd(&mem, &mut open(path)?, &kernel, low_end)?),
+            None => None,
+        };
+        let devices = x86_virtio_cmdline(&virtio_slots);
+        let cmdline = kernel_cmdline(config, &devices, false);
+        boot::write_boot_params(&mem, &kernel, &cmdline, initrd, ram_bytes)?;
+        boot::write_tables(&mem)?;
+        mptable::write(&mem, config.vcpus)?;
+        boot::boot_regs(kernel.entry)
+    };
 
+    #[cfg(target_arch = "aarch64")]
     let machine = Machine::new(vm, bus, config.vcpus);
-    let stop = machine.run(boot::primary_regs(entry, fdt_addr), &controller.power);
+    #[cfg(target_arch = "x86_64")]
+    let machine = Machine::new(vm, bus, config.vcpus, serial_port);
+    let stop = machine.run(primary, &controller.power);
     input_stop.store(true, Ordering::SeqCst);
     let stop = stop?;
     let boot_marker_after = marker_seen

@@ -73,6 +73,17 @@ jobs:
         run: sudo chmod 666 /dev/kvm
       - name: Hypervisor tests
         run: cargo test --locked -p hv
+      - name: Fetch a test kernel and ramdisk
+        # Firecracker's CI images: a vmlinux with virtio-mmio and 8250, and a BusyBox ramdisk.
+        run: |
+          base=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/vmlinux" "$base/v1.11/x86_64/vmlinux-6.1.102"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/initramfs.cpio" "$base/v1.10/x86_64/initramfs.cpio"
+      - name: Boot Linux on KVM
+        env:
+          EMU_TEST_KERNEL: ${{ runner.temp }}/vmlinux
+          EMU_TEST_INITRD: ${{ runner.temp }}/initramfs.cpio
+        run: cargo test --locked -p vmm --test linux_boot -- --nocapture
 
   policy:
     name: Dependency policy

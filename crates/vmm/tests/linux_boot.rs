@@ -4,10 +4,14 @@
 //! Needs kernels and a ramdisk the repository does not ship. Without them each test reports itself skipped.
 //! - `EMU_TEST_INITRD`: a ramdisk whose init mounts `/proc` and `/sys` and ends in a BusyBox shell on
 //!   the console.
-//! - `EMU_TEST_KERNEL`: an uncompressed ARM64 `Image` with virtio-mmio, 8250 and PL031 built in.
+//! - `EMU_TEST_KERNEL`: on ARM64 an uncompressed `Image` with virtio-mmio, 8250 and PL031 built in;
+//!   on x86_64 a `vmlinux` or bzImage with virtio-mmio command-line devices and 8250 built in.
 //! - `EMU_TEST_BOOTCONFIG_KERNEL`: an uncompressed ARM64 `Image` built with `CONFIG_BOOT_CONFIG`,
 //!   such as a stock Android GKI kernel. It needs no virtio support.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -28,6 +32,7 @@ use vmm::ctl::Controller;
 use vmm::machine::{self, Outcome, Stop};
 
 const KERNEL_ENV: &str = "EMU_TEST_KERNEL";
+#[cfg(target_arch = "aarch64")]
 const BOOTCONFIG_KERNEL_ENV: &str = "EMU_TEST_BOOTCONFIG_KERNEL";
 const INITRD_ENV: &str = "EMU_TEST_INITRD";
 
@@ -37,6 +42,16 @@ static ONE_VM: Mutex<()> = Mutex::new(());
 const RAM_BYTES: u64 = 512 << 20;
 const VCPUS: u32 = 2;
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+/// How the guest stops itself. An x86_64 guest without ACPI cannot switch the machine off; it can
+/// only reset it, through the keyboard controller.
+#[cfg(target_arch = "aarch64")]
+const STOP_COMMAND: &str = "poweroff -f";
+#[cfg(target_arch = "aarch64")]
+const GUEST_STOP: Stop = Stop::PowerOff;
+#[cfg(target_arch = "x86_64")]
+const STOP_COMMAND: &str = "reboot -f";
+#[cfg(target_arch = "x86_64")]
+const GUEST_STOP: Stop = Stop::Reset;
 
 const SECTOR: usize = 512;
 const DISK_SECTORS: usize = 2048;
@@ -203,7 +218,7 @@ impl Session {
     }
 
     fn power_off(self) -> Outcome {
-        self.type_line("poweroff -f");
+        self.type_line(STOP_COMMAND);
         self.outcome
             .recv_timeout(STEP_TIMEOUT)
             .expect("the machine stopped after poweroff")
@@ -288,7 +303,7 @@ fn linux_boots_to_a_shell_uses_two_cpus_and_two_disks_then_powers_off() {
     transcript.expect("refused=1\r\n", at);
 
     let outcome = session.power_off();
-    assert_eq!(outcome.stop, Stop::PowerOff);
+    assert_eq!(outcome.stop, GUEST_STOP);
     assert!(
         outcome.boot_marker_after.is_some(),
         "boot marker was on the console but not timed"
@@ -332,6 +347,7 @@ fn host_power_switch_stops_a_running_guest() {
 /// The bootconfig trailer is the only channel for `androidboot.*` parameters, so it has to be accepted by
 /// a real kernel, not only by this repository's own reading of the format.
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn kernel_reads_the_bootconfig_appended_to_the_ramdisk() {
     let Some([kernel, initrd]) = fixtures([BOOTCONFIG_KERNEL_ENV, INITRD_ENV]) else {
         return;
@@ -351,7 +367,7 @@ fn kernel_reads_the_bootconfig_appended_to_the_ramdisk() {
         "\r\nandroidboot.hardware = \"emu\"\r\nandroidboot.serialno = \"EMU0001\"\r\nend-of-bootconfig\r\n",
         at,
     );
-    assert_eq!(session.power_off().stop, Stop::PowerOff);
+    assert_eq!(session.power_off().stop, GUEST_STOP);
 }
 
 /// Answers every lookup with one fixed address and remembers what was asked.
@@ -538,6 +554,6 @@ fn guest_network_gets_dhcp_dns_tcp_adb_and_respects_the_sinkhole() {
     }
     assert_eq!(reply.trim_end(), GUEST_ADB_REPLY);
 
-    assert_eq!(session.power_off().stop, Stop::PowerOff);
+    assert_eq!(session.power_off().stop, GUEST_STOP);
     let _ = std::fs::remove_file(&blocklist);
 }

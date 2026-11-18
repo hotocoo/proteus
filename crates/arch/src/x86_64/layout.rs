@@ -1,6 +1,12 @@
 //! The x86_64 board's address map. Low memory follows the PC layout Linux expects; devices sit in a
 //! hole below 4 GiB, and RAM that does not fit under the hole continues above 4 GiB.
 
+pub use crate::slots::*;
+
+/// Guest physical address width the map needs.
+pub const GPA_BITS: u8 = hv::x86_64::GPA_BITS;
+/// The MP table holds at most this many processors in the one-kilobyte BIOS data area.
+pub const MAX_VCPUS: u32 = 32;
 /// Guest RAM starts at physical zero, as on a PC.
 pub const RAM_BASE: u64 = 0;
 /// The GDT and IDT the kernel is entered with.
@@ -58,4 +64,5 @@ const _: () = {
     assert!(PDE_ADDR < CMDLINE_ADDR && CMDLINE_ADDR + CMDLINE_MAX < EBDA_START);
     assert!(virtio_mmio_base(VIRTIO_MMIO_SLOTS) <= IOAPIC_ADDR);
     assert!(virtio_irq(VIRTIO_MMIO_SLOTS - 1) < IOAPIC_PINS);
+    assert!(VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
 };
