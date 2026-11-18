@@ -16,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   # Hosted runners are virtual machines without nested virtualization.
   EMU_SKIP_HV_TESTS: "1"
+  # Size budget of the emu executable (blueprint: under 30 MB).
+  EMU_MAX_BYTES: "31457280"
 
 jobs:
   check:
@@ -35,6 +37,11 @@ jobs:
         run: cargo test --workspace --locked
       - name: Release build
         run: cargo build --release --locked -p vmm
+      - name: Size budget
+        run: |
+          size=$(stat -f %z target/release/emu)
+          echo "emu is $size bytes (budget $EMU_MAX_BYTES)"
+          test "$size" -lt "$EMU_MAX_BYTES"
 
   portable:
     # No hypervisor backend exists for Linux yet. Everything that does not need one (devices,
@@ -47,6 +54,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Is there a KVM device on this runner
+        # Information only, for the KVM backend to come.
+        run: ls -l /dev/kvm || echo "no /dev/kvm"
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
