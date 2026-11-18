@@ -14,6 +14,8 @@ const MIB: u64 = 1 << 20;
 
 pub const DEFAULT_RAM_MIB: u64 = 4096;
 pub const DEFAULT_VCPUS: u32 = 4;
+/// Size of the guest's display, in pixels.
+pub const DEFAULT_DISPLAY: (u32, u32) = (1280, 720);
 /// Size the guest's data partition is created with.
 pub const DEFAULT_USERDATA_GIB: u64 = 8;
 /// Where an Android instance keeps what the guest writes, inside the images directory, unless told otherwise.
@@ -90,6 +92,8 @@ pub struct Config {
     pub serial: bool,
     /// `None` leaves the guest without a network device.
     pub net: Option<NetOptions>,
+    /// Width and height of the guest's display, or `None` for no display device.
+    pub display: Option<(u32, u32)>,
     /// Boot Android from an image directory instead of a plain ramdisk.
     pub android: Option<AndroidOptions>,
     pub bootconfig: Vec<(String, String)>,
@@ -109,6 +113,7 @@ impl Config {
             disks: Vec::new(),
             serial: false,
             net: Some(NetOptions::default()),
+            display: Some(DEFAULT_DISPLAY),
             android: None,
             bootconfig: Vec::new(),
             boot_marker: None,
@@ -201,6 +206,17 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("data-dir") => data_dir = Some(parser.value()?.into()),
             Long("userdata-gib") => userdata_gib = positive(&mut parser, "userdata-gib")?,
             Long("no-net") => no_net = true,
+            Long("no-display") => config.display = None,
+            Long("display") => {
+                let text = parser.value()?.string()?;
+                let size = text
+                    .split_once('x')
+                    .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)));
+                config.display = Some(
+                    size.filter(|(width, height)| *width > 0 && *height > 0)
+                        .ok_or_else(|| ConfigError(copy::BAD_DISPLAY.into()))?,
+                );
+            }
             Long("blocklist") => net.blocklists.push(parser.value()?.into()),
             Long("allowlist") => net.allowlists.push(parser.value()?.into()),
             Long("adb-port") => {
@@ -397,6 +413,16 @@ mod tests {
     }
 
     #[test]
+    fn display_size_is_parsed_and_can_be_switched_off() {
+        assert_eq!(run(&["--kernel", "k"]).display, Some(DEFAULT_DISPLAY));
+        assert_eq!(
+            run(&["--kernel", "k", "--display", "1920x1080"]).display,
+            Some((1920, 1080))
+        );
+        assert_eq!(run(&["--kernel", "k", "--no-display"]).display, None);
+    }
+
+    #[test]
     fn help_wins() {
         assert_eq!(parse_str(&["--help"]).unwrap(), Parsed::Help);
     }
@@ -416,6 +442,9 @@ mod tests {
             &["--kernel", "k", "--log-level", "loud"],
             &["--kernel", "k", "--boot-timing"],
             &["--kernel", "k", "--frobnicate"],
+            &["--kernel", "k", "--display", "1920"],
+            &["--kernel", "k", "--display", "0x1080"],
+            &["--kernel", "k", "--display", "widexhigh"],
             &["--kernel", "k", "--android", "images", "--initrd", "r"],
             &["--kernel", "k", "--data-dir", "mine"],
             &[

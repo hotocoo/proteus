@@ -53,3 +53,5 @@ pub const SPARSE_SIZE_MISMATCH: &str = "sparse image chunks do not add up to its
 pub const GPT_NAME_TOO_LONG: &str = "partition name is longer than 36 characters";
 pub const GPT_TOO_MANY: &str = "more partitions than a GPT holds";
 pub const GPT_BAD_SIZE: &str = "partition size is not a multiple of the sector size";
+pub const GPU_WORKER_NAME: &str = "virtio-gpu";
+pub const GPU_WORKER_GONE: &str = "display worker thread ended unexpectedly";

@@ -138,7 +138,10 @@ pub trait Vcpu {
     /// Runs until something the VMM must handle. MMIO and port I/O are served
     /// through `io` from inside the call. Idle (WFI/HLT) blocks inside the backend.
     fn run(&mut self, io: &dyn IoHandler) -> Result<Exit, HvError>;
+    // The x86_64 register file arrives with the first x86_64 backend.
+    #[cfg(target_arch = "aarch64")]
     fn regs(&self) -> Result<Regs, HvError>;
+    #[cfg(target_arch = "aarch64")]
     fn set_regs(&mut self, regs: &Regs) -> Result<(), HvError>;
     fn kicker(&self) -> Self::Kick;
 }

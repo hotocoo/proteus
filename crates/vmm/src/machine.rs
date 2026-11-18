@@ -17,6 +17,7 @@ use devices::bus::MmioBus;
 use devices::rtc::Rtc;
 use devices::serial::Serial;
 use devices::virtio::blk::{Block, DiskImage};
+use devices::virtio::gpu::{DisplayMode, Gpu};
 use devices::virtio::mmio::MmioTransport;
 use devices::virtio::net::{MAC_LEN, Net};
 use devices::{InterruptLine, MmioDevice};
@@ -461,10 +462,9 @@ pub fn run_with(
         gicd_base: layout::GICD_BASE,
         gicr_base: layout::GICR_BASE,
     })?;
-    let highest_slot = match &config.net {
-        Some(_) => Some(layout::VIRTIO_NET_SLOT),
-        None => disk_slots.checked_sub(1),
-    };
+    let net_slot = config.net.as_ref().map(|_| layout::VIRTIO_NET_SLOT);
+    let gpu_slot = config.display.map(|_| layout::VIRTIO_GPU_SLOT);
+    let highest_slot = net_slot.or(gpu_slot).or(disk_slots.checked_sub(1));
     let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
     check_gic(&irqchip, highest_spi)?;
     let line = |spi: u32| -> Arc<dyn InterruptLine> {
@@ -506,6 +506,19 @@ pub fn run_with(
             line(layout::virtio_spi(slot)),
         )
         .map_err(|err| VmmError::Device(err.to_string()))?;
+        bus.insert(
+            layout::virtio_mmio_base(slot),
+            layout::VIRTIO_MMIO_STRIDE,
+            Arc::new(transport),
+        )?;
+    }
+
+    if let Some((width, height)) = config.display {
+        let slot = layout::VIRTIO_GPU_SLOT;
+        let gpu = Gpu::headless(DisplayMode { width, height });
+        let transport =
+            MmioTransport::new(Box::new(gpu), mem.clone(), line(layout::virtio_spi(slot)))
+                .map_err(|err| VmmError::Device(err.to_string()))?;
         bus.insert(
             layout::virtio_mmio_base(slot),
             layout::VIRTIO_MMIO_STRIDE,
@@ -560,8 +573,7 @@ pub fn run_with(
     let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
     getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
     let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
-    let net_slot = config.net.as_ref().map(|_| layout::VIRTIO_NET_SLOT);
-    let virtio_slots: Vec<u32> = (0..disk_slots).chain(net_slot).collect();
+    let virtio_slots: Vec<u32> = (0..disk_slots).chain(gpu_slot).chain(net_slot).collect();
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,
         vcpus: config.vcpus,

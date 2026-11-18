@@ -60,6 +60,7 @@ pub const SHM_SIZE: u64 = 8 * GIB;
 
 /// Which device sits in which slot. Disks come first so that the guest names them `vda`, `vdb`, `vdc`.
 pub const VIRTIO_DISK_SLOTS: u32 = 3;
+pub const VIRTIO_GPU_SLOT: u32 = 3;
 pub const VIRTIO_NET_SLOT: u32 = 8;
 
 pub const fn virtio_mmio_base(slot: u32) -> u64 {
@@ -79,7 +80,8 @@ const _: () = {
     assert!(RAM_BASE + RAM_MAX_SIZE <= SHM_BASE);
     assert!(SHM_BASE + SHM_SIZE <= 1 << GPA_BITS);
     assert!(INITRD_OFFSET < FDT_OFFSET);
-    assert!(VIRTIO_DISK_SLOTS <= VIRTIO_NET_SLOT && VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
+    assert!(VIRTIO_DISK_SLOTS <= VIRTIO_GPU_SLOT && VIRTIO_GPU_SLOT < VIRTIO_NET_SLOT);
+    assert!(VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
 };
 
 /// Most vCPUs whose redistributors fit below the UART.
