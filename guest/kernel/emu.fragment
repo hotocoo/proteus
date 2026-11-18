@@ -16,6 +16,17 @@ CONFIG_SND_VIRTIO=y
 CONFIG_EROFS_FS=y
 CONFIG_F2FS_FS=y
 
+# Drivers the prebuilt Android image expects as loadable modules. Its modules were built for a
+# different kernel and cannot load into this one, so they are built in: graphics buffers from the
+# system heap, compressed swap, and the network card presented as a Wi-Fi network.
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=y
+CONFIG_RFKILL=y
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_VIRT_WIFI=y
+
 # Debug console. GKI ships with zero 8250 ports; one is enough.
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y

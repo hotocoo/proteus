@@ -39,7 +39,14 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm bc bison flex libssl-dev libelf-dev
+          sudo apt-get install -y --no-install-recommends clang lld llvm bc bison flex libssl-dev libelf-dev ccache
+      # A full build takes up to an hour; with the compiler cache a rebuild after a small
+      # configuration change takes a few minutes.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kernel-ccache-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: kernel-ccache-${{ matrix.arch }}-
       - name: Fetch kernel source
         run: |
           git clone --depth 1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
@@ -69,7 +76,9 @@ jobs:
           exit "$missing"
       - name: Build
         working-directory: kernel
-        run: make ARCH=${{ matrix.arch }} LLVM=1 O=out -j"$(nproc)" ${{ matrix.target }}
+        run: |
+          make ARCH=${{ matrix.arch }} LLVM=1 CC="ccache clang" O=out -j"$(nproc)" ${{ matrix.target }}
+          ccache --show-stats
       - name: Collect
         run: |
           mkdir dist
