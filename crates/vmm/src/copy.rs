@@ -50,7 +50,11 @@ Usage: emu --kernel <file> [options]
   touch <finger> <x> <y>                 Put a finger down, or move it (fingers 0 to 9)
   lift <finger>                          Take that finger off the screen
   key <code> [down|up]                   Press a key by its Linux key code
-  screenshot <file>                      Save what the display shows as a PNG";
+  screenshot <file>                      Save what the display shows as a PNG
+  location <lat> <lon> [<metres>]        Put the device at this position on Earth
+  rotate <x> <y> <z>                     Turn the device, in degrees about its three axes;
+                                         0 0 0 is upright, -90 0 0 is flat on a table
+  shake                                  Shake the device";
 
 pub const USAGE_HINT: &str = "run `emu --help` for usage";
 
@@ -147,6 +151,12 @@ pub const TOUCHSCREEN_NAME: &str = "emu touchscreen";
 pub const KEYBOARD_NAME: &str = "emu keyboard";
 pub const INPUT_SERIAL: &str = "0";
 
+pub const SENSORS_THREAD: &str = "sensors";
+
+pub fn sensor_request(request: &str) -> String {
+    format!("sensor service asked: {}", request.trim_end())
+}
+
 pub const CTL_THREAD: &str = "ctl";
 /// The control socket's answer to a command that worked.
 pub const CTL_OK: &str = "ok";
@@ -165,6 +175,10 @@ pub const CTL_USAGE: &str =
 pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";
 pub const CTL_NO_KEYBOARD: &str = "this instance has no keyboard";
 pub const CTL_NO_DISPLAY: &str = "this instance has no display to capture";
+pub const CTL_NO_SENSORS: &str = "this instance has no motion sensors";
+pub const CTL_NO_LOCATION: &str = "this instance has no location service";
+pub const CTL_BAD_LOCATION: &str =
+    "a location needs a latitude from -90 to 90 and a longitude from -180 to 180";
 pub const CTL_BAD_TOUCH: &str =
     "that finger or position is outside the screen, or that finger is not down";
 pub const CTL_BAD_KEY: &str = "the keyboard has no key with that code";

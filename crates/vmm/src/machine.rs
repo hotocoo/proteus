@@ -41,10 +41,14 @@ use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::ctl::{self, Controller};
 use crate::frames::{self, Screen};
 use crate::input::{self, Touch};
-use crate::{VmmError, android, copy, sensors};
+use crate::location::{self, Location};
+use crate::sensors::{self, Motion};
+use crate::{VmmError, android, copy};
 
-// The sensor service's terminal has to be one the console device has.
+// The terminals the VMM answers on have to be ones the console device has.
 const _: () = assert!(sensors::CONTROL_PORT < android::CONSOLE_PORTS);
+const _: () = assert!(sensors::DATA_PORT < android::CONSOLE_PORTS);
+const _: () = assert!(location::PORT < android::CONSOLE_PORTS);
 
 type HostVm = <Host as HypervisorBackend>::Vm;
 type HostVcpu = <HostVm as Vm>::Vcpu;
@@ -561,7 +565,9 @@ pub fn run_with(
         attach(layout::VIRTIO_TOUCH_SLOT, Box::new(touchscreen))?;
         let (keyboard, keys) = Input::new(input::keyboard());
         attach(layout::VIRTIO_KEYBOARD_SLOT, Box::new(keyboard))?;
-        controller = Controller::new(Some((touch, Touch::new(width, height))), Some(keys), screen);
+        controller.touch = Some((touch, Mutex::new(Touch::new(width, height))));
+        controller.keyboard = Some(keys);
+        controller.screen = screen;
     }
 
     if let Some(options) = &config.net {
@@ -579,10 +585,19 @@ pub fn run_with(
             sinks[android::LOGCAT_PORT] = Some(Box::new(file));
         }
         let (mut console, ports) = VirtioConsole::new(sinks);
+        let motion = Arc::new(Motion::default());
         console.set_sink(
             sensors::CONTROL_PORT,
-            Box::new(sensors::Requests::new(ports)),
+            Box::new(sensors::Requests::new(Arc::clone(&motion), ports.clone())),
         );
+        sensors::spawn_readings(&motion, ports.clone()).map_err(VmmError::Thread)?;
+        let place = Arc::new(Location::default());
+        console.set_sink(
+            location::PORT,
+            Box::new(location::Requests::new(Arc::clone(&place), ports)),
+        );
+        controller.motion = Some(motion);
+        controller.location = Some(place);
         attach(slot, Box::new(console))?;
     }
     // Listens until this boot of the machine ends.

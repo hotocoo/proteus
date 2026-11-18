@@ -10,9 +10,12 @@
 //! lift <finger>
 //! key <code> [down|up]
 //! screenshot <file>
+//! location <latitude> <longitude> [<metres above sea level>]
+//! rotate <x> <y> <z>
+//! shake
 //! ```
 //!
-//! Positions are display pixels and key codes are Linux key codes. The answer is `ok`, or `error:`
+//! Positions are display pixels, key codes are Linux key codes, and angles are degrees. The answer is `ok`, or `error:`
 //! followed by the reason. Unix sockets only; a Windows host will need a named pipe here.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -30,6 +33,8 @@ use crate::config::{DEFAULT_SWIPE, SWIPE_STEP, TAP_HOLD};
 use crate::copy;
 use crate::frames::Screen;
 use crate::input::{self, TOUCH_SLOTS, Touch};
+use crate::location::{Fix, Location};
+use crate::sensors::Motion;
 
 const WORD_TAP: &str = "tap";
 const WORD_SWIPE: &str = "swipe";
@@ -37,6 +42,9 @@ const WORD_TOUCH: &str = "touch";
 const WORD_LIFT: &str = "lift";
 const WORD_KEY: &str = "key";
 const WORD_SCREENSHOT: &str = "screenshot";
+const WORD_LOCATION: &str = "location";
+const WORD_ROTATE: &str = "rotate";
+const WORD_SHAKE: &str = "shake";
 const WORD_DOWN: &str = "down";
 const WORD_UP: &str = "up";
 
@@ -45,7 +53,7 @@ const GESTURE_FINGER: u32 = TOUCH_SLOTS - 1;
 /// The socket file is created for its owner alone: anyone who can connect controls the guest.
 const SOCKET_UMASK: libc::mode_t = 0o177;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Command {
     Tap {
         x: u32,
@@ -70,6 +78,14 @@ pub enum Command {
         down: Option<bool>,
     },
     Screenshot(PathBuf),
+    Location {
+        latitude: f64,
+        longitude: f64,
+        altitude: f64,
+    },
+    /// Degrees about the device's x, y and z axes.
+    Rotate([f64; 3]),
+    Shake,
 }
 
 /// Reads one command line. `None` if it is not a command in the form the module text gives.
@@ -78,6 +94,26 @@ pub fn parse(line: &str) -> Option<Command> {
     let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
     let numbers: Option<Vec<u32>> = rest.split_whitespace().map(|n| n.parse().ok()).collect();
+    let reals: Option<Vec<f64>> = rest.split_whitespace().map(|n| n.parse().ok()).collect();
+    match (word, reals.as_deref()) {
+        (WORD_LOCATION, Some(&[latitude, longitude])) => {
+            return Some(Command::Location {
+                latitude,
+                longitude,
+                altitude: 0.0,
+            });
+        }
+        (WORD_LOCATION, Some(&[latitude, longitude, altitude])) => {
+            return Some(Command::Location {
+                latitude,
+                longitude,
+                altitude,
+            });
+        }
+        (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
+        (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
+        _ => {}
+    }
     match (word, numbers.as_deref()) {
         (WORD_TAP, Some(&[x, y])) => Some(Command::Tap { x, y }),
         (WORD_SWIPE, Some(&[x1, y1, x2, y2])) => Some(Command::Swipe {
@@ -131,27 +167,17 @@ fn along(from: (u32, u32), to: (u32, u32), step: u32, steps: u32) -> (u32, u32) 
 /// The parts of a running machine that commands act on.
 #[derive(Default)]
 pub struct Controller {
-    touch: Option<(InputHandle, Mutex<Touch>)>,
-    keyboard: Option<InputHandle>,
-    screen: Option<Arc<Screen>>,
+    /// The touchscreen, and which fingers are on it.
+    pub touch: Option<(InputHandle, Mutex<Touch>)>,
+    pub keyboard: Option<InputHandle>,
+    pub screen: Option<Arc<Screen>>,
+    pub location: Option<Arc<Location>>,
+    pub motion: Option<Arc<Motion>>,
     /// Held for the length of a tap or swipe, so that two of them do not share the gesture finger.
-    gesture: Mutex<()>,
+    pub gesture: Mutex<()>,
 }
 
 impl Controller {
-    pub fn new(
-        touch: Option<(InputHandle, Touch)>,
-        keyboard: Option<InputHandle>,
-        screen: Option<Arc<Screen>>,
-    ) -> Self {
-        Self {
-            touch: touch.map(|(device, state)| (device, Mutex::new(state))),
-            keyboard,
-            screen,
-            gesture: Mutex::default(),
-        }
-    }
-
     fn touch(
         &self,
         change: impl FnOnce(&mut Touch) -> Option<Vec<InputEvent>>,
@@ -212,6 +238,29 @@ impl Controller {
                     Ok(false) => Err(copy::CTL_NO_FRAME_YET.to_owned()),
                     Err(err) => Err(copy::file(path, &err)),
                 }
+            }
+            Command::Location {
+                latitude,
+                longitude,
+                altitude,
+            } => {
+                let location = self.location.as_ref().ok_or(copy::CTL_NO_LOCATION)?;
+                let fix = Fix::new(latitude, longitude, altitude).ok_or(copy::CTL_BAD_LOCATION)?;
+                location.set(fix);
+                Ok(())
+            }
+            Command::Rotate(degrees) => {
+                let motion = self.motion.as_ref().ok_or(copy::CTL_NO_SENSORS)?;
+                if !degrees.iter().all(|angle| angle.is_finite()) {
+                    return Err(copy::CTL_USAGE.to_owned());
+                }
+                motion.rotate_to(degrees);
+                Ok(())
+            }
+            Command::Shake => {
+                let motion = self.motion.as_ref().ok_or(copy::CTL_NO_SENSORS)?;
+                motion.shake();
+                Ok(())
             }
         }
     }
@@ -353,7 +402,12 @@ mod tests {
     fn controller(screen: Option<Arc<Screen>>) -> Controller {
         let (_touchscreen, touch) = Input::new(input::touchscreen(WIDTH, HEIGHT));
         let (_keyboard, keys) = Input::new(input::keyboard());
-        Controller::new(Some((touch, Touch::new(WIDTH, HEIGHT))), Some(keys), screen)
+        Controller {
+            touch: Some((touch, Mutex::new(Touch::new(WIDTH, HEIGHT)))),
+            keyboard: Some(keys),
+            screen,
+            ..Controller::default()
+        }
     }
 
     fn replies(controller: &Controller, commands: &str) -> Vec<String> {
@@ -462,6 +516,54 @@ mod tests {
                 error(copy::CTL_BAD_KEY),
                 error(copy::CTL_USAGE),
                 error(copy::CTL_NO_DISPLAY),
+            ]
+        );
+    }
+
+    #[test]
+    fn location_and_motion_commands_reach_their_services() {
+        assert_eq!(
+            parse("location 3.139 101.6869"),
+            Some(Command::Location {
+                latitude: 3.139,
+                longitude: 101.6869,
+                altitude: 0.0
+            })
+        );
+        assert_eq!(
+            parse("rotate -90 0 12.5"),
+            Some(Command::Rotate([-90.0, 0.0, 12.5]))
+        );
+        assert_eq!(parse("shake"), Some(Command::Shake));
+        for line in ["location 1", "location a b", "rotate 1 2", "shake 1"] {
+            assert_eq!(parse(line), None, "{line:?}");
+        }
+
+        let without = Controller::default();
+        let with = Controller {
+            location: Some(Arc::default()),
+            motion: Some(Arc::default()),
+            ..Controller::default()
+        };
+        let commands =
+            "location 3.139 101.6869 60\nlocation 91 0\nrotate 0 0 90\nrotate 0 0 inf\nshake\n";
+        let error = |why: &str| copy::ctl_error(&why);
+        assert_eq!(
+            replies(&with, commands),
+            [
+                copy::CTL_OK.to_owned(),
+                error(copy::CTL_BAD_LOCATION),
+                copy::CTL_OK.to_owned(),
+                error(copy::CTL_USAGE),
+                copy::CTL_OK.to_owned(),
+            ]
+        );
+        assert_eq!(
+            replies(&without, "location 1 2\nrotate 0 0 0\nshake\n"),
+            [
+                error(copy::CTL_NO_LOCATION),
+                error(copy::CTL_NO_SENSORS),
+                error(copy::CTL_NO_SENSORS)
             ]
         );
     }

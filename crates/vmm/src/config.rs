@@ -41,6 +41,14 @@ pub const TAP_HOLD: Duration = Duration::from_millis(50);
 pub const SWIPE_STEP: Duration = Duration::from_millis(10);
 /// How long a swipe takes when the command does not say.
 pub const DEFAULT_SWIPE: Duration = Duration::from_millis(300);
+/// How often the guest gets a reading from each motion sensor it has switched on.
+pub const SENSOR_INTERVAL: Duration = Duration::from_millis(20);
+/// How fast the device turns towards a new orientation, in degrees per second about each axis.
+pub const ROTATION_SPEED: f64 = 360.0;
+/// How long a shake lasts, how often it changes direction, and how hard it pushes (m/s²).
+pub const SHAKE_DURATION: Duration = Duration::from_millis(600);
+pub const SHAKE_HZ: f64 = 8.0;
+pub const SHAKE_ACCELERATION: f64 = 25.0;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
 /// How often the serial input pump checks whether its machine has stopped.

@@ -13,6 +13,7 @@ mod copy;
 pub mod ctl;
 pub mod frames;
 pub mod input;
+pub mod location;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
