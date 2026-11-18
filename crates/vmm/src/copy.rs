@@ -30,6 +30,7 @@ Usage: emu --kernel <file> [options]
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 1280x720)
   --no-display            Give the guest no display device
+  --headless              Open no window; the display can still be captured
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
   --logcat <file>         Write Android's system log to this file
@@ -138,6 +139,20 @@ pub const VCPU_PANICKED: &str = "a vCPU thread panicked";
 pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
 pub const POWER_THREAD: &str = "power";
+pub const MACHINE_THREAD: &str = "machine";
+pub const WINDOW_TITLE: &str = "emu";
+
+pub fn window_failed(err: &dyn Display) -> String {
+    format!("the window could not be opened (use --headless to run without one): {err}")
+}
+
+pub fn window_draw_failed(err: &dyn Display) -> String {
+    format!("the window could not be drawn: {err}")
+}
+
+pub fn window_input_dropped(why: &dyn Display) -> String {
+    format!("input from the window was dropped: {why}")
+}
 pub const CONSOLE_INPUT_THREAD: &str = "console-in";
 pub const REBOOTING: &str = "emu: guest asked to restart; booting again";
 pub const RESET_LOOP: &str = "the guest keeps resetting right after it starts; giving up";

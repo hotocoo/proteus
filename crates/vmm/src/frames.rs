@@ -30,7 +30,7 @@ const FORMATS_XRGB: [u32; 2] = [3, 4];
 const FORMATS_XBGR: [u32; 2] = [68, 121];
 
 /// Positions of red, green and blue within one four-byte pixel of the given format.
-fn channel_order(format: u32) -> [usize; RGB_BYTES] {
+pub(crate) fn channel_order(format: u32) -> [usize; RGB_BYTES] {
     if FORMATS_BGRX.contains(&format) {
         [2, 1, 0]
     } else if FORMATS_XRGB.contains(&format) {
@@ -102,6 +102,8 @@ pub fn png(frame: &Frame<'_>) -> Option<Vec<u8>> {
 #[derive(Default)]
 pub struct Screen {
     latest: Mutex<Latest>,
+    /// Called after every new frame, on the thread that delivered it.
+    listener: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -123,10 +125,34 @@ impl FrameSink for Screen {
         latest.pixels.clear();
         latest.pixels.extend_from_slice(frame.pixels);
         latest.serial += 1;
+        drop(latest);
+        let listener = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(listener) = listener.as_ref() {
+            listener();
+        }
     }
 }
 
 impl Screen {
+    /// Has `listener` called after every new frame. It runs on a device thread, so it should only
+    /// pass the news on.
+    pub fn on_frame(&self, listener: impl Fn() + Send + Sync + 'static) {
+        *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(listener));
+    }
+
+    /// Lets `look` see the newest frame. `None` if the guest has not shown anything yet.
+    pub fn with_latest<R>(&self, look: impl FnOnce(&Frame<'_>) -> R) -> Option<R> {
+        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        (latest.serial != 0).then(|| {
+            look(&Frame {
+                width: latest.width,
+                height: latest.height,
+                format: latest.format,
+                pixels: &latest.pixels,
+            })
+        })
+    }
+
     /// Saves the newest frame as a PNG and returns its number, or zero, saving nothing, if the guest
     /// has not shown anything yet.
     fn save_latest(&self, path: &Path) -> std::io::Result<u64> {

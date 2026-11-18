@@ -16,11 +16,13 @@ getrandom = "0.3"
 lexopt = "0.3"
 libc = "0.2"
 log = "0.4"
+softbuffer = { version = "0.4", default-features = false }
 virtio-bindings = "0.2"
 virtio-queue = "0.18"
 vm-fdt = "0.3"
 vm-memory = { version = "0.18", features = ["backend-mmap"] }
 vm-superio = "0.8"
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 
 [profile.release]
 lto = "fat"

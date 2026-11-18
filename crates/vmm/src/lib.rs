@@ -19,6 +19,8 @@ mod logger;
 pub mod machine;
 pub mod sensors;
 pub mod session;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod window;
 
 /// Exit status for a command line the program could not understand.
 const EXIT_USAGE: u8 = 2;
@@ -70,8 +72,47 @@ impl From<devices::bus::BusError> for VmmError {
     }
 }
 
+/// Runs the machine, with a window if the configuration asks for one, until it stops for good.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
+    use window::{Notice, WindowLoop};
+
+    let session = session::Session::new(config)?;
+    let Some(display) = config.display.filter(|_| config.window) else {
+        return boot_loop(config, &session, started);
+    };
+    let window = WindowLoop::new()?;
+    let notify = window.notifier();
+    if let Some(screen) = &session.controller.screen {
+        let notify = notify.clone();
+        screen.on_frame(move || notify(Notice::Frame));
+    }
+    // The window system wants this thread, the program's first, so the machine gets another.
+    std::thread::scope(|scope| {
+        let machine = std::thread::Builder::new()
+            .name(copy::MACHINE_THREAD.into())
+            .spawn_scoped(scope, || {
+                let ran = boot_loop(config, &session, started);
+                notify(Notice::Stopped);
+                ran
+            })
+            .map_err(VmmError::Thread)?;
+        let shown = window.run(std::sync::Arc::clone(&session.controller), display);
+        // However the window ended, the machine does not outlive it.
+        session.controller.power.off();
+        let ran = machine.join();
+        ran.unwrap_or(Err(VmmError::Config(copy::VCPU_PANICKED)))
+            .and(shown)
+    })
+}
+
+/// Boots the machine, and boots it again each time the guest asks to restart.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn boot_loop(
+    config: &config::Config,
+    session: &session::Session,
+    started: Instant,
+) -> Result<(), VmmError> {
     use config::{MAX_QUICK_RESETS, QUICK_RESET_WINDOW};
     use machine::Stop;
 
@@ -80,12 +121,11 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
         .then(|| console::ConsoleInput::from_reader(std::io::stdin()))
         .transpose();
     let input = input.map_err(VmmError::Thread)?;
-    let session = session::Session::new(config)?;
     let mut quick_resets = 0;
     let mut boot_started = started;
     loop {
         let outcome = machine::run_in(
-            &session,
+            session,
             config,
             console::Console::stdout(input.clone()),
             boot_started,

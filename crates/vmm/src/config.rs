@@ -121,6 +121,8 @@ pub struct Config {
     pub display: Option<(u32, u32)>,
     /// Keep this PNG file up to date with what the guest's display shows.
     pub frame_dump: Option<PathBuf>,
+    /// Show the guest's display in a window.
+    pub window: bool,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
     /// Write Android's system log to this file.
@@ -146,6 +148,7 @@ impl Config {
             net: Some(NetOptions::default()),
             display: Some(DEFAULT_DISPLAY),
             frame_dump: None,
+            window: true,
             ctl: None,
             logcat: None,
             android: None,
@@ -262,6 +265,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("no-display") => config.display = None,
             Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
+            Long("headless") => config.window = false,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;

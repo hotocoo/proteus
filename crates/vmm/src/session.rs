@@ -74,8 +74,8 @@ impl Session {
             let touch = Touch::new(width, height);
             controller.touch = Some((InputHandle::default(), Mutex::new(touch)));
             controller.keyboard = Some(InputHandle::default());
-            // Frames are only kept if something can ask for them.
-            if config.frame_dump.is_some() || config.ctl.is_some() {
+            // Frames are only kept if something can show them or ask for them.
+            if config.window || config.frame_dump.is_some() || config.ctl.is_some() {
                 let screen = Arc::new(Screen::default());
                 if let Some(path) = &config.frame_dump {
                     frames::spawn_dump(&screen, path.clone()).map_err(VmmError::Thread)?;
@@ -146,7 +146,11 @@ mod tests {
         assert!(bare.controller.touch.is_none() && bare.controller.keyboard.is_none());
         assert!(bare.controller.screen.is_none() && bare.controller.motion.is_none());
 
+        config.window = false;
+        assert!(Session::new(&config).unwrap().controller.screen.is_none());
+
         config.display = Some((64, 48));
+        assert!(Session::new(&config).unwrap().controller.screen.is_none());
         config.frame_dump = Some(std::env::temp_dir().join("emu-session-test.png"));
         let shown = Session::new(&config).unwrap();
         assert!(shown.controller.touch.is_some() && shown.controller.keyboard.is_some());
