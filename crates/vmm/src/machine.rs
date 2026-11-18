@@ -111,8 +111,12 @@ impl IoHandler for BusIo<'_> {
 
     #[cfg(target_arch = "x86_64")]
     fn pio_read(&self, port: u16, data: &mut [u8]) {
-        match self.0.serial_offset(port) {
-            Some((serial, offset)) => serial.read(offset, data),
+        match self.0.port_device(port) {
+            Some((device, offset)) => device.read(offset, data),
+            // The keyboard controller has nothing to say and is always ready to listen.
+            None if [layout::I8042_DATA_PORT, layout::I8042_COMMAND_PORT].contains(&port) => {
+                data.fill(0);
+            }
             // Nothing there: the bus floats high, as on a PC.
             None => data.fill(u8::MAX),
         }
@@ -120,8 +124,8 @@ impl IoHandler for BusIo<'_> {
 
     #[cfg(target_arch = "x86_64")]
     fn pio_write(&self, port: u16, data: &[u8]) {
-        if let Some((serial, offset)) = self.0.serial_offset(port) {
-            serial.write(offset, data);
+        if let Some((device, offset)) = self.0.port_device(port) {
+            device.write(offset, data);
         } else if port == layout::I8042_COMMAND_PORT && data == [layout::I8042_RESET] {
             self.0.request_stop(Ok(Stop::Reset));
         }
@@ -167,9 +171,9 @@ struct Machine {
     starters: Vec<Mutex<Option<Sender<Start>>>>,
     #[cfg(target_arch = "aarch64")]
     online: Vec<AtomicBool>,
-    /// The serial port, on its I/O ports.
+    /// Devices on I/O ports: first port, number of ports, device.
     #[cfg(target_arch = "x86_64")]
-    serial: Option<Arc<dyn MmioDevice>>,
+    ports: Vec<(u16, u16, Arc<dyn MmioDevice>)>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -181,7 +185,7 @@ impl Machine {
         vm: HostVm,
         bus: MmioBus,
         vcpus: u32,
-        #[cfg(target_arch = "x86_64")] serial: Option<Arc<dyn MmioDevice>>,
+        #[cfg(target_arch = "x86_64")] ports: Vec<(u16, u16, Arc<dyn MmioDevice>)>,
     ) -> Self {
         Self {
             vm,
@@ -199,16 +203,17 @@ impl Machine {
             #[cfg(target_arch = "aarch64")]
             online: (0..vcpus).map(|_| AtomicBool::new(false)).collect(),
             #[cfg(target_arch = "x86_64")]
-            serial,
+            ports,
         }
     }
 
-    /// The serial port and the register a port number reaches, if it is one of the port's.
+    /// The device on an I/O port, and the port's offset into its range.
     #[cfg(target_arch = "x86_64")]
-    fn serial_offset(&self, port: u16) -> Option<(&Arc<dyn MmioDevice>, u64)> {
-        let offset = port.checked_sub(layout::SERIAL_PORT)?;
-        let serial = self.serial.as_ref()?;
-        (offset < layout::SERIAL_PORT_LEN).then_some((serial, u64::from(offset)))
+    fn port_device(&self, port: u16) -> Option<(&Arc<dyn MmioDevice>, u64)> {
+        self.ports.iter().find_map(|(first, len, device)| {
+            let offset = port.checked_sub(*first).filter(|offset| offset < len)?;
+            Some((device, u64::from(offset)))
+        })
     }
 
     fn stopping(&self) -> bool {
@@ -707,7 +712,11 @@ pub fn run_in(
     let mut bus = MmioBus::default();
     let (output, marker_seen) = MarkerWatch::new(console.output, config.boot_marker.as_deref());
     #[cfg(target_arch = "x86_64")]
-    let mut serial_port: Option<Arc<dyn MmioDevice>> = None;
+    let mut ports: Vec<(u16, u16, Arc<dyn MmioDevice>)> = vec![(
+        layout::CMOS_PORT,
+        layout::CMOS_PORT_LEN,
+        Arc::new(devices::cmos::Cmos::default()),
+    )];
     if config.serial {
         #[cfg(target_arch = "aarch64")]
         let serial = Arc::new(Serial::new(line(layout::UART_SPI), output));
@@ -721,7 +730,8 @@ pub fn run_in(
         let serial = Arc::new(Serial::new(line(layout::SERIAL_IRQ), output));
         #[cfg(target_arch = "x86_64")]
         {
-            serial_port = Some(Arc::clone(&serial) as Arc<dyn MmioDevice>);
+            let device = Arc::clone(&serial) as Arc<dyn MmioDevice>;
+            ports.push((layout::SERIAL_PORT, layout::SERIAL_PORT_LEN, device));
         }
         if let Some(input) = console.input {
             spawn_input_pump(input, serial, Arc::clone(&input_stop))?;
@@ -894,7 +904,7 @@ pub fn run_in(
     #[cfg(target_arch = "aarch64")]
     let machine = Machine::new(vm, bus, config.vcpus);
     #[cfg(target_arch = "x86_64")]
-    let machine = Machine::new(vm, bus, config.vcpus, serial_port);
+    let machine = Machine::new(vm, bus, config.vcpus, ports);
     let stop = machine.run(primary, &controller.power);
     input_stop.store(true, Ordering::SeqCst);
     let stop = stop?;

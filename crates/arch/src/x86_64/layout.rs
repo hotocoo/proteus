@@ -40,6 +40,11 @@ pub const IOAPIC_PINS: u32 = 24;
 pub const SERIAL_PORT: u16 = 0x3f8;
 pub const SERIAL_PORT_LEN: u16 = 8;
 pub const SERIAL_IRQ: u32 = 4;
+/// The CMOS clock's index and data ports.
+pub const CMOS_PORT: u16 = 0x70;
+pub const CMOS_PORT_LEN: u16 = 2;
+/// The keyboard controller's data port.
+pub const I8042_DATA_PORT: u16 = 0x60;
 /// The keyboard controller's command port; writing `I8042_RESET` to it resets the machine.
 pub const I8042_COMMAND_PORT: u16 = 0x64;
 pub const I8042_RESET: u8 = 0xfe;

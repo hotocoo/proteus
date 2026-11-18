@@ -2,6 +2,7 @@
 //! an MMIO window and an interrupt line.
 
 pub mod bus;
+pub mod cmos;
 mod copy;
 pub mod disk;
 pub mod rtc;
