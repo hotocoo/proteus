@@ -123,6 +123,8 @@ pub struct Config {
     pub frame_dump: Option<PathBuf>,
     /// Show the guest's display in a window.
     pub window: bool,
+    /// Give the guest a sound card.
+    pub sound: bool,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
     /// Write Android's system log to this file.
@@ -149,6 +151,7 @@ impl Config {
             display: Some(DEFAULT_DISPLAY),
             frame_dump: None,
             window: true,
+            sound: true,
             ctl: None,
             logcat: None,
             android: None,
@@ -266,6 +269,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
             Long("headless") => config.window = false,
+            Long("no-sound") => config.sound = false,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;

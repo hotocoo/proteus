@@ -34,6 +34,7 @@ Usage: emu --kernel <file> [options]
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
   --logcat <file>         Write Android's system log to this file
+  --no-sound              Give the guest no sound card
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)

@@ -15,6 +15,7 @@ pub mod gpu;
 pub mod input;
 pub mod mmio;
 pub mod net;
+pub mod snd;
 
 /// A shared-memory region a device exposes through the transport's SHM registers.
 #[derive(Clone, Copy, Debug)]

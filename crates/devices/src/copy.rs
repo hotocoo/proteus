@@ -58,4 +58,6 @@ pub const GPU_WORKER_GONE: &str = "display worker thread ended unexpectedly";
 pub const INPUT_WORKER_NAME: &str = "virtio-input";
 pub const INPUT_WORKER_GONE: &str = "input worker thread ended unexpectedly";
 pub const CONSOLE_WORKER_NAME: &str = "virtio-console";
+pub const SOUND_WORKER_NAME: &str = "virtio-snd";
+pub const SOUND_WORKER_GONE: &str = "sound worker thread ended unexpectedly";
 pub const CONSOLE_WORKER_GONE: &str = "console worker thread ended unexpectedly";

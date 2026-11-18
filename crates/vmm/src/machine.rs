@@ -23,6 +23,7 @@ use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
 use devices::virtio::input::{Input, InputHandle};
 use devices::virtio::mmio::MmioTransport;
 use devices::virtio::net::{MAC_LEN, Net};
+use devices::virtio::snd::{Silence, Sound};
 use devices::{InterruptLine, MmioDevice};
 use hv::{
     Exit, Gpa, Host, HypervisorBackend, IoHandler, Irqchip, IrqchipConfig, Kick, Prot, Regs, Vcpu,
@@ -535,8 +536,10 @@ pub fn run_in(
         None => &[],
     };
     let console_slot = config.android.as_ref().map(|_| layout::VIRTIO_CONSOLE_SLOT);
+    let sound_slot = config.sound.then_some(layout::VIRTIO_SOUND_SLOT);
     let highest_slot = console_slot
         .or(net_slot)
+        .or(sound_slot)
         .or(display_slots.iter().copied().max())
         .or(disk_slots.checked_sub(1));
     let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
@@ -613,6 +616,9 @@ pub fn run_in(
         attach(layout::VIRTIO_KEYBOARD_SLOT, Box::new(keyboard))?;
     }
 
+    if let Some(slot) = sound_slot {
+        attach(slot, Box::new(Sound::new(Box::new(Silence::default()))))?;
+    }
     if let Some(options) = &config.net {
         let (network, mac) = network(options, resolver)?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
@@ -674,6 +680,7 @@ pub fn run_in(
     let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
     let virtio_slots: Vec<u32> = (0..disk_slots)
         .chain(display_slots.iter().copied())
+        .chain(sound_slot)
         .chain(net_slot)
         .chain(console_slot)
         .collect();
