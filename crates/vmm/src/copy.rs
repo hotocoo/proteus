@@ -1,4 +1,9 @@
 //! Every message the `emu` binary can show. Code refers to these by name.
+// On a host that has no hypervisor backend yet, the machine is not built and its messages go unused.
+#![cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 
 use std::fmt::Display;
 use std::path::Path;
