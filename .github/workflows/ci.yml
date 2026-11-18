@@ -86,6 +86,12 @@ jobs:
           EMU_TEST_KERNEL: ${{ runner.temp }}/vmlinux
           EMU_TEST_INITRD: ${{ runner.temp }}/initramfs.cpio
         run: cargo test --locked -p vmm --test linux_boot -- --nocapture
+      - name: No connections of emu's own (blueprint section 9)
+        run: |
+          sudo apt-get install -y -qq strace >/dev/null
+          cargo build --release --locked -p vmm
+          scripts/no-connect.sh target/release/emu 20 \
+            --kernel "$RUNNER_TEMP/vmlinux" --initrd "$RUNNER_TEMP/initramfs.cpio" --serial
 
   policy:
     name: Dependency policy
