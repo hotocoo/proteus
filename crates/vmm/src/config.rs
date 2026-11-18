@@ -49,6 +49,13 @@ pub const TAP_HOLD: Duration = Duration::from_millis(50);
 pub const SWIPE_STEP: Duration = Duration::from_millis(10);
 /// How long a swipe takes when the command does not say.
 pub const DEFAULT_SWIPE: Duration = Duration::from_millis(300);
+/// Frames of sound waiting between the guest and the host's output. This much, plus the host's own
+/// buffer, is how late the guest's sound is heard.
+pub const AUDIO_RING_FRAMES: usize = 2400;
+/// How often a full ring is looked at again for room.
+pub const AUDIO_RING_POLL: Duration = Duration::from_millis(1);
+/// How much longer than the sound itself a full ring is waited on before the sound is dropped.
+pub const AUDIO_STALL_MARGIN: Duration = Duration::from_millis(100);
 /// How often the motion sensors are read, and sent to the guest if their readings changed.
 pub const SENSOR_INTERVAL: Duration = Duration::from_millis(20);
 /// How often unchanged readings are sent again anyway.
@@ -133,6 +140,8 @@ pub struct Config {
     pub window: bool,
     /// Give the guest a sound card.
     pub sound: bool,
+    /// Play nothing on the host; the guest's sound card stays.
+    pub mute: bool,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
     /// Write Android's system log to this file.
@@ -160,6 +169,7 @@ impl Config {
             frame_dump: None,
             window: true,
             sound: true,
+            mute: false,
             ctl: None,
             logcat: None,
             android: None,
@@ -278,6 +288,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
             Long("headless") => config.window = false,
             Long("no-sound") => config.sound = false,
+            Long("mute") => config.mute = true,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;

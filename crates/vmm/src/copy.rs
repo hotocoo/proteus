@@ -35,6 +35,7 @@ Usage: emu --kernel <file> [options]
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
   --logcat <file>         Write Android's system log to this file
   --no-sound              Give the guest no sound card
+  --mute                  Keep the sound card but play nothing on this machine
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
@@ -141,6 +142,13 @@ pub const VCPU_THREAD_PREFIX: &str = "vcpu";
 pub const SERIAL_INPUT_THREAD: &str = "serial-in";
 pub const POWER_THREAD: &str = "power";
 pub const MACHINE_THREAD: &str = "machine";
+pub const AUDIO_THREAD: &str = "audio";
+pub const AUDIO_NO_DEVICE: &str = "this machine has no sound output";
+pub const AUDIO_OPENED: &str = "sound output opened: the guest has started playing";
+
+pub fn audio_failed(err: &dyn Display) -> String {
+    format!("sound output: {err}; the guest's sound will not be heard")
+}
 pub const WINDOW_TITLE: &str = "emu";
 
 pub fn window_failed(err: &dyn Display) -> String {

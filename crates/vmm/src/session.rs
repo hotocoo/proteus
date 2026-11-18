@@ -63,6 +63,9 @@ impl PowerSwitch {
 pub struct Session {
     /// The host ends of the guest's devices, for whatever drives the guest from outside.
     pub controller: Arc<Controller>,
+    /// The host's sound output. It opens when the guest first plays something.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub speaker: crate::audio::Speaker,
     _ctl: Option<ctl::Server>,
 }
 
@@ -102,6 +105,8 @@ impl Session {
         };
         Ok(Self {
             controller,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            speaker: crate::audio::Speaker::default(),
             _ctl: ctl,
         })
     }

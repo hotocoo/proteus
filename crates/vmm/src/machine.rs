@@ -23,7 +23,7 @@ use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
 use devices::virtio::input::{Input, InputHandle};
 use devices::virtio::mmio::MmioTransport;
 use devices::virtio::net::{MAC_LEN, Net};
-use devices::virtio::snd::{Silence, Sound};
+use devices::virtio::snd::{AudioSink, Silence, Sound};
 use devices::{InterruptLine, MmioDevice};
 use hv::{
     Exit, Gpa, Host, HypervisorBackend, IoHandler, Irqchip, IrqchipConfig, Kick, Prot, Regs, Vcpu,
@@ -629,7 +629,12 @@ pub fn run_in(
     }
 
     if let Some(slot) = sound_slot {
-        attach(slot, Box::new(Sound::new(Box::new(Silence::default()))))?;
+        let sink: Box<dyn AudioSink> = if config.mute {
+            Box::new(Silence::default())
+        } else {
+            Box::new(session.speaker.clone())
+        };
+        attach(slot, Box::new(Sound::new(sink)))?;
     }
     for (slot, mac) in spare_net_slots.iter().zip(SPARE_NIC_MACS) {
         attach(*slot, Box::new(Net::unplugged(mac)))?;

@@ -19,8 +19,10 @@ log.workspace = true
 net.workspace = true
 vm-memory.workspace = true
 
-# The window. Only hosts that have a hypervisor backend build it.
+# The window and the sound output. Only hosts that have a hypervisor backend build them.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+cpal.workspace = true
+rtrb.workspace = true
 softbuffer.workspace = true
 winit.workspace = true
 

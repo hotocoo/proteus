@@ -7,6 +7,8 @@ use std::time::Instant;
 
 #[cfg(target_arch = "aarch64")]
 mod android;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod audio;
 pub mod config;
 pub mod console;
 mod copy;
