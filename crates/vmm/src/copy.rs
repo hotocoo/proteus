@@ -32,6 +32,7 @@ Usage: emu --kernel <file> [options]
   --no-display            Give the guest no display device
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
+  --logcat <file>         Write Android's system log to this file
   --no-net                Give the guest no network device
   --blocklist <file>      Block the domains in this list: trackers, ads (repeatable)
   --allowlist <file>      Keep these domains reachable even if a blocklist names them (repeatable)
@@ -80,6 +81,7 @@ pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
 pub const ANDROID_WITH_INITRD: &str =
     "--android brings its own ramdisk; do not pass --initrd with it";
 pub const DATA_DIR_NEEDS_ANDROID: &str = "--data-dir only applies with --android";
+pub const LOGCAT_NEEDS_ANDROID: &str = "--logcat only applies with --android";
 pub const BAD_DISPLAY: &str = "--display needs a size such as 1280x720";
 pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";

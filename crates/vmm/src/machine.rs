@@ -18,6 +18,7 @@ use devices::rtc::Rtc;
 use devices::serial::Serial;
 use devices::virtio::VirtioDevice;
 use devices::virtio::blk::{Block, DiskImage};
+use devices::virtio::console::{Console as VirtioConsole, PortSink};
 use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
 use devices::virtio::input::Input;
 use devices::virtio::mmio::MmioTransport;
@@ -40,7 +41,10 @@ use crate::console::{Console, ConsoleInput, MarkerWatch};
 use crate::ctl::{self, Controller};
 use crate::frames::{self, Screen};
 use crate::input::{self, Touch};
-use crate::{VmmError, android, copy};
+use crate::{VmmError, android, copy, sensors};
+
+// The sensor service's terminal has to be one the console device has.
+const _: () = assert!(sensors::CONTROL_PORT < android::CONSOLE_PORTS);
 
 type HostVm = <Host as HypervisorBackend>::Vm;
 type HostVcpu = <HostVm as Vm>::Vcpu;
@@ -484,7 +488,9 @@ pub fn run_with(
         ],
         None => &[],
     };
-    let highest_slot = net_slot
+    let console_slot = config.android.as_ref().map(|_| layout::VIRTIO_CONSOLE_SLOT);
+    let highest_slot = console_slot
+        .or(net_slot)
         .or(display_slots.iter().copied().max())
         .or(disk_slots.checked_sub(1));
     let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
@@ -562,6 +568,23 @@ pub fn run_with(
         let (network, mac) = network(options, resolver)?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
     }
+    if let Some(slot) = console_slot {
+        let mut sinks: Vec<Option<PortSink>> = Vec::new();
+        sinks.resize_with(android::CONSOLE_PORTS, || None);
+        if let Some(path) = &config.logcat {
+            let file = File::create(path).map_err(|source| VmmError::File {
+                path: path.clone(),
+                source,
+            })?;
+            sinks[android::LOGCAT_PORT] = Some(Box::new(file));
+        }
+        let (mut console, ports) = VirtioConsole::new(sinks);
+        console.set_sink(
+            sensors::CONTROL_PORT,
+            Box::new(sensors::Requests::new(ports)),
+        );
+        attach(slot, Box::new(console))?;
+    }
     // Listens until this boot of the machine ends.
     let _ctl = match &config.ctl {
         Some(path) => {
@@ -609,6 +632,7 @@ pub fn run_with(
     let virtio_slots: Vec<u32> = (0..disk_slots)
         .chain(display_slots.iter().copied())
         .chain(net_slot)
+        .chain(console_slot)
         .collect();
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,

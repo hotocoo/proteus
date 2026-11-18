@@ -64,6 +64,7 @@ pub const VIRTIO_GPU_SLOT: u32 = 3;
 pub const VIRTIO_TOUCH_SLOT: u32 = 4;
 pub const VIRTIO_KEYBOARD_SLOT: u32 = 5;
 pub const VIRTIO_NET_SLOT: u32 = 8;
+pub const VIRTIO_CONSOLE_SLOT: u32 = 9;
 
 pub const fn virtio_mmio_base(slot: u32) -> u64 {
     VIRTIO_MMIO_BASE + slot as u64 * VIRTIO_MMIO_STRIDE
@@ -84,7 +85,7 @@ const _: () = {
     assert!(INITRD_OFFSET < FDT_OFFSET);
     assert!(VIRTIO_DISK_SLOTS <= VIRTIO_GPU_SLOT && VIRTIO_GPU_SLOT < VIRTIO_TOUCH_SLOT);
     assert!(VIRTIO_TOUCH_SLOT < VIRTIO_KEYBOARD_SLOT && VIRTIO_KEYBOARD_SLOT < VIRTIO_NET_SLOT);
-    assert!(VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
+    assert!(VIRTIO_NET_SLOT < VIRTIO_CONSOLE_SLOT && VIRTIO_CONSOLE_SLOT < VIRTIO_MMIO_SLOTS);
 };
 
 /// Most vCPUs whose redistributors fit below the UART.

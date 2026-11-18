@@ -177,7 +177,17 @@ const BOOTCONFIG: &[(&str, &str)] = &[
     ("androidboot.enable_bootanimation", "1"),
     // Software rendering is slow; the image scales its watchdog timeouts by this.
     ("androidboot.hw_timeout_multiplier", "3"),
+    // Services that refuse to start without these. Nothing on the host listens on the port, and
+    // there is no thread radio; the lights service only needs a port it is allowed to bind.
+    ("androidboot.vsock_lights_port", "6900"),
+    ("androidboot.vsock_lights_cid", "3"),
+    ("androidboot.openthread_node_id", "1"),
 ];
+/// Terminals (`/dev/hvc0` and up) the image's hardware services open at start. Most would talk to
+/// helper programs that this emulator does not have; the services only need the terminals to exist.
+pub const CONSOLE_PORTS: usize = 20;
+/// The terminal the image writes its system log to.
+pub const LOGCAT_PORT: usize = 2;
 /// Amount of RAM as Android's memory tuning reads it, in whole megabytes with this suffix.
 const DDR_SIZE_KEY: &str = "androidboot.ddr_size";
 const DDR_SIZE_SUFFIX: &str = "MB";

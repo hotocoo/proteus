@@ -16,6 +16,7 @@ pub mod input;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
+pub mod sensors;
 
 /// Exit status for a command line the program could not understand.
 const EXIT_USAGE: u8 = 2;

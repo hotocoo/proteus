@@ -113,6 +113,8 @@ pub struct Config {
     pub frame_dump: Option<PathBuf>,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
+    /// Write Android's system log to this file.
+    pub logcat: Option<PathBuf>,
     /// Boot Android from an image directory instead of a plain ramdisk.
     pub android: Option<AndroidOptions>,
     pub bootconfig: Vec<(String, String)>,
@@ -135,6 +137,7 @@ impl Config {
             display: Some(DEFAULT_DISPLAY),
             frame_dump: None,
             ctl: None,
+            logcat: None,
             android: None,
             bootconfig: Vec::new(),
             boot_marker: None,
@@ -249,6 +252,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("no-display") => config.display = None,
             Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
+            Long("logcat") => config.logcat = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;
                 let size = text
@@ -304,6 +308,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             })
         }
         None if data_dir.is_some() => return Err(ConfigError(copy::DATA_DIR_NEEDS_ANDROID.into())),
+        None if config.logcat.is_some() => {
+            return Err(ConfigError(copy::LOGCAT_NEEDS_ANDROID.into()));
+        }
         None => None,
     };
     if boot_timing || boot_marker.is_some() {

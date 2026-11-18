@@ -10,6 +10,7 @@ use vm_memory::GuestMemoryMmap;
 use crate::{InterruptLine, copy};
 
 pub mod blk;
+pub mod console;
 pub mod gpu;
 pub mod input;
 pub mod mmio;
