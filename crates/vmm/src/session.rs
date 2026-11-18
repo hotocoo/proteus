@@ -67,9 +67,34 @@ pub struct Session {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub speaker: crate::audio::Speaker,
     _ctl: Option<ctl::Server>,
+    gamepad_forced: bool,
+    /// Answers, once, whether a host pad was plugged in at start.
+    pad_found: Option<Mutex<Option<std::sync::mpsc::Receiver<bool>>>>,
+    pad_seen: std::sync::OnceLock<bool>,
 }
 
 impl Session {
+    /// Whether the guest gets a gamepad: forced on, or a host pad was plugged in at start. Waits
+    /// for the host's answer the first time.
+    pub fn gamepad_attached(&self) -> bool {
+        if self.controller.gamepad.is_none() {
+            return false;
+        }
+        if self.gamepad_forced {
+            return true;
+        }
+        *self.pad_seen.get_or_init(|| {
+            let found = self.pad_found.as_ref().and_then(|found| {
+                let receiver = found
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()?;
+                receiver.recv().ok()
+            });
+            found.unwrap_or(false)
+        })
+    }
+
     /// Makes the host ends of the devices `config` asks for, and starts listening for commands.
     pub fn new(config: &Config) -> Result<Self, VmmError> {
         let mut controller = Controller::default();
@@ -100,11 +125,16 @@ impl Session {
                 Some(crate::gamepad::HostPads::watch().map_err(VmmError::Thread)?)
             }
         };
+        // Whether a host pad is there is found out while the machine is being built; the guest
+        // only gets the device if one is.
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let pad_plugged_in = pads.as_ref().is_some_and(|pads| pads.connected);
+        let (pads, pad_found) = match pads {
+            Some((pads, found)) => (Some(pads), Some(Mutex::new(Some(found)))),
+            None => (None, None),
+        };
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let pad_plugged_in = false;
-        if config.gamepad == GamepadMode::Always || pad_plugged_in {
+        let pad_found = None;
+        if config.gamepad == GamepadMode::Always || pad_found.is_some() {
             controller.gamepad = Some(InputHandle::default());
         }
         let targets: Vec<_> = config
@@ -130,6 +160,9 @@ impl Session {
         };
         Ok(Self {
             controller,
+            gamepad_forced: config.gamepad == GamepadMode::Always,
+            pad_found,
+            pad_seen: std::sync::OnceLock::new(),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             speaker: crate::audio::Speaker::default(),
             _ctl: ctl,
@@ -187,7 +220,8 @@ mod tests {
         assert!(shown.controller.screen.is_some());
         assert!(shown.controller.gamepad.is_none());
         config.gamepad = GamepadMode::Always;
-        assert!(Session::new(&config).unwrap().controller.gamepad.is_some());
+        let forced = Session::new(&config).unwrap();
+        assert!(forced.controller.gamepad.is_some() && forced.gamepad_attached());
         // Location and motion belong to Android; a plain kernel has neither.
         assert!(shown.controller.location.is_none());
     }

@@ -73,7 +73,7 @@ pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
 /// How long to listen for host gamepads being announced at start, before deciding there are none.
-pub const GAMEPAD_SETTLE: Duration = Duration::from_millis(500);
+pub const GAMEPAD_SETTLE: Duration = Duration::from_millis(150);
 /// How long the check for the app in front may take; it prints at once or not at all.
 pub const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(5);
 /// Speed a GPX route is followed at when none is given: a walk.

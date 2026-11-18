@@ -680,10 +680,8 @@ pub fn run_in(
         None => &[],
     };
     let gamepad_slot = session
-        .controller
-        .gamepad
-        .as_ref()
-        .map(|_| layout::VIRTIO_GAMEPAD_SLOT);
+        .gamepad_attached()
+        .then_some(layout::VIRTIO_GAMEPAD_SLOT);
     let console_slot = config.android.as_ref().map(|_| layout::VIRTIO_CONSOLE_SLOT);
     let sound_slot = config.sound.then_some(layout::VIRTIO_SOUND_SLOT);
     // An Android image expects its network card to be the third one; two cards with no cable
@@ -800,7 +798,11 @@ pub fn run_in(
         let keyboard = Input::attached(input::keyboard(), &keys);
         attach(layout::VIRTIO_KEYBOARD_SLOT, Box::new(keyboard))?;
     }
-    if let Some(pad) = &controller.gamepad {
+    if let Some(pad) = controller
+        .gamepad
+        .as_ref()
+        .filter(|_| gamepad_slot.is_some())
+    {
         let gamepad = Input::attached(input::gamepad(), pad);
         attach(layout::VIRTIO_GAMEPAD_SLOT, Box::new(gamepad))?;
     }

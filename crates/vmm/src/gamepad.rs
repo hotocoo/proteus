@@ -117,13 +117,12 @@ fn commands(moved: Moved) -> Vec<Command> {
 /// Watches the host's gamepads on a thread of its own.
 pub struct HostPads {
     controller: mpsc::Sender<Arc<Controller>>,
-    /// Whether a pad was plugged in when watching started.
-    pub connected: bool,
 }
 
 impl HostPads {
-    /// Starts watching. The events are held until `forward_to` says where they go.
-    pub fn watch() -> std::io::Result<Self> {
+    /// Starts watching. The events are held until `forward_to` says where they go. The receiver
+    /// says, once it is known, whether a pad was plugged in at start.
+    pub fn watch() -> std::io::Result<(Self, mpsc::Receiver<bool>)> {
         let (found, connected) = mpsc::channel();
         let (controller, target) = mpsc::channel::<Arc<Controller>>();
         std::thread::Builder::new()
@@ -139,11 +138,14 @@ impl HostPads {
                     }
                 };
                 // Pads already plugged in are announced as connection events from another
-                // thread, a moment after start, so they are waited for before counting.
+                // thread, a moment after start, so they are waited for before counting; the first
+                // one settles it.
                 let settled = Instant::now() + GAMEPAD_SETTLE;
                 while let Some(left) = settled.checked_duration_since(Instant::now()) {
-                    if pads.next_event_blocking(Some(left)).is_none() {
-                        break;
+                    match pads.next_event_blocking(Some(left)) {
+                        Some(event) if event.event == EventType::Connected => break,
+                        Some(_) => {}
+                        None => break,
                     }
                 }
                 let _ = found.send(pads.gamepads().next().is_some());
@@ -158,10 +160,7 @@ impl HostPads {
                     }
                 }
             })?;
-        Ok(Self {
-            controller,
-            connected: connected.recv().unwrap_or(false),
-        })
+        Ok((Self { controller }, connected))
     }
 
     /// Sends what the pads do to `controller` from now on.
