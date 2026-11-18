@@ -14,13 +14,21 @@ pub mod aarch64;
 mod copy;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod hvf;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod kvm;
+#[cfg(target_arch = "x86_64")]
+pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::Regs;
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::{Regs, SystemRegs};
 
 /// The one backend that exists on this target.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub type Host = hvf::Hvf;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub type Host = kvm::Kvm;
 
 /// Guest physical address.
 pub type Gpa = u64;
@@ -138,11 +146,13 @@ pub trait Vcpu {
     /// Runs until something the VMM must handle. MMIO and port I/O are served
     /// through `io` from inside the call. Idle (WFI/HLT) blocks inside the backend.
     fn run(&mut self, io: &dyn IoHandler) -> Result<Exit, HvError>;
-    // The x86_64 register file arrives with the first x86_64 backend.
-    #[cfg(target_arch = "aarch64")]
     fn regs(&self) -> Result<Regs, HvError>;
-    #[cfg(target_arch = "aarch64")]
     fn set_regs(&mut self, regs: &Regs) -> Result<(), HvError>;
+    /// Control registers, segments and descriptor tables.
+    #[cfg(target_arch = "x86_64")]
+    fn system_regs(&self) -> Result<SystemRegs, HvError>;
+    #[cfg(target_arch = "x86_64")]
+    fn set_system_regs(&mut self, regs: &SystemRegs) -> Result<(), HvError>;
     fn kicker(&self) -> Self::Kick;
 }
 

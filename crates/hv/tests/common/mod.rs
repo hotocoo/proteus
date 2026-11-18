@@ -22,7 +22,7 @@ const SKIP_ENV: &str = "EMU_SKIP_HV_TESTS";
 
 /// False (after saying so) when the environment declares that this machine has no usable hypervisor.
 pub fn hypervisor_expected() -> bool {
-    let expected = std::env::var_os(SKIP_ENV).is_none();
+    let expected = std::env::var_os(SKIP_ENV).is_none_or(|value| value.is_empty());
     if !expected {
         eprintln!("skipped: {SKIP_ENV} is set");
     }

@@ -16,6 +16,8 @@ cpal = "0.18"
 getrandom = "0.3"
 gilrs = "0.11"
 lexopt = "0.3"
+kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }
+kvm-ioctls = "0.25"
 libc = "0.2"
 miniz_oxide = "0.9"
 log = "0.4"

@@ -1,9 +1,11 @@
 //! Every message this crate can show. Code refers to these by name.
 
+#[cfg(target_os = "linux")]
+pub const DENIED: &str = "this user may not open /dev/kvm; add it to the kvm group";
 #[cfg(target_os = "macos")]
 pub const DENIED: &str = "the hypervisor refused this process; the binary must be signed with the \
 com.apple.security.hypervisor entitlement (packaging/macos/hv.entitlements)";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub const DENIED: &str = "the hypervisor refused this process";
 pub const VM_BUSY: &str = "this process already runs a virtual machine";
 
@@ -59,3 +61,15 @@ pub const IRQCHIP_EXISTS: &str = "the interrupt controller was already created";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub const GIC_LAYOUT_MISMATCH: &str =
     "the board's GIC addresses do not satisfy the host's size or alignment";
+
+#[cfg(target_os = "linux")]
+pub const NO_KVM: &str = "KVM (/dev/kvm is missing; enable virtualization and load the kvm module)";
+#[cfg(target_os = "linux")]
+pub const KVM_API_VERSION: &str = "this kernel's KVM API version";
+#[cfg(target_os = "linux")]
+pub const KVM_CAPABILITY: &str =
+    "a KVM without an in-kernel interrupt controller, user memory, TSS address or immediate exit";
+#[cfg(target_os = "linux")]
+pub const KVM_UNREADABLE: &str = "guest memory that cannot be read";
+#[cfg(target_os = "linux")]
+pub const KVM_NOT_MAPPED: &str = "no mapping at that address with that length";
