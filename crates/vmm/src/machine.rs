@@ -16,8 +16,10 @@ use arch::aarch64::{boot, fdt, layout};
 use devices::bus::MmioBus;
 use devices::rtc::Rtc;
 use devices::serial::Serial;
+use devices::virtio::VirtioDevice;
 use devices::virtio::blk::{Block, DiskImage};
-use devices::virtio::gpu::{DisplayMode, Gpu};
+use devices::virtio::gpu::{DisplayMode, FrameSink, Gpu};
+use devices::virtio::input::Input;
 use devices::virtio::mmio::MmioTransport;
 use devices::virtio::net::{MAC_LEN, Net};
 use devices::{InterruptLine, MmioDevice};
@@ -35,7 +37,9 @@ use crate::config::{
     SERIAL_INPUT_RETRY,
 };
 use crate::console::{Console, ConsoleInput, MarkerWatch};
-use crate::frames::FrameDump;
+use crate::ctl::{self, Controller};
+use crate::frames::{self, Screen};
+use crate::input::{self, Touch};
 use crate::{VmmError, android, copy};
 
 type HostVm = <Host as HypervisorBackend>::Vm;
@@ -471,8 +475,18 @@ pub fn run_with(
         gicr_base: layout::GICR_BASE,
     })?;
     let net_slot = config.net.as_ref().map(|_| layout::VIRTIO_NET_SLOT);
-    let gpu_slot = config.display.map(|_| layout::VIRTIO_GPU_SLOT);
-    let highest_slot = net_slot.or(gpu_slot).or(disk_slots.checked_sub(1));
+    // A display brings a touchscreen and a keyboard with it.
+    let display_slots: &[u32] = match config.display {
+        Some(_) => &[
+            layout::VIRTIO_GPU_SLOT,
+            layout::VIRTIO_TOUCH_SLOT,
+            layout::VIRTIO_KEYBOARD_SLOT,
+        ],
+        None => &[],
+    };
+    let highest_slot = net_slot
+        .or(display_slots.iter().copied().max())
+        .or(disk_slots.checked_sub(1));
     let highest_spi = highest_slot.map_or(layout::RTC_SPI, layout::virtio_spi);
     check_gic(&irqchip, highest_spi)?;
     let line = |spi: u32| -> Arc<dyn InterruptLine> {
@@ -509,52 +523,56 @@ pub fn run_with(
             })?;
         images.push(image);
     }
-    for (slot, image) in (0u32..).zip(images) {
-        let transport = MmioTransport::new(
-            Box::new(Block::new(image)),
-            mem.clone(),
-            line(layout::virtio_spi(slot)),
-        )
-        .map_err(|err| VmmError::Device(err.to_string()))?;
+    let mut attach = |slot: u32, device: Box<dyn VirtioDevice>| -> Result<(), VmmError> {
+        let transport = MmioTransport::new(device, mem.clone(), line(layout::virtio_spi(slot)))
+            .map_err(|err| VmmError::Device(err.to_string()))?;
         bus.insert(
             layout::virtio_mmio_base(slot),
             layout::VIRTIO_MMIO_STRIDE,
             Arc::new(transport),
         )?;
+        Ok(())
+    };
+    for (slot, image) in (0u32..).zip(images) {
+        attach(slot, Box::new(Block::new(image)))?;
     }
 
+    let mut controller = Controller::default();
     if let Some((width, height)) = config.display {
-        let slot = layout::VIRTIO_GPU_SLOT;
         let mode = DisplayMode { width, height };
-        let gpu = match &config.frame_dump {
-            Some(path) => Gpu::with_sink(mode, Arc::new(FrameDump::new(path.clone()))),
+        // Frames are only kept if something can ask for them.
+        let wanted = config.frame_dump.is_some() || config.ctl.is_some();
+        let screen = wanted.then(|| Arc::new(Screen::default()));
+        let gpu = match &screen {
+            Some(screen) => Gpu::with_sink(mode, Arc::clone(screen) as Arc<dyn FrameSink>),
             None => Gpu::headless(mode),
         };
-        let transport =
-            MmioTransport::new(Box::new(gpu), mem.clone(), line(layout::virtio_spi(slot)))
-                .map_err(|err| VmmError::Device(err.to_string()))?;
-        bus.insert(
-            layout::virtio_mmio_base(slot),
-            layout::VIRTIO_MMIO_STRIDE,
-            Arc::new(transport),
-        )?;
+        if let (Some(screen), Some(path)) = (&screen, &config.frame_dump) {
+            frames::spawn_dump(screen, path.clone()).map_err(VmmError::Thread)?;
+        }
+        attach(layout::VIRTIO_GPU_SLOT, Box::new(gpu))?;
+        let (touchscreen, touch) = Input::new(input::touchscreen(width, height));
+        attach(layout::VIRTIO_TOUCH_SLOT, Box::new(touchscreen))?;
+        let (keyboard, keys) = Input::new(input::keyboard());
+        attach(layout::VIRTIO_KEYBOARD_SLOT, Box::new(keyboard))?;
+        controller = Controller::new(Some((touch, Touch::new(width, height))), Some(keys), screen);
     }
 
     if let Some(options) = &config.net {
         let (network, mac) = network(options, resolver)?;
-        let slot = layout::VIRTIO_NET_SLOT;
-        let transport = MmioTransport::new(
-            Box::new(Net::new(network, mac)),
-            mem.clone(),
-            line(layout::virtio_spi(slot)),
-        )
-        .map_err(|err| VmmError::Device(err.to_string()))?;
-        bus.insert(
-            layout::virtio_mmio_base(slot),
-            layout::VIRTIO_MMIO_STRIDE,
-            Arc::new(transport),
-        )?;
+        attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
     }
+    // Listens until this boot of the machine ends.
+    let _ctl = match &config.ctl {
+        Some(path) => {
+            let server = ctl::Server::start(path, Arc::new(controller));
+            Some(server.map_err(|source| VmmError::File {
+                path: path.clone(),
+                source,
+            })?)
+        }
+        None => None,
+    };
 
     let entry = boot::load_kernel(&mem, &mut open(&config.kernel)?)?;
     let mut bootconfig = Vec::new();
@@ -562,6 +580,7 @@ pub fn run_with(
     let initrd = match (android_boot, &config.initrd) {
         (Some(mut image), _) => {
             bootconfig = std::mem::take(&mut image.bootconfig);
+            bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
             image_cmdline = std::mem::take(&mut image.cmdline);
             // The user's parameters replace the image's where both set a key.
             bootconfig
@@ -587,7 +606,10 @@ pub fn run_with(
     let mut seed = [0u8; RNG_SEED_LEN + size_of::<u64>()];
     getrandom::fill(&mut seed).map_err(|_| VmmError::Config(copy::NO_ENTROPY))?;
     let (rng_seed, kaslr_seed) = seed.split_at(RNG_SEED_LEN);
-    let virtio_slots: Vec<u32> = (0..disk_slots).chain(gpu_slot).chain(net_slot).collect();
+    let virtio_slots: Vec<u32> = (0..disk_slots)
+        .chain(display_slots.iter().copied())
+        .chain(net_slot)
+        .collect();
     let blob = fdt::build(&fdt::FdtConfig {
         ram_size: ram_bytes,
         vcpus: config.vcpus,

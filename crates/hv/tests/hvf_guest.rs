@@ -10,7 +10,7 @@ use std::sync::{Condvar, Mutex};
 
 use common::{GPA_BITS, GuestPage, MMIO_BASE, PSCI_SYSTEM_OFF, RAM_BASE};
 
-use hv::aarch64::PSTATE_EL1H_DAIF_MASKED;
+use hv::aarch64::{PSTATE_EL1H_DAIF_MASKED, SMCCC_NOT_SUPPORTED};
 use hv::{Exit, Gpa, Host, HypervisorBackend, IoHandler, Kick, Prot, Regs, Vcpu, Vm, VmConfig};
 
 /// The framework allows one VM per process, and the test harness runs tests on parallel threads.
@@ -29,6 +29,7 @@ const QUAD_PATTERN: u64 = 0x1122_3344_5566_7788;
 // Offsets the guest reports results to.
 const REPORT_BASE: u64 = 0x40;
 const REPORT_AFTER_HVC: u64 = 0x78;
+const REPORT_AFTER_SMC: u64 = 0x80;
 
 const HVC_RESULT: u64 = 0x1234;
 
@@ -73,6 +74,11 @@ core::arch::global_asm!(
     "movk x0, #0x8400, lsl #16",
     "hvc  #0",
     "str  x0, [x28, #0x78]",
+    // A secure monitor call nobody implements: it must return "not supported" in x0 and carry on.
+    "movz x0, #0x0001",
+    "movk x0, #0x8400, lsl #16",
+    "smc  #0",
+    "str  x0, [x28, #0x80]",
     // Spin until kicked.
     "b .",
     ".globl _guest_mmio_end",
@@ -136,7 +142,7 @@ fn quad(value: u64) -> Vec<u8> {
 }
 
 #[test]
-fn mmio_widths_sign_extension_hvc_and_kick() {
+fn mmio_widths_sign_extension_hvc_smc_and_kick() {
     common::within_deadline(mmio_scenario);
 }
 
@@ -188,14 +194,18 @@ fn mmio_scenario() {
     let kick = vcpu.kicker();
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            io.wait_for_write_at(REPORT_AFTER_HVC);
+            io.wait_for_write_at(REPORT_AFTER_SMC);
             kick.kick();
         });
         assert_eq!(vcpu.run(&io).unwrap(), Exit::Kicked);
     });
+    let writes = io.writes();
     assert_eq!(
-        io.writes().last().unwrap(),
-        &(REPORT_AFTER_HVC, quad(HVC_RESULT))
+        writes[writes.len() - 2..],
+        [
+            (REPORT_AFTER_HVC, quad(HVC_RESULT)),
+            (REPORT_AFTER_SMC, quad(SMCCC_NOT_SUPPORTED)),
+        ]
     );
 
     drop(vcpu);

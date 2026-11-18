@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use crate::aarch64::{INSN_LEN, esr, mpidr_affinity};
+use crate::aarch64::{INSN_LEN, SMCCC_NOT_SUPPORTED, esr, mpidr_affinity};
 use crate::{
     Caps, Exit, Gpa, HvError, HypervisorBackend, IoHandler, Irqchip, IrqchipConfig, Kick, Prot,
     Regs, Vcpu, Vm, VmConfig, copy,
@@ -331,6 +331,13 @@ impl HvfVcpu {
                 .handle_mmio(io, syndrome, exception.physical_address)
                 .map(|()| None),
             esr::EC_HVC64 => Ok(Some(Exit::Hypercall)),
+            esr::EC_SMC64 => {
+                // Firmware calls go through HVC on this board. A kernel still probes for other
+                // firmware with SMC (GKI looks for the Gunyah hypervisor that way), and expects
+                // "not supported" rather than a fault. Unlike HVC, the PC still points at the call.
+                self.set_gpr(0, SMCCC_NOT_SUPPORTED)?;
+                self.advance_pc().map(|()| None)
+            }
             esr::EC_SYSREG => self.handle_sysreg(syndrome).map(|()| None),
             esr::EC_WFX => {
                 // With the framework's GIC, WFI sleeps inside the framework and never gets here

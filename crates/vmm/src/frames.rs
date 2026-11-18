@@ -3,9 +3,8 @@
 //! This is how a display can be looked at before there is a window: point `--frame-dump` at a file and
 //! open it. The PNG is written without compression, which needs no library and is fast.
 
-use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use devices::disk::gpt::crc32;
 use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame, FrameSink};
@@ -87,7 +86,7 @@ pub fn png(frame: &Frame<'_>) -> Option<Vec<u8>> {
     }
     zlib.extend(adler32(&raw).to_be_bytes());
 
-    let mut header = Vec::with_capacity(13);
+    let mut header = Vec::new();
     header.extend(frame.width.to_be_bytes());
     header.extend(frame.height.to_be_bytes());
     header.extend(IHDR_TAIL);
@@ -99,39 +98,93 @@ pub fn png(frame: &Frame<'_>) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Writes the newest frame to one file, no more often than `FRAME_DUMP_INTERVAL`.
-pub struct FrameDump {
-    path: PathBuf,
-    last: Mutex<Option<Instant>>,
+/// The newest frame the guest has shown, kept so that it can be saved at any time.
+#[derive(Default)]
+pub struct Screen {
+    latest: Mutex<Latest>,
 }
 
-impl FrameDump {
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            last: Mutex::new(None),
-        }
+#[derive(Default)]
+struct Latest {
+    width: u32,
+    height: u32,
+    format: u32,
+    pixels: Vec<u8>,
+    /// Counts frames, so that a reader can tell whether it has seen this one. Zero: none yet.
+    serial: u64,
+}
+
+impl FrameSink for Screen {
+    fn present(&self, frame: &Frame<'_>) {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        latest.width = frame.width;
+        latest.height = frame.height;
+        latest.format = frame.format;
+        latest.pixels.clear();
+        latest.pixels.extend_from_slice(frame.pixels);
+        latest.serial += 1;
     }
 }
 
-impl FrameSink for FrameDump {
-    fn present(&self, frame: &Frame<'_>) {
-        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
-        if last.is_some_and(|at| at.elapsed() < FRAME_DUMP_INTERVAL) {
-            return;
-        }
-        *last = Some(Instant::now());
-        let Some(image) = png(frame) else {
-            return;
+impl Screen {
+    /// Saves the newest frame as a PNG and returns its number, or zero, saving nothing, if the guest
+    /// has not shown anything yet.
+    fn save_latest(&self, path: &Path) -> std::io::Result<u64> {
+        let (image, serial) = {
+            let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+            let image = png(&Frame {
+                width: latest.width,
+                height: latest.height,
+                format: latest.format,
+                pixels: &latest.pixels,
+            });
+            (image, latest.serial)
+        };
+        let Some(image) = image else {
+            return Ok(0);
         };
         // Written beside the target and renamed over it, so a viewer never reads half a file.
-        let partial = self.path.with_extension(copy::FRAME_DUMP_PARTIAL_EXTENSION);
-        let saved =
-            std::fs::write(&partial, image).and_then(|()| std::fs::rename(&partial, &self.path));
-        if let Err(err) = saved {
-            log::warn!("{}", copy::file(&self.path, &err));
-        }
+        let partial = path.with_extension(copy::FRAME_DUMP_PARTIAL_EXTENSION);
+        std::fs::write(&partial, image)?;
+        std::fs::rename(&partial, path)?;
+        Ok(serial)
     }
+
+    /// Saves the newest frame as a PNG. `Ok(false)` if the guest has not shown anything yet.
+    pub fn save(&self, path: &Path) -> std::io::Result<bool> {
+        Ok(self.save_latest(path)? != 0)
+    }
+
+    fn serial(&self) -> u64 {
+        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        latest.serial
+    }
+}
+
+/// Keeps the file at `path` showing what `screen` shows, checking every `FRAME_DUMP_INTERVAL`, for as
+/// long as the screen exists.
+pub fn spawn_dump(screen: &Arc<Screen>, path: PathBuf) -> std::io::Result<()> {
+    let screen = Arc::downgrade(screen);
+    let dump = move || {
+        let mut saved = 0;
+        loop {
+            std::thread::sleep(FRAME_DUMP_INTERVAL);
+            let Some(screen) = screen.upgrade() else {
+                break;
+            };
+            if screen.serial() == saved {
+                continue;
+            }
+            match screen.save_latest(&path) {
+                Ok(serial) => saved = serial,
+                Err(err) => log::warn!("{}", copy::file(&path, &err)),
+            }
+        }
+    };
+    std::thread::Builder::new()
+        .name(copy::FRAME_DUMP_THREAD.into())
+        .spawn(dump)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -151,6 +204,24 @@ mod tests {
             format,
             pixels,
         }
+    }
+
+    #[test]
+    fn screen_saves_whichever_frame_came_last() {
+        let screen = Screen::default();
+        let path = std::env::temp_dir().join(format!("emu-screen-test-{}.png", std::process::id()));
+        assert!(!screen.save(&path).unwrap());
+        assert!(!path.exists());
+
+        let first = [9, 9, 9, 0];
+        let last = [1, 2, 3, 0];
+        screen.present(&frame(FORMAT_RGBA, 1, 1, &first));
+        screen.present(&frame(FORMAT_RGBA, 1, 1, &last));
+        assert_eq!(screen.serial(), 2);
+        assert_eq!(screen.save_latest(&path).unwrap(), 2);
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(saved, png(&frame(FORMAT_RGBA, 1, 1, &last)).unwrap());
     }
 
     #[test]

@@ -10,8 +10,9 @@ mod android;
 pub mod config;
 pub mod console;
 mod copy;
-#[cfg(target_arch = "aarch64")]
-mod frames;
+pub mod ctl;
+pub mod frames;
+pub mod input;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
@@ -119,6 +120,19 @@ pub fn cli_main() -> ExitCode {
         Ok(config::Parsed::Help) => {
             println!("{}", copy::HELP);
             return ExitCode::SUCCESS;
+        }
+        Ok(config::Parsed::Ctl { socket, command }) => {
+            return match ctl::request(&socket, &command) {
+                Ok(reply) if reply == copy::CTL_OK => ExitCode::SUCCESS,
+                Ok(reply) => {
+                    eprintln!("{}", copy::fatal(&reply));
+                    ExitCode::FAILURE
+                }
+                Err(err) => {
+                    eprintln!("{}", copy::fatal(&copy::file(&socket, &err)));
+                    ExitCode::FAILURE
+                }
+            };
         }
         Ok(config::Parsed::Run(config)) => *config,
         Err(err) => {

@@ -35,6 +35,14 @@ pub const RNG_SEED_LEN: usize = 64;
 pub const SERIAL_INPUT_RETRY: Duration = Duration::from_millis(1);
 /// The frame dump file is rewritten at most this often.
 pub const FRAME_DUMP_INTERVAL: Duration = Duration::from_secs(1);
+/// How long `tap` keeps the finger down, and a key press keeps the key down.
+pub const TAP_HOLD: Duration = Duration::from_millis(50);
+/// A swipe moves the finger once per this interval.
+pub const SWIPE_STEP: Duration = Duration::from_millis(10);
+/// How long a swipe takes when the command does not say.
+pub const DEFAULT_SWIPE: Duration = Duration::from_millis(300);
+/// First word of the command line that sends a command to a running instance instead of starting one.
+pub const CTL_SUBCOMMAND: &str = "ctl";
 /// How often the serial input pump checks whether its machine has stopped.
 pub const SERIAL_INPUT_POLL: Duration = Duration::from_millis(100);
 /// A guest that resets this soon after starting did not boot; this many in a row and the VMM gives up.
@@ -103,6 +111,8 @@ pub struct Config {
     pub display: Option<(u32, u32)>,
     /// Keep this PNG file up to date with what the guest's display shows.
     pub frame_dump: Option<PathBuf>,
+    /// Listen on this local socket for control commands.
+    pub ctl: Option<PathBuf>,
     /// Boot Android from an image directory instead of a plain ramdisk.
     pub android: Option<AndroidOptions>,
     pub bootconfig: Vec<(String, String)>,
@@ -124,6 +134,7 @@ impl Config {
             net: Some(NetOptions::default()),
             display: Some(DEFAULT_DISPLAY),
             frame_dump: None,
+            ctl: None,
             android: None,
             bootconfig: Vec::new(),
             boot_marker: None,
@@ -135,6 +146,11 @@ impl Config {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     Run(Box<Config>),
+    /// Send `command` to the instance listening on `socket`.
+    Ctl {
+        socket: PathBuf,
+        command: String,
+    },
     Help,
 }
 
@@ -172,6 +188,20 @@ fn positive<T: std::str::FromStr + PartialOrd + Default>(
 
 /// Parses arguments as they follow the program name.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigError> {
+    let mut args = args.into_iter().peekable();
+    if args.peek().is_some_and(|first| first == CTL_SUBCOMMAND) {
+        let socket = args.nth(1);
+        let words: Vec<String> = args
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        return match socket {
+            Some(socket) if !words.is_empty() => Ok(Parsed::Ctl {
+                socket: socket.into(),
+                command: words.join(" "),
+            }),
+            _ => Err(ConfigError(copy::CTL_NEEDS_ARGUMENTS.into())),
+        };
+    }
     let mut parser = lexopt::Parser::from_args(args);
     let mut kernel = None;
     let mut config = Config::new(PathBuf::new());
@@ -218,6 +248,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("no-net") => no_net = true,
             Long("no-display") => config.display = None,
             Long("frame-dump") => config.frame_dump = Some(parser.value()?.into()),
+            Long("ctl") => config.ctl = Some(parser.value()?.into()),
             Long("display") => {
                 let text = parser.value()?.string()?;
                 let size = text
@@ -295,7 +326,7 @@ mod tests {
     fn run(args: &[&str]) -> Config {
         match parse_str(args).unwrap() {
             Parsed::Run(config) => *config,
-            Parsed::Help => panic!("expected a run configuration"),
+            other => panic!("expected a run configuration, got {other:?}"),
         }
     }
 
@@ -431,6 +462,23 @@ mod tests {
             Some((1920, 1080))
         );
         assert_eq!(run(&["--kernel", "k", "--no-display"]).display, None);
+    }
+
+    #[test]
+    fn ctl_takes_a_socket_and_joins_the_rest_into_one_command() {
+        assert_eq!(
+            parse_str(&["ctl", "/tmp/emu.sock", "tap", "10", "20"]).unwrap(),
+            Parsed::Ctl {
+                socket: PathBuf::from("/tmp/emu.sock"),
+                command: "tap 10 20".to_owned(),
+            }
+        );
+        assert!(parse_str(&["ctl"]).is_err());
+        assert!(parse_str(&["ctl", "/tmp/emu.sock"]).is_err());
+        assert_eq!(
+            run(&["--kernel", "k", "--ctl", "s"]).ctl,
+            Some(PathBuf::from("s"))
+        );
     }
 
     #[test]

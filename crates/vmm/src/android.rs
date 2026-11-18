@@ -136,7 +136,57 @@ const BOOTCONFIG: &[(&str, &str)] = &[
     ("androidboot.verifiedbootstate", "orange"),
     ("androidboot.fstab_suffix", "cf.f2fs.hctr2"),
     ("androidboot.serialno", "EMU0001"),
+    // The image carries several implementations of these services and picks one by name. The ones
+    // chosen here run entirely inside the guest; the image's defaults need helper programs on the host.
+    (
+        "androidboot.vendor.apex.com.android.hardware.keymint",
+        "com.android.hardware.keymint.rust_nonsecure",
+    ),
+    (
+        "androidboot.vendor.apex.com.android.hardware.gatekeeper",
+        "com.android.hardware.gatekeeper.nonsecure",
+    ),
+    (
+        "androidboot.vendor.apex.com.android.hardware.graphics.composer",
+        "com.android.hardware.graphics.composer.ranchu",
+    ),
+    (
+        "androidboot.vendor.apex.com.google.emulated.camera.provider.hal",
+        "com.google.emulated.camera.provider.hal",
+    ),
+    ("androidboot.enable_confirmationui", "0"),
+    ("androidboot.cuttlefish_service_bluetooth_checker", "false"),
+    // Graphics drawn by the guest's CPU and shown through the display device's 2D commands:
+    // ANGLE on top of the SwiftShader Vulkan driver ("pastel"), Vulkan 1.2, OpenGL ES 3.1.
+    ("androidboot.hardware.gralloc", "minigbm"),
+    ("androidboot.hardware.hwcomposer", "ranchu"),
+    ("androidboot.hardware.hwcomposer.display_finder_mode", "drm"),
+    (
+        "androidboot.hardware.hwcomposer.display_framebuffer_format",
+        "rgba",
+    ),
+    ("androidboot.hardware.egl", "angle"),
+    ("androidboot.hardware.vulkan", "pastel"),
+    ("androidboot.cpuvulkan.version", "4202496"),
+    ("androidboot.opengles.version", "196609"),
+    ("androidboot.lcd_density", "320"),
+    // The network card appears to Android as a Wi-Fi network that is always connected.
+    ("androidboot.wifi_impl", "virt_wifi"),
+    ("androidboot.wifi_mac_prefix", "5554"),
+    ("androidboot.setupwizard_mode", "DISABLED"),
+    ("androidboot.enable_bootanimation", "1"),
+    // Software rendering is slow; the image scales its watchdog timeouts by this.
+    ("androidboot.hw_timeout_multiplier", "3"),
 ];
+/// Amount of RAM as Android's memory tuning reads it, in whole megabytes with this suffix.
+const DDR_SIZE_KEY: &str = "androidboot.ddr_size";
+const DDR_SIZE_SUFFIX: &str = "MB";
+/// With a serial port, init runs a shell on it; the device is the one `SERIAL_CONSOLE_ARG` names.
+const CONSOLE_ON: &[(&str, &str)] = &[
+    ("androidboot.console", "ttyS0"),
+    ("androidboot.serialconsole", "1"),
+];
+const CONSOLE_OFF: &[(&str, &str)] = &[("androidboot.serialconsole", "0")];
 /// Tells init which block device holds the named partitions: the disk in virtio slot 0.
 const BOOT_DEVICES_KEY: &str = "androidboot.boot_devices";
 /// Kernel arguments the vendor image asks for that this board must not pass on.
@@ -227,6 +277,17 @@ fn set(params: &mut Vec<(String, String)>, key: &str, value: &str) {
     params.push((key.to_owned(), value.to_owned()));
 }
 
+/// Bootconfig that depends on how this machine is set up rather than on the image.
+pub fn machine_bootconfig(serial: bool, ram_bytes: u64) -> Vec<(String, String)> {
+    let console = if serial { CONSOLE_ON } else { CONSOLE_OFF };
+    let ddr = format!("{}{DDR_SIZE_SUFFIX}", ram_bytes / MIB);
+    console
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .chain([(DDR_SIZE_KEY.to_owned(), ddr)])
+        .collect()
+}
+
 pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), VmmError> {
     std::fs::create_dir_all(&options.data).map_err(file_error(&options.data))?;
     let image_path = |file: &str| -> PathBuf { options.images.join(file) };
@@ -300,6 +361,17 @@ pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), Vm
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_bootconfig_follows_the_serial_port_and_ram_size() {
+        let with = machine_bootconfig(true, 4096 * MIB);
+        assert!(with.contains(&("androidboot.console".to_owned(), "ttyS0".to_owned())));
+        assert!(with.contains(&("androidboot.serialconsole".to_owned(), "1".to_owned())));
+        assert!(with.contains(&("androidboot.ddr_size".to_owned(), "4096MB".to_owned())));
+        let without = machine_bootconfig(false, 2048 * MIB);
+        assert!(without.contains(&("androidboot.serialconsole".to_owned(), "0".to_owned())));
+        assert!(!without.iter().any(|(key, _)| key == "androidboot.console"));
+    }
 
     #[test]
     fn vendor_bootconfig_lines_are_split_at_the_first_equals_sign() {

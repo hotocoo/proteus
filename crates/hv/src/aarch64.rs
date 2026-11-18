@@ -17,6 +17,9 @@ pub const PSTATE_EL1H_DAIF_MASKED: u64 = 0x3c5;
 /// Width of an A64 instruction; the amount to step the PC past a trapped one.
 pub const INSN_LEN: u64 = 4;
 
+/// What a caller gets in `x0` for a firmware call nobody implements (`SMCCC_RET_NOT_SUPPORTED`, -1).
+pub const SMCCC_NOT_SUPPORTED: u64 = u64::MAX;
+
 /// MPIDR_EL1 affinity for a vCPU index. GICv3 routes by it, and the FDT `cpus` node must match.
 /// Aff0 holds 16 CPUs because an SGI target list is 16 bits wide.
 pub fn mpidr_affinity(index: u32) -> u64 {
@@ -46,6 +49,7 @@ pub mod esr {
 
     pub const EC_WFX: u8 = 0x01;
     pub const EC_HVC64: u8 = 0x16;
+    /// A secure monitor call. The machine has no secure monitor, so every such call is refused.
     pub const EC_SMC64: u8 = 0x17;
     pub const EC_SYSREG: u8 = 0x18;
     pub const EC_DATA_ABORT_LOWER: u8 = 0x24;
