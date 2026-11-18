@@ -186,6 +186,9 @@ pub fn keymap_circle_off_screen(x: u32, y: u32, radius: u32) -> String {
 
 pub const KEYMAP_TOO_MANY: &str =
     "key map: more touches than the touchscreen has fingers for (eight)";
+pub fn keymap_bad_tilt(max: i16) -> String {
+    format!("key map: a tilt angle is from 1 to {max} degrees")
+}
 pub const KEYMAP_BAD_ZOOM: &str =
     "key map: zoom needs a step above zero and smaller than its spread";
 pub const KEYMAP_BAD_SENSITIVITY: &str = "key map: sensitivity has to be a number above zero";

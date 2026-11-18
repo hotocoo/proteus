@@ -53,3 +53,11 @@ down = "ArrowDown"
 left = "ArrowLeft"
 right = "ArrowRight"
 speed = 5
+
+# Four keys tilt the device while held, for games steered by tilting.
+[tilt]
+up = "KeyI"
+down = "KeyK"
+left = "KeyJ"
+right = "KeyL"
+angle = 30

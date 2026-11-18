@@ -32,6 +32,13 @@
 //! right = "ArrowRight"
 //! speed = 5                 # km/h
 //!
+//! [tilt]                    # four keys tilt the device while they are held
+//! up = "KeyI"               # top edge away from the player
+//! down = "KeyK"
+//! left = "KeyJ"             # turned like a steering wheel
+//! right = "KeyL"
+//! angle = 30                # degrees
+//!
 //! [zoom]                    # each turn of the mouse wheel is a pinch of two fingers
 //! center = [640, 360]
 //! spread = 120              # how far from the centre each finger lands
@@ -51,6 +58,8 @@ const FIRST_FINGER: u32 = 1;
 const LAST_FINGER: u32 = TOUCH_SLOTS - 2;
 const DEFAULT_SENSITIVITY: f64 = 1.0;
 const FULL_TURN_DEGREES: f64 = 360.0;
+/// Furthest a tilt key may turn the device: on its side, or flat.
+const MAX_TILT_DEGREES: i16 = 90;
 /// Moves each finger of a pinch makes between landing and lifting; a pinch that jumps in one move
 /// is not always read as one.
 const ZOOM_MOVES: u32 = 4;
@@ -68,6 +77,12 @@ pub enum Touch {
     },
     Lift {
         finger: u32,
+    },
+    /// Hold the device turned by these degrees about its x axis (across the screen) and its z
+    /// axis (out of the screen); 0 and 0 is upright.
+    Tilt {
+        x: i16,
+        z: i16,
     },
     /// Walk the location this many degrees from north (up on the screen is north), or stop.
     Walk {
@@ -87,6 +102,17 @@ struct File {
     look: Option<LookEntry>,
     zoom: Option<ZoomEntry>,
     walk: Option<WalkEntry>,
+    tilt: Option<TiltEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TiltEntry {
+    up: String,
+    down: String,
+    left: String,
+    right: String,
+    angle: i16,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +194,38 @@ struct Zoom {
     pixels: f64,
 }
 
+struct Tilt {
+    /// Up, down, left, right.
+    keys: [u16; 4],
+    held: [bool; 4],
+    angle: i16,
+}
+
+impl Tilt {
+    fn pose(&self) -> Touch {
+        let [up, down, left, right] = self.held.map(i16::from);
+        Touch::Tilt {
+            x: (down - up) * self.angle,
+            z: (left - right) * self.angle,
+        }
+    }
+
+    fn key(&mut self, code: u16, down: bool) -> Vec<Touch> {
+        let before = self.pose();
+        for (key, held) in self.keys.iter().zip(&mut self.held) {
+            if *key == code {
+                *held = down;
+            }
+        }
+        let after = self.pose();
+        if before == after {
+            Vec::new()
+        } else {
+            vec![after]
+        }
+    }
+}
+
 struct Walk {
     /// Up, down, left, right.
     keys: [u16; 4],
@@ -226,6 +284,16 @@ pub struct Mapper {
     look: Option<Look>,
     zoom: Option<Zoom>,
     walk: Option<Walk>,
+    tilt: Option<Tilt>,
+}
+
+/// Reads the four direction keys of a section.
+fn four_keys(names: [&String; 4], used: &mut Vec<u16>) -> Result<[u16; 4], String> {
+    let mut keys = [0; 4];
+    for (slot, name) in keys.iter_mut().zip(names) {
+        *slot = key(name, used)?;
+    }
+    Ok(keys)
 }
 
 fn key(name: &str, used: &mut Vec<u16>) -> Result<u16, String> {
@@ -286,12 +354,8 @@ impl Mapper {
         let mut sticks = Vec::new();
         for entry in &file.stick {
             let names = [&entry.up, &entry.down, &entry.left, &entry.right];
-            let mut keys = [0; 4];
-            for (slot, name) in keys.iter_mut().zip(names) {
-                *slot = key(name, &mut used)?;
-            }
             sticks.push(Stick {
-                keys,
+                keys: four_keys(names, &mut used)?,
                 held: [false; 4],
                 center: circle(entry.center, entry.radius, display)?,
                 radius: entry.radius,
@@ -334,14 +398,24 @@ impl Mapper {
         let walk = match &file.walk {
             Some(entry) => {
                 let names = [&entry.up, &entry.down, &entry.left, &entry.right];
-                let mut keys = [0; 4];
-                for (slot, name) in keys.iter_mut().zip(names) {
-                    *slot = key(name, &mut used)?;
-                }
                 Some(Walk {
-                    keys,
+                    keys: four_keys(names, &mut used)?,
                     held: [false; 4],
                     km_per_hour: entry.speed,
+                })
+            }
+            None => None,
+        };
+        let tilt = match &file.tilt {
+            Some(entry) => {
+                if !(1..=MAX_TILT_DEGREES).contains(&entry.angle) {
+                    return Err(copy::keymap_bad_tilt(MAX_TILT_DEGREES));
+                }
+                let names = [&entry.up, &entry.down, &entry.left, &entry.right];
+                Some(Tilt {
+                    keys: four_keys(names, &mut used)?,
+                    held: [false; 4],
+                    angle: entry.angle,
                 })
             }
             None => None,
@@ -356,6 +430,7 @@ impl Mapper {
             look,
             zoom,
             walk,
+            tilt,
         })
     }
 
@@ -402,6 +477,11 @@ impl Mapper {
                     finger: stick.finger,
                 });
             }
+        }
+        if let Some(tilt) = &mut self.tilt
+            && std::mem::take(&mut tilt.held).contains(&true)
+        {
+            touches.push(tilt.pose());
         }
         if let Some(walk) = &mut self.walk
             && std::mem::take(&mut walk.held).contains(&true)
@@ -459,6 +539,9 @@ impl Mapper {
         }
         if let Some(walk) = self.walk.as_mut().filter(|walk| walk.keys.contains(&code)) {
             return Some(walk.key(code, down));
+        }
+        if let Some(tilt) = self.tilt.as_mut().filter(|tilt| tilt.keys.contains(&code)) {
+            return Some(tilt.key(code, down));
         }
         let look = self.look.as_mut().filter(|look| look.key == code)?;
         if !down {
@@ -624,6 +707,13 @@ mod tests {
         spread = 120
         step = 60
 
+        [tilt]
+        up = "KeyI"
+        down = "KeyK"
+        left = "KeyJ"
+        right = "KeyL"
+        angle = 30
+
         [walk]
         up = "ArrowUp"
         down = "ArrowDown"
@@ -781,6 +871,23 @@ mod tests {
         assert_eq!(map.key(code("ArrowDown"), false), walk(Some(270)));
         // Switching the map off stops the walk.
         assert_eq!(map.key(code("F12"), true), walk(None));
+    }
+
+    #[test]
+    fn tilt_keys_hold_the_device_turned_and_let_it_back_up() {
+        let mut map = mapper();
+        let tilt = |x, z| Some(vec![Touch::Tilt { x, z }]);
+        assert_eq!(map.key(code("KeyI"), true), tilt(-30, 0));
+        assert_eq!(map.key(code("KeyJ"), true), tilt(-30, 30));
+        assert_eq!(map.key(code("KeyI"), false), tilt(0, 30));
+        assert_eq!(map.key(code("KeyL"), true), tilt(0, 0));
+        assert_eq!(map.key(code("KeyJ"), false), tilt(0, -30));
+        assert_eq!(map.key(code("F12"), true), tilt(0, 0));
+        let bad = "[tilt]\nup=\"KeyI\"\ndown=\"KeyK\"\nleft=\"KeyJ\"\nright=\"KeyL\"\nangle=91";
+        assert_eq!(
+            Mapper::parse(bad, DISPLAY).err(),
+            Some(copy::keymap_bad_tilt(MAX_TILT_DEGREES))
+        );
     }
 
     #[test]

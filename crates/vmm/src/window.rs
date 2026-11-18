@@ -183,6 +183,7 @@ impl App {
             self.send(match *touch {
                 Touch::Place { finger, x, y } => Command::Touch { finger, x, y },
                 Touch::Lift { finger } => Command::Lift { finger },
+                Touch::Tilt { x, z } => Command::Rotate([f64::from(x), 0.0, f64::from(z)]),
                 Touch::Walk {
                     bearing,
                     km_per_hour,
