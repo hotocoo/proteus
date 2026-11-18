@@ -32,6 +32,7 @@ Usage: emu --kernel <file> [options]
   --no-display            Give the guest no display device
   --headless              Open no window; the display can still be captured
   --keymap <file>         Keys and mouse movements that stand for touches (see the README)
+  --keymap-dir <dir>      Key maps named <package>.toml (and default.toml) for the app in front
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
   --ctl <socket>          Listen on this local socket for `emu ctl` commands
   --logcat <file>         Write Android's system log to this file
@@ -174,7 +175,16 @@ pub const KEYMAP_BAD_ZOOM: &str =
     "key map: zoom needs a step above zero and smaller than its spread";
 pub const KEYMAP_BAD_SENSITIVITY: &str = "key map: sensitivity has to be a number above zero";
 pub const KEYMAP_NEEDS_WINDOW: &str =
-    "--keymap needs a window; do not combine it with --headless or --no-display";
+    "key maps need a window; do not combine them with --headless or --no-display";
+pub const KEYMAP_TWO_SOURCES: &str = "give --keymap or --keymap-dir, not both";
+pub const FOREGROUND_THREAD: &str = "foreground app";
+
+pub fn keymap_switched(package: &str, path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!("{package} is in front: key map {}", path.display()),
+        None => format!("{package} is in front: no key map"),
+    }
+}
 
 pub fn keymap_refused(path: &Path, why: &dyn Display) -> String {
     format!("{}: {why}", path.display())

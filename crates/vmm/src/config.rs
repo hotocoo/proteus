@@ -72,6 +72,8 @@ pub const MACRO_CANCEL_POLL: Duration = Duration::from_millis(20);
 pub const MACRO_MAX_BYTES: u64 = 1 << 20;
 /// First word of the command line that sends a command to a running instance instead of starting one.
 pub const CTL_SUBCOMMAND: &str = "ctl";
+/// How often the app in front is checked, for key maps that follow it.
+pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
 /// How long to wait for the `adb` forward to accept a connection.
 pub const ADB_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A guest command may print nothing for this long and still be running (a screen recording
@@ -165,6 +167,8 @@ pub struct Config {
     pub gamepad: GamepadMode,
     /// Keys and mouse movements that stand for touches, read from this file.
     pub keymap: Option<PathBuf>,
+    /// A folder of key maps named after the apps they are for; the one for the app in front is used.
+    pub keymap_dir: Option<PathBuf>,
     /// Listen on this local socket for control commands.
     pub ctl: Option<PathBuf>,
     /// Write Android's system log to this file.
@@ -195,6 +199,7 @@ impl Config {
             mute: false,
             gamepad: GamepadMode::Auto,
             keymap: None,
+            keymap_dir: None,
             ctl: None,
             logcat: None,
             android: None,
@@ -323,6 +328,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("ctl") => config.ctl = Some(parser.value()?.into()),
             Long("headless") => config.window = false,
             Long("keymap") => config.keymap = Some(parser.value()?.into()),
+            Long("keymap-dir") => config.keymap_dir = Some(parser.value()?.into()),
             Long("no-sound") => config.sound = false,
             Long("mute") => config.mute = true,
             Long("gamepad") => config.gamepad = GamepadMode::Always,
@@ -366,6 +372,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     }
 
     config.kernel = kernel.ok_or_else(|| ConfigError(copy::MISSING_KERNEL.into()))?;
+    if config.keymap.is_some() && config.keymap_dir.is_some() {
+        return Err(ConfigError(copy::KEYMAP_TWO_SOURCES.into()));
+    }
     config.net = (!no_net).then_some(net);
     config.android = match android_images {
         Some(images) => {

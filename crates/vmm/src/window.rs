@@ -5,6 +5,7 @@
 //! frame is scaled) is a plain function with tests, because the rest can only be checked by eye.
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,7 +22,8 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
 use crate::input::button_code;
-use crate::keymap::{Mapper, Scroll, Touch};
+use crate::keymap::{self, Mapper, Scroll, Touch};
+use crate::profiles;
 use crate::{VmmError, copy};
 
 /// The finger the mouse stands for.
@@ -30,12 +32,14 @@ const MOUSE_FINGER: u32 = 0;
 const BACKGROUND: u32 = 0;
 
 /// News for the window from other threads.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Notice {
     /// The guest has shown a new frame.
     Frame,
     /// The machine has stopped for good; the window should close.
     Stopped,
+    /// This app is now in front.
+    Foreground(String),
 }
 
 /// Where the guest's picture sits inside the window: as large as fits, in proportion, centred.
@@ -148,6 +152,8 @@ struct App {
     touching: bool,
     /// Keys and mouse movements that stand for touches, if the user gave a key map.
     mapper: Option<Mapper>,
+    /// Key maps named after apps, if the map follows the app in front.
+    profiles: Option<PathBuf>,
     /// Whether the window is keeping the pointer for the key map.
     grabbed: bool,
     /// Why the window could not be made, if it could not.
@@ -296,6 +302,7 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             Notice::Stopped => event_loop.exit(),
+            Notice::Foreground(package) => self.follow(&package),
         }
     }
 
@@ -381,6 +388,26 @@ impl ApplicationHandler<Notice> for App {
 }
 
 impl App {
+    /// Changes to the key map for `package`, lifting the old map's fingers first.
+    fn follow(&mut self, package: &str) {
+        let Some(dir) = &self.profiles else {
+            return;
+        };
+        let path = profiles::map_for(dir, package);
+        eprintln!("{}", copy::keymap_switched(package, path.as_deref()));
+        let mapper = path.and_then(|path| {
+            keymap::load(&path, self.guest)
+                .inspect_err(|why| eprintln!("{}", copy::fatal(why)))
+                .ok()
+        });
+        if let Some(old) = self.mapper.as_mut() {
+            let touches = old.release();
+            self.apply(&touches);
+        }
+        self.mapper = mapper;
+        self.sync_pointer();
+    }
+
     /// The mouse moved by this much, wherever the pointer is.
     fn mouse_moved(&mut self, dx: f64, dy: f64) {
         let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
@@ -418,6 +445,7 @@ impl WindowLoop {
         controller: Arc<Controller>,
         guest: (u32, u32),
         mapper: Option<Mapper>,
+        profiles: Option<PathBuf>,
     ) -> Result<(), VmmError> {
         let mut app = App {
             controller,
@@ -426,6 +454,7 @@ impl WindowLoop {
             pointer: PhysicalPosition::default(),
             touching: false,
             mapper,
+            profiles,
             grabbed: false,
             failed: None,
         };

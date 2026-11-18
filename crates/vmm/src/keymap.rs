@@ -198,6 +198,12 @@ fn circle(center: [u32; 2], radius: u32, display: (u32, u32)) -> Result<(u32, u3
     }
 }
 
+/// Reads the key map in the file at `path`, for a guest display of `display` pixels.
+pub fn load(path: &std::path::Path, display: (u32, u32)) -> Result<Mapper, String> {
+    let text = std::fs::read_to_string(path).map_err(|err| copy::file(path, &err))?;
+    Mapper::parse(&text, display).map_err(|why| copy::keymap_refused(path, &why))
+}
+
 impl Mapper {
     /// Reads a key map for a guest display of `display` pixels.
     pub fn parse(text: &str, display: (u32, u32)) -> Result<Self, String> {
@@ -305,7 +311,7 @@ impl Mapper {
     }
 
     /// Lifts every finger the map has down.
-    fn release(&mut self) -> Vec<Touch> {
+    pub fn release(&mut self) -> Vec<Touch> {
         let mut touches = Vec::new();
         for (tap, tapping) in self.taps.iter().zip(&mut self.tapping) {
             if std::mem::take(tapping) {

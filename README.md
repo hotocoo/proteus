@@ -89,6 +89,10 @@ four keys, and a "look" mode in which the mouse drags the view. `assets/keymaps/
 the format; copy it, put your game's button positions in, and start with `--keymap <file>`. Keys the
 map does not use still reach Android as a keyboard.
 
+To have the map follow the app in front, put maps in a folder named after the apps' package names
+(`com.example.game.toml`), optionally with a `default.toml` for every other app, and start with
+`--keymap-dir <folder>`. The emulator checks which app is in front once a second.
+
 ### Gamepads
 
 A gamepad plugged into this machine when `emu` starts becomes a gamepad in Android. Devices are fixed
@@ -171,8 +175,7 @@ Honest list, most important first:
 
 - **GPU acceleration.** Android draws with the guest's CPU. Games need the host's GPU; that work
   (gfxstream over virtio-gpu) has not started.
-- **More game controls.** A key map that follows the app in front is not built, and maps are
-  written by hand. All host gamepads drive the guest's one gamepad, so two-player games on one
+- **More game controls.** Key maps are written by hand. All host gamepads drive the guest's one gamepad, so two-player games on one
   machine do not work.
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of

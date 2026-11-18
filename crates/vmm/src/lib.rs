@@ -24,6 +24,7 @@ pub mod location;
 mod logger;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod machine;
+pub mod profiles;
 pub mod sensors;
 pub mod session;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -86,22 +87,16 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
 
     let session = session::Session::new(config)?;
     let Some(display) = config.display.filter(|_| config.window) else {
-        if config.keymap.is_some() {
+        if config.keymap.is_some() || config.keymap_dir.is_some() {
             return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
         }
         return boot_loop(config, &session, started);
     };
-    let mapper = match &config.keymap {
-        Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|source| VmmError::File {
-                path: path.clone(),
-                source,
-            })?;
-            let parsed = keymap::Mapper::parse(&text, display);
-            Some(parsed.map_err(|why| VmmError::Device(copy::keymap_refused(path, &why)))?)
-        }
-        None => None,
-    };
+    let mapper = config
+        .keymap
+        .as_ref()
+        .map(|path| keymap::load(path, display));
+    let mapper = mapper.transpose().map_err(VmmError::Device)?;
     let window = WindowLoop::new()?;
     let notify = window.notifier();
     if let Some(screen) = &session.controller.screen {
@@ -118,9 +113,27 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
                 ran
             })
             .map_err(VmmError::Thread)?;
-        let shown = window.run(std::sync::Arc::clone(&session.controller), display, mapper);
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watching = match &config.keymap_dir {
+            Some(_) => {
+                let notify = notify.clone();
+                let watch = profiles::watch(
+                    std::sync::Arc::clone(&session.controller.adb_port),
+                    std::sync::Arc::clone(&done),
+                    move |package| notify(Notice::Foreground(package)),
+                );
+                Some(watch.map_err(VmmError::Thread)?)
+            }
+            None => None,
+        };
+        let controller = std::sync::Arc::clone(&session.controller);
+        let shown = window.run(controller, display, mapper, config.keymap_dir.clone());
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(watching) = watching {
+            let _ = watching.join();
+        }
         let ran = machine.join();
         ran.unwrap_or(Err(VmmError::Config(copy::VCPU_PANICKED)))
             .and(shown)
