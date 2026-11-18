@@ -132,9 +132,11 @@ jobs:
             --android "$RUNNER_TEMP/image" --data-dir "$RUNNER_TEMP/data" \
             --serial --logcat "$RUNNER_TEMP/logcat.txt" --ctl "$RUNNER_TEMP/emu.sock" \
             </dev/null >"$RUNNER_TEMP/console.txt" 2>&1 &
+          emu=$!
           deadline=$(( $(date +%s) + 1800 ))
           until [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
             if [ "$(date +%s)" -gt "$deadline" ]; then echo "Android did not finish booting"; exit 1; fi
+            if ! kill -0 "$emu" 2>/dev/null; then echo "emu stopped"; tail -20 "$RUNNER_TEMP/console.txt"; exit 1; fi
             adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
             sleep 10
           done
