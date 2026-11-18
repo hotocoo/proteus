@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,11 +30,24 @@ jobs:
         run: cargo build --release --locked -p vmm
       - name: Sign with the hypervisor entitlement
         run: codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/release/emu
+      # The guest kernel is built by its own workflow; the release ships the newest good one, with
+      # the configuration and the exact source commit it was built from (it is GPL-2.0).
+      - name: Fetch the guest kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow "Guest kernel" --branch main --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+          test -n "$run"
+          gh run download "$run" --name kernel-arm64 --dir kernel
+          ls -l kernel
       - name: Package
         run: |
           name="emu-${GITHUB_REF_NAME}-macos-arm64"
           mkdir "$name"
           cp target/release/emu README.md packaging/macos/hv.entitlements "$name/"
+          cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"
+          cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Publish
