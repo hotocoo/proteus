@@ -184,7 +184,9 @@ pub const TOOLBAR_WIDTH: f32 = 112.0;
 pub const TOOLBAR_MARGIN: f32 = 6.0;
 pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
 pub const PANEL_WIDTH: f32 = 340.0;
-pub const PANEL_FIELD_WIDTH: f32 = 300.0;
+/// Room a panel row keeps beside a text field for its label or button, and the narrowest field.
+pub const PANEL_LABEL_ROOM: f32 = 110.0;
+pub const PANEL_FIELD_MIN: f32 = 80.0;
 /// Rows the macro editor shows.
 pub const MACRO_EDITOR_ROWS: usize = 12;
 /// Where macros and saved places are kept, under an instance's folder or the emulator's home.

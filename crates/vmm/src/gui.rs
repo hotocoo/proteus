@@ -404,11 +404,16 @@ impl Gui {
     }
 
     /// The open panel's controls.
-    pub fn panel(&mut self, ui: &mut Ui, effects: &mut Vec<Effect>) {
+    /// Returns how wide its content was laid out, which a test holds to the panel's width.
+    pub fn panel(&mut self, ui: &mut Ui, effects: &mut Vec<Effect>) -> f32 {
         let Some(panel) = self.open else {
-            return;
+            return 0.0;
         };
-        egui::ScrollArea::vertical().show(ui, |ui| match panel {
+        // Text fields beside a label or a button get what is left of the panel, not egui's
+        // default width, which is wider than the panel can give.
+        let room = ui.available_width() - config::PANEL_LABEL_ROOM;
+        ui.spacing_mut().text_edit_width = room.max(config::PANEL_FIELD_MIN);
+        let shown = egui::ScrollArea::vertical().show(ui, |ui| match panel {
             Panel::Apps => self.apps_panel(ui),
             Panel::Location => self.location_panel(ui),
             Panel::Sensors => self.sensors_panel(ui),
@@ -417,6 +422,7 @@ impl Gui {
             Panel::Capture => self.capture_panel(ui),
             Panel::Settings => self.settings_panel(ui, effects),
         });
+        shown.content_size.x
     }
 
     fn apps_panel(&mut self, ui: &mut Ui) {
@@ -426,7 +432,7 @@ impl Gui {
             ui.add(
                 egui::TextEdit::singleline(&mut self.apps.install_path)
                     .hint_text(text::INSTALL_PATH_HINT)
-                    .desired_width(config::PANEL_FIELD_WIDTH),
+                    .desired_width(f32::INFINITY),
             )
             .accessible_name(text::INSTALL_PATH_NAME);
         });
@@ -524,7 +530,7 @@ impl Gui {
         ui.add(
             egui::TextEdit::singleline(&mut location.link)
                 .hint_text(text::MAP_LINK_HINT)
-                .desired_width(config::PANEL_FIELD_WIDTH),
+                .desired_width(f32::INFINITY),
         )
         .accessible_name(text::MAP_LINK_NAME);
         if ui.button(text::SET_FROM_LINK).clicked() {
@@ -584,7 +590,7 @@ impl Gui {
         ui.add(
             egui::TextEdit::singleline(&mut location.gpx)
                 .hint_text(text::GPX_HINT)
-                .desired_width(config::PANEL_FIELD_WIDTH),
+                .desired_width(f32::INFINITY),
         )
         .accessible_name(text::ROUTE);
         ui.add(egui::Slider::new(&mut location.route_kmh, config::KMH_RANGE).text(text::KMH));
@@ -743,7 +749,7 @@ impl Gui {
         ui.add(
             egui::TextEdit::singleline(&mut self.keymap_path)
                 .hint_text(text::KEYMAP_PATH_HINT)
-                .desired_width(config::PANEL_FIELD_WIDTH),
+                .desired_width(f32::INFINITY),
         )
         .accessible_name(text::KEYMAP_FILE);
         ui.horizontal_wrapped(|ui| {
@@ -797,13 +803,15 @@ impl Gui {
         ui.heading(text::SETTINGS);
         if self.instance.is_none() {
             ui.label(text::NOT_AN_INSTANCE);
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.save_as)
-                    .accessible_name(text::NAME);
-                if ui.button(text::SAVE_AS_INSTANCE).clicked() {
-                    self.status = save_as_instance(self.save_as.trim());
-                }
-            });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.save_as)
+                    .hint_text(text::NAME)
+                    .desired_width(f32::INFINITY),
+            )
+            .accessible_name(text::NAME);
+            if ui.button(text::SAVE_AS_INSTANCE).clicked() {
+                self.status = save_as_instance(self.save_as.trim());
+            }
             return;
         }
         let Some(form) = self.form.as_mut() else {
@@ -1029,6 +1037,40 @@ mod tests {
         harness.run();
         harness.get_by_label(text::INSTALL).click();
         harness.run();
+    }
+
+    #[test]
+    fn every_panel_fits_its_width() {
+        let notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(|_| {});
+        let mut gui = Gui::new(Arc::new(Controller::default()), notify, None, None);
+        gui.location.places.push(Place {
+            name: "A rather long place name".into(),
+            latitude: 1.0,
+            longitude: 2.0,
+        });
+        gui.macros.selected = Some("m.txt".into());
+        for (panel, label) in PANELS {
+            gui.open = Some(panel);
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1200.0, 1200.0))
+                .build_ui_state(
+                    |ui, state: &mut (Gui, f32, f32)| {
+                        let (gui, inner, content) = state;
+                        egui::Panel::right("panel")
+                            .resizable(false)
+                            .exact_size(config::PANEL_WIDTH)
+                            .show(ui, |ui| {
+                                *inner = ui.available_width();
+                                *content = gui.panel(ui, &mut Vec::new());
+                            });
+                    },
+                    (gui, 0.0, 0.0),
+                );
+            harness.run();
+            let (_, inner, content) = harness.state();
+            assert!(content <= inner, "{label}: {content} wider than {inner}");
+            gui = harness.into_state().0;
+        }
     }
 
     #[test]

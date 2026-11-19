@@ -345,20 +345,32 @@ mod tests {
         let args = ["--android", "/images", "--kernel", "/k"].map(str::to_owned);
         instance::create(&root, "phone", &args, std::path::Path::new("/")).unwrap();
         let form = Form::open_in(root.clone(), "phone").unwrap();
+        // Laid out as the window's Settings panel lays it out.
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(600.0, 1600.0))
+            .with_size(egui::vec2(1200.0, 1600.0))
             .build_ui_state(
-                |ui, form: &mut Form| {
-                    egui::ScrollArea::vertical().show(ui, |ui| form.show(ui, false));
+                |ui, (form, inner, content): &mut (Form, f32, f32)| {
+                    egui::Panel::right("panel")
+                        .resizable(false)
+                        .exact_size(config::PANEL_WIDTH)
+                        .show(ui, |ui| {
+                            *inner = ui.available_width();
+                            let shown =
+                                egui::ScrollArea::vertical().show(ui, |ui| form.show(ui, false));
+                            *content = shown.content_size.x;
+                        });
                 },
-                form,
+                (form, 0.0, 0.0),
             );
+        harness.run();
+        let (_, inner, content) = *harness.state();
+        assert!(content <= inner, "settings: {content} wider than {inner}");
         harness.get_by_label(text::USE_GPU).click();
         harness.run();
-        harness.state_mut().sync = "farm".to_owned();
+        harness.state_mut().0.sync = "farm".to_owned();
         harness.get_by_label(text::SAVE).click();
         harness.run();
-        assert_eq!(harness.state().status, text::SETTINGS_SAVED);
+        assert_eq!(harness.state().0.status, text::SETTINGS_SAVED);
         let saved = instance::args(&root, "phone").unwrap();
         assert!(saved.contains(&"--gpu".to_owned()), "{saved:?}");
         assert!(

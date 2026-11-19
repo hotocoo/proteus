@@ -405,7 +405,9 @@ impl App {
                 egui::Panel::right(copy::PANEL_ID)
                     .resizable(false)
                     .exact_size(PANEL_WIDTH)
-                    .show(ui, |ui| gui.panel(ui, &mut effects));
+                    .show(ui, |ui| {
+                        gui.panel(ui, &mut effects);
+                    });
             }
             if !gui.status().is_empty() {
                 egui::Panel::bottom(copy::STATUS_ID).show(ui, |ui| {
