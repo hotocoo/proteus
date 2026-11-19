@@ -123,7 +123,7 @@ pub fn resolve(target: &Path) -> PathBuf {
 }
 
 /// Whether an instance is running: something answers on its socket.
-fn running(socket: &Path) -> bool {
+pub fn running(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
@@ -131,18 +131,7 @@ fn running(socket: &Path) -> bool {
 pub fn create(root: &Path, name: &str, args: &[String], cwd: &Path) -> io::Result<()> {
     let dir = folder(root, name)?;
     let args = &absolute(args, cwd);
-    if args.iter().any(|arg| OWN_OPTIONS.contains(&arg.as_str())) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            copy::INSTANCE_OWN_OPTIONS,
-        ));
-    }
-    if args.iter().any(|arg| arg.contains('\n')) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            copy::INSTANCE_BAD_ARGUMENT,
-        ));
-    }
+    check_args(args)?;
     // The socket's path has to fit the system's limit, which is short.
     if socket(root, name)?.as_os_str().len() > SOCKET_PATH_MAX {
         return Err(io::Error::new(
@@ -159,6 +148,55 @@ pub fn create(root: &Path, name: &str, args: &[String], cwd: &Path) -> io::Resul
     let mut text = args.join("\n");
     text.push('\n');
     std::fs::write(dir.join(ARGS_FILE), text)
+}
+
+/// The folder of the instance called `name`, where it keeps its data and the panel its files.
+pub fn dir(root: &Path, name: &str) -> io::Result<PathBuf> {
+    folder(root, name)
+}
+
+/// The options an instance was created with, or last saved with.
+pub fn args(root: &Path, name: &str) -> io::Result<Vec<String>> {
+    let text =
+        std::fs::read_to_string(folder(root, name)?.join(ARGS_FILE)).map_err(|err| {
+            match err.kind() {
+                io::ErrorKind::NotFound => io::Error::new(err.kind(), copy::INSTANCE_UNKNOWN),
+                _ => err,
+            }
+        })?;
+    Ok(text.lines().map(str::to_owned).collect())
+}
+
+/// Saves new options for an instance that exists; it starts with them next time.
+pub fn set_args(root: &Path, name: &str, args: &[String]) -> io::Result<()> {
+    let dir = folder(root, name)?;
+    if !dir.join(ARGS_FILE).is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            copy::INSTANCE_UNKNOWN,
+        ));
+    }
+    check_args(args)?;
+    let mut text = args.join("\n");
+    text.push('\n');
+    std::fs::write(dir.join(ARGS_FILE), text)
+}
+
+/// Refuses options an instance cannot keep: its own, and any with a line break.
+fn check_args(args: &[String]) -> io::Result<()> {
+    if args.iter().any(|arg| OWN_OPTIONS.contains(&arg.as_str())) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            copy::INSTANCE_OWN_OPTIONS,
+        ));
+    }
+    if args.iter().any(|arg| arg.contains('\n')) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            copy::INSTANCE_BAD_ARGUMENT,
+        ));
+    }
+    Ok(())
 }
 
 /// The arguments that start an instance: the ones it was created with, its own data folder and

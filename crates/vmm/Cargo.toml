@@ -33,14 +33,16 @@ vm-memory.workspace = true
 cpal.workspace = true
 gilrs.workspace = true
 rtrb.workspace = true
-softbuffer.workspace = true
 winit.workspace = true
+egui.workspace = true
+egui-winit.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
 
 [dev-dependencies]
 net.workspace = true
 
-# On Linux the window and its pixels reach the screen through X11 or Wayland, whichever is running;
-# both are loaded when the program starts, so neither is needed to build it.
+# On Linux the window reaches the screen through X11 or Wayland, whichever is running; both are
+# loaded when the program starts, so neither is needed to build it.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-softbuffer = { workspace = true, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 winit = { workspace = true, features = ["x11", "wayland", "wayland-dlopen"] }

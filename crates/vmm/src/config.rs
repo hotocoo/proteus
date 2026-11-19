@@ -82,6 +82,7 @@ pub const ROUTE_DEFAULT_KMH: f64 = 5.0;
 /// Fastest a walk or route may go; anything faster is a typing mistake (this is an airliner).
 pub const MAX_KMH: f64 = 1000.0;
 pub const INSTANCE_SUBCOMMAND: &str = "instance";
+pub const INSTANCE_START: &str = "start";
 /// Hidden: what `emu` runs itself as to find out whether the GPU renderer starts.
 pub const GPU_CHECK_ARG: &str = "--gpu-check";
 /// How long the renderer may take to start before it is judged not to work.
@@ -137,6 +138,45 @@ pub fn screenshot_path() -> PathBuf {
     home.join(DESKTOP)
         .join(format!("{PREFIX}{stamp}.{EXTENSION}"))
 }
+/// Where ⌘S-style recordings go: beside screenshots.
+pub fn recording_path() -> PathBuf {
+    screenshot_path().with_extension(RECORDING_EXTENSION)
+}
+const RECORDING_EXTENSION: &str = "mp4";
+/// The window's controls: the toolbar's width and button height, the space around buttons, the
+/// open panel's width and its text fields' width, in points.
+pub const TOOLBAR_WIDTH: f32 = 96.0;
+pub const TOOLBAR_MARGIN: f32 = 6.0;
+pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
+pub const PANEL_WIDTH: f32 = 340.0;
+pub const PANEL_FIELD_WIDTH: f32 = 300.0;
+/// Rows the macro editor shows.
+pub const MACRO_EDITOR_ROWS: usize = 12;
+/// Where macros and saved places are kept, under an instance's folder or the emulator's home.
+pub const MACROS_DIR: &str = "macros";
+pub const MACRO_EXTENSION: &str = ".txt";
+pub const PLACES_FILE: &str = "places.toml";
+pub const GUI_TASK_THREAD: &str = "gui task";
+/// What the panels' sliders and fields allow.
+pub const KMH_RANGE: std::ops::RangeInclusive<f64> = 0.5..=300.0;
+pub const BEARING_RANGE: std::ops::RangeInclusive<f64> = 0.0..=359.0;
+pub const DEGREES_RANGE: std::ops::RangeInclusive<f64> = -180.0..=180.0;
+pub const MACRO_TIMES_RANGE: std::ops::RangeInclusive<u32> = 1..=10_000;
+pub const CAPTURE_SECONDS_RANGE: std::ops::RangeInclusive<u32> = 1..=180;
+pub const CAPTURE_DEFAULT_SECONDS: u32 = 30;
+pub const RAM_MIB_RANGE: std::ops::RangeInclusive<u64> = 1024..=32_768;
+/// How fast a drag changes the memory field, in MiB per point.
+pub const RAM_MIB_STEP: f64 = 64.0;
+pub const VCPUS_RANGE: std::ops::RangeInclusive<u32> = 1..=16;
+pub const DISPLAY_RANGE: std::ops::RangeInclusive<u32> = 320..=3840;
+/// The key map editor's markers: radius and outline in points, label size, colour (RGBA), and a
+/// new stick's radius in guest pixels and the range its slider allows.
+pub const EDITOR_MARKER_RADIUS: f32 = 18.0;
+pub const EDITOR_STROKE: f32 = 2.0;
+pub const EDITOR_LABEL_SIZE: f32 = 13.0;
+pub const EDITOR_MARKER_RGBA: [u8; 4] = [30, 110, 220, 190];
+pub const EDITOR_STICK_RADIUS: u32 = 100;
+pub const EDITOR_STICK_RADIUS_RANGE: std::ops::RangeInclusive<u32> = 20..=400;
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -245,6 +285,8 @@ pub struct Config {
     pub logcat: Option<PathBuf>,
     /// Boot Android from an image directory instead of a plain ramdisk.
     pub android: Option<AndroidOptions>,
+    /// The instance this is, when it was started as one; never set from the command line.
+    pub instance: Option<String>,
     pub bootconfig: Vec<(String, String)>,
     /// Console text whose first appearance is timed, if boot timing was asked for.
     pub boot_marker: Option<String>,
@@ -275,6 +317,7 @@ impl Config {
             ctl: None,
             logcat: None,
             android: None,
+            instance: None,
             bootconfig: Vec::new(),
             boot_marker: None,
             log_level: DEFAULT_LOG_LEVEL,
@@ -357,7 +400,7 @@ fn instance_command(args: Vec<OsString>) -> Result<InstanceCommand, ConfigError>
             name: name.to_owned(),
             args: rest.iter().map(text).collect(),
         }),
-        ["start", name] => Ok(InstanceCommand::Start {
+        [INSTANCE_START, name] => Ok(InstanceCommand::Start {
             name: name.to_owned(),
             extra: rest.to_vec(),
         }),

@@ -1,38 +1,39 @@
-//! The window: shows the guest's display, and turns the mouse and keyboard into the guest's
-//! touchscreen and keyboard.
+//! The window: shows the guest's display with the controls around it (`gui`), and turns the mouse
+//! and keyboard into the guest's touchscreen and keyboard.
 //!
 //! Everything that decides what happens (where a click lands in the guest, which key a key is, how a
-//! frame is scaled) is a plain function with tests, because the rest can only be checked by eye.
+//! frame is turned and scaled) is a plain function with tests, because the rest can only be checked
+//! by eye.
 
-use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::config::{PANEL_WIDTH, TOOLBAR_WIDTH};
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
+use crate::gui::{Effect, Gui};
 use crate::input::button_code;
+use crate::keyedit::Editor;
 use crate::keymap::{self, Mapper, Scroll, Touch};
-use crate::{VmmError, copy};
-use crate::{orientation, profiles};
+use crate::painter::Painter;
+use crate::{VmmError, copy, orientation, profiles};
 
 /// Quarter turns in a whole turn, and degrees in a quarter turn.
 const QUARTER_TURNS: u8 = 4;
 const DEGREES_PER_TURN: f64 = 90.0;
 /// The finger the mouse stands for.
 const MOUSE_FINGER: u32 = 0;
-/// What the window shows where the guest's picture does not reach, and before there is one.
-const BACKGROUND: u32 = 0;
 
 /// News for the window from other threads.
 #[derive(Clone, Debug)]
@@ -45,97 +46,57 @@ pub enum Notice {
     Foreground(String),
     /// Android turned its screen; the window turns the picture back upright.
     Rotated(u8),
+    /// A line for the status bar, from work that finished.
+    Status(String),
+    /// The apps installed in the guest.
+    Packages(Vec<String>),
 }
 
-/// Where the guest's picture sits inside the window: as large as fits, in proportion, centred.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Viewport {
-    /// Top-left corner and size of the picture, in window pixels.
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    /// Size of the guest's display.
-    guest: (u32, u32),
-}
-
-impl Viewport {
-    /// `None` if either the window or the guest display has no area.
-    fn fit(window: (u32, u32), guest: (u32, u32)) -> Option<Self> {
-        if window.0 == 0 || window.1 == 0 || guest.0 == 0 || guest.1 == 0 {
-            return None;
-        }
-        let (window_w, window_h) = (u64::from(window.0), u64::from(window.1));
-        let (guest_w, guest_h) = (u64::from(guest.0), u64::from(guest.1));
-        // Whichever side runs out first sets the scale.
-        let (width, height) = if window_w * guest_h <= window_h * guest_w {
-            (window_w, (window_w * guest_h / guest_w).max(1))
-        } else {
-            ((window_h * guest_w / guest_h).max(1), window_h)
-        };
-        Some(Self {
-            left: ((window_w - width) / 2) as u32,
-            top: ((window_h - height) / 2) as u32,
-            width: width as u32,
-            height: height as u32,
-            guest,
-        })
+/// The largest rectangle of the picture's shape that fits in `space`, centred, in points.
+fn fit(space: egui::Rect, picture: (u32, u32)) -> Option<egui::Rect> {
+    let (width, height) = (picture.0 as f32, picture.1 as f32);
+    if width <= 0.0 || height <= 0.0 || space.width() <= 0.0 || space.height() <= 0.0 {
+        return None;
     }
-
-    /// The guest pixel under a window pixel, or `None` outside the picture.
-    fn guest_pixel(self, x: f64, y: f64) -> Option<(u32, u32)> {
-        let (x, y) = (x - f64::from(self.left), y - f64::from(self.top));
-        if x < 0.0 || y < 0.0 || x >= f64::from(self.width) || y >= f64::from(self.height) {
-            return None;
-        }
-        let across = (x * f64::from(self.guest.0) / f64::from(self.width)) as u32;
-        let down = (y * f64::from(self.guest.1) / f64::from(self.height)) as u32;
-        Some((across.min(self.guest.0 - 1), down.min(self.guest.1 - 1)))
-    }
+    let scale = (space.width() / width).min(space.height() / height);
+    Some(egui::Rect::from_center_size(
+        space.center(),
+        egui::vec2(width * scale, height * scale),
+    ))
 }
 
-/// Draws `frame` into a window buffer of `window` pixels (one `0x00RRGGBB` word each), turned
-/// upright by `turns` and scaled to fit. Returns false, drawing nothing, if the buffer or the frame
-/// is not the size it claims.
-fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32], turns: u8) -> bool {
-    let panel = (frame.width, frame.height);
-    let guest = orientation::upright_size(panel, turns);
-    let Some(view) = Viewport::fit(window, guest) else {
-        return false;
-    };
+/// The upright guest pixel under `point`, for a picture of `picture` pixels drawn in `rect`.
+/// `None` outside it.
+fn guest_pixel(rect: egui::Rect, picture: (u32, u32), point: egui::Pos2) -> Option<(u32, u32)> {
+    if !rect.contains(point) || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let across = (point.x - rect.left()) / rect.width() * picture.0 as f32;
+    let down = (point.y - rect.top()) / rect.height() * picture.1 as f32;
+    Some((
+        (across as u32).min(picture.0.saturating_sub(1)),
+        (down as u32).min(picture.1.saturating_sub(1)),
+    ))
+}
+
+/// `frame` turned upright, as an RGBA image for the window. `None` if its size and pixels disagree.
+fn color_image(frame: &Frame<'_>, turns: u8) -> Option<egui::ColorImage> {
     let stride = frame.width as usize * BYTES_PER_PIXEL;
-    if buffer.len() != window.0 as usize * window.1 as usize
-        || frame.pixels.len() != stride * frame.height as usize
-    {
-        return false;
+    if frame.width == 0 || frame.pixels.len() != stride * frame.height as usize {
+        return None;
     }
+    let (width, height, pixels) = orientation::upright(frame, turns);
     let [red, green, blue] = channel_order(frame.format);
-    // Which upright guest column each picture column shows; the same for every row.
-    let columns: Vec<u32> = (0..u64::from(view.width))
-        .map(|x| (x * u64::from(guest.0) / u64::from(view.width)) as u32)
+    let rgba: Vec<egui::Color32> = pixels
+        .as_chunks::<BYTES_PER_PIXEL>()
+        .0
+        .iter()
+        .map(|pixel| egui::Color32::from_rgb(pixel[red], pixel[green], pixel[blue]))
         .collect();
-    for (y, row) in buffer.chunks_exact_mut(window.0 as usize).enumerate() {
-        let inside = (y as u32)
-            .checked_sub(view.top)
-            .filter(|y| *y < view.height);
-        let Some(picture_y) = inside else {
-            row.fill(BACKGROUND);
-            continue;
-        };
-        let guest_y = (u64::from(picture_y) * u64::from(guest.1) / u64::from(view.height)) as u32;
-        let (left, rest) = row.split_at_mut(view.left as usize);
-        let (picture, right) = rest.split_at_mut(view.width as usize);
-        left.fill(BACKGROUND);
-        right.fill(BACKGROUND);
-        for (pixel, &guest_x) in picture.iter_mut().zip(&columns) {
-            let (x, y) = orientation::to_panel(guest_x, guest_y, panel, turns).unwrap_or_default();
-            let at = y as usize * stride + x as usize * BYTES_PER_PIXEL;
-            *pixel = u32::from(frame.pixels[at + red]) << 16
-                | u32::from(frame.pixels[at + green]) << 8
-                | u32::from(frame.pixels[at + blue]);
-        }
-    }
-    true
+    Some(egui::ColorImage::new(
+        [width as usize, height as usize],
+        rgba,
+    ))
 }
 
 /// What a shortcut does: one of Android's buttons, a turn of the device, or a screenshot.
@@ -187,18 +148,44 @@ fn is_shortcut_modifier(key: KeyCode) -> bool {
 /// `None` for keys the guest's keyboard does not have. The window system's name for a key is the
 /// name the key table and key maps use.
 fn linux_key(key: KeyCode) -> Option<u16> {
-    crate::input::key_code(&format!("{key:?}"))
+    crate::input::key_code(&key_name(key))
+}
+
+/// The window system's name for a key, which key maps use too.
+pub fn key_name(key: KeyCode) -> String {
+    format!("{key:?}")
+}
+
+/// The window's first size, in logical pixels: the guest's picture, made smaller if needed so it
+/// fits a share of the monitor (`None` when the monitor is not known), and the toolbar beside it.
+fn initial_size(picture: (u32, u32), monitor: Option<(f64, f64)>) -> (f64, f64) {
+    let toolbar = f64::from(TOOLBAR_WIDTH);
+    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
+    let scale = monitor.map_or(1.0, |(monitor_w, monitor_h)| {
+        let share = crate::config::WINDOW_SCREEN_SHARE;
+        ((monitor_w * share - toolbar) / width)
+            .min(monitor_h * share / height)
+            .min(1.0)
+    });
+    (width * scale + toolbar, height * scale)
 }
 
 struct Shown {
-    window: Rc<Window>,
-    surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
+    window: Arc<Window>,
+    painter: Painter,
 }
 
 struct App {
     controller: Arc<Controller>,
+    /// Size of the guest's display panel, in its own (natural) orientation.
     guest: (u32, u32),
     shown: Option<Shown>,
+    gui: Gui,
+    /// The guest's picture, as last uploaded, and whether a newer frame has come since.
+    texture: Option<egui::TextureHandle>,
+    frame_waiting: bool,
+    /// Where the picture was drawn last, in points.
+    picture: Option<egui::Rect>,
     /// Where the pointer is, in window pixels.
     pointer: PhysicalPosition<f64>,
     /// Whether the mouse's finger is on the guest's screen.
@@ -207,6 +194,8 @@ struct App {
     mapper: Option<Mapper>,
     /// Key maps named after apps, if the map follows the app in front.
     profiles: Option<PathBuf>,
+    /// The key map being edited on the picture, if one is.
+    editor: Option<Editor>,
     /// Whether the window is keeping the pointer for the key map.
     grabbed: bool,
     /// Why the window could not be made, if it could not.
@@ -215,6 +204,10 @@ struct App {
     modifiers: ModifiersState,
     /// How far the device is turned about the screen's axis, in quarter turns clockwise.
     device_turns: u8,
+    /// Set when the user asked for a restart, so the program starts the instance again after.
+    restart: bool,
+    /// Whether a panel was beside the picture when the window last drew.
+    panel_shown: bool,
 }
 
 impl App {
@@ -288,16 +281,23 @@ impl App {
         orientation::upright_size(self.guest, self.controller.turns())
     }
 
-    fn window_size(&self) -> Option<PhysicalSize<u32>> {
-        Some(self.shown.as_ref()?.window.inner_size())
+    /// The pointer, in points.
+    fn pointer_points(&self) -> Option<egui::Pos2> {
+        let scale = self.shown.as_ref()?.window.scale_factor();
+        Some(egui::pos2(
+            (self.pointer.x / scale) as f32,
+            (self.pointer.y / scale) as f32,
+        ))
+    }
+
+    /// The upright guest pixel under the pointer, if it is over the picture.
+    fn pointer_pixel(&self) -> Option<(u32, u32)> {
+        guest_pixel(self.picture?, self.upright(), self.pointer_points()?)
     }
 
     /// Moves the mouse's finger to the pointer, puts it down or lifts it, as `pressed` says.
     fn touch(&mut self, pressed: bool) {
-        let size = self.window_size().unwrap_or_default();
-        let view = Viewport::fit((size.width, size.height), self.upright());
-        let at = view.and_then(|view| view.guest_pixel(self.pointer.x, self.pointer.y));
-        match (pressed, at) {
+        match (pressed, self.pointer_pixel()) {
             (true, Some((x, y))) => {
                 self.touching = true;
                 self.send(Command::Touch {
@@ -317,31 +317,242 @@ impl App {
         }
     }
 
+    /// Uploads the newest frame, lays out the controls and draws everything.
     fn draw(&mut self) {
+        if self.frame_waiting
+            && let Some(shown) = &self.shown
+            && let Some(screen) = &self.controller.screen
+        {
+            self.frame_waiting = false;
+            let turns = screen.turns();
+            let image = screen
+                .with_latest(|frame| color_image(frame, turns))
+                .flatten();
+            if let Some(image) = image {
+                match &mut self.texture {
+                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.texture = Some(shown.painter.ctx.load_texture(
+                            copy::GUEST_TEXTURE,
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+        }
+        let upright = self.upright();
         let Some(shown) = self.shown.as_mut() else {
             return;
         };
-        let size = shown.window.inner_size();
-        let (Some(width), Some(height)) =
-            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-        else {
+        let mut effects = Vec::new();
+        let gui = &mut self.gui;
+        let texture = &self.texture;
+        let editor = &mut self.editor;
+        let mut picture = None;
+        shown.painter.paint(&shown.window, |ui| {
+            egui::Panel::right(copy::TOOLBAR_ID)
+                .resizable(false)
+                .exact_size(TOOLBAR_WIDTH)
+                .show(ui, |ui| gui.toolbar(ui, &mut effects));
+            if let Some(editor) = editor.as_mut() {
+                egui::Panel::right(copy::PANEL_ID)
+                    .resizable(false)
+                    .exact_size(PANEL_WIDTH)
+                    .show(ui, |ui| editor.panel(ui, &mut effects));
+            } else if gui.open.is_some() {
+                egui::Panel::right(copy::PANEL_ID)
+                    .resizable(false)
+                    .exact_size(PANEL_WIDTH)
+                    .show(ui, |ui| gui.panel(ui, &mut effects));
+            }
+            if !gui.status().is_empty() {
+                egui::Panel::bottom(copy::STATUS_ID).show(ui, |ui| {
+                    ui.label(gui.status());
+                });
+            }
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                let space = ui.max_rect();
+                match (texture, fit(space, upright)) {
+                    (Some(texture), Some(rect)) => {
+                        let uv =
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        ui.painter()
+                            .image(texture.id(), rect, uv, egui::Color32::WHITE);
+                        picture = Some(rect);
+                        if let Some(editor) = editor.as_mut() {
+                            editor.overlay(ui, rect, upright);
+                        }
+                    }
+                    _ => {
+                        ui.centered_and_justified(|ui| ui.label(copy::gui::STARTING));
+                    }
+                }
+            });
+        });
+        self.picture = picture;
+        for effect in effects {
+            self.effect(effect);
+        }
+        self.fit_panel();
+    }
+
+    /// Widens the window when a panel opens, and narrows it when it closes, so the picture keeps
+    /// its size.
+    fn fit_panel(&mut self) {
+        let open = self.editor.is_some() || self.gui.open.is_some();
+        let Some(shown) = self.shown.as_ref().filter(|_| open != self.panel_shown) else {
             return;
         };
-        let presented = shown.surface.resize(width, height).and_then(|()| {
-            let mut buffer = shown.surface.buffer_mut()?;
-            let screen = self.controller.screen.as_ref();
-            let drawn = screen.and_then(|screen| {
-                let turns = screen.turns();
-                screen
-                    .with_latest(|frame| blit(frame, (size.width, size.height), &mut buffer, turns))
-            });
-            if drawn != Some(true) {
-                buffer.fill(BACKGROUND);
+        self.panel_shown = open;
+        let size = shown
+            .window
+            .inner_size()
+            .to_logical::<f64>(shown.window.scale_factor());
+        let change = if open { PANEL_WIDTH } else { -PANEL_WIDTH };
+        let width = (size.width + f64::from(change)).max(f64::from(TOOLBAR_WIDTH));
+        let _ = shown
+            .window
+            .request_inner_size(LogicalSize::new(width, size.height));
+    }
+
+    fn effect(&mut self, effect: Effect) {
+        match effect {
+            Effect::LoadKeymap(path) => self.use_keymap(path),
+            Effect::EditKeymap => {
+                let path = PathBuf::from(self.gui.keymap_path());
+                match Editor::open(&path) {
+                    Ok(editor) => {
+                        self.use_keymap(None);
+                        self.editor = Some(editor);
+                    }
+                    Err(why) => self.gui.set_status(why),
+                }
             }
-            buffer.present()
-        });
-        if let Err(err) = presented {
-            log::warn!("{}", copy::window_draw_failed(&err));
+            Effect::CloseEditor(saved) => {
+                self.editor = None;
+                if let Some(path) = saved {
+                    self.gui.set_keymap_path(&path);
+                    self.use_keymap(Some(path));
+                }
+            }
+            Effect::Restart => {
+                self.restart = true;
+                self.controller.power.off();
+            }
+            Effect::Turn(clockwise) => self.shortcut(Shortcut::Turn(clockwise)),
+        }
+        if let Some(shown) = &self.shown {
+            shown.window.request_redraw();
+        }
+    }
+
+    /// Starts using the key map at `path`, or none, lifting the old map's fingers first.
+    fn use_keymap(&mut self, path: Option<PathBuf>) {
+        let mapper = match path {
+            Some(path) => match keymap::load(&path, orientation::any_way_up(self.guest)) {
+                Ok(mapper) => {
+                    self.gui.set_status(copy::gui::keymap_in_use(&path));
+                    Some(mapper)
+                }
+                Err(why) => {
+                    self.gui.set_status(why);
+                    return;
+                }
+            },
+            None => None,
+        };
+        if let Some(old) = self.mapper.as_mut() {
+            let touches = old.release();
+            self.apply(&touches);
+        }
+        self.mapper = mapper;
+        self.sync_pointer();
+    }
+
+    /// Does what a shortcut stands for.
+    fn shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::Button(code) => self.send(Command::Key { code, down: None }),
+            Shortcut::Turn(clockwise) => {
+                let step = if clockwise { 1 } else { QUARTER_TURNS - 1 };
+                self.device_turns = (self.device_turns + step) % QUARTER_TURNS;
+                let degrees = f64::from(self.device_turns) * DEGREES_PER_TURN;
+                self.send(Command::Rotate([0.0, 0.0, degrees]));
+            }
+            Shortcut::Screenshot => self.gui.screenshot(),
+        }
+    }
+
+    /// Android turned its screen: lift the finger, and give the window the picture's new shape at
+    /// the same scale.
+    fn rotated(&mut self, turns: u8) {
+        self.touch(false);
+        self.frame_waiting = true;
+        let (Some(shown), Some(picture)) = (&self.shown, self.picture) else {
+            return;
+        };
+        let old = self.upright();
+        let new = orientation::upright_size(self.guest, turns);
+        let scale = f64::from(picture.width()) / f64::from(old.0.max(1));
+        let size = shown
+            .window
+            .inner_size()
+            .to_logical::<f64>(shown.window.scale_factor());
+        let chrome = size.width - f64::from(picture.width());
+        let wanted = LogicalSize::new(f64::from(new.0) * scale + chrome, f64::from(new.1) * scale);
+        let _ = shown.window.request_inner_size(wanted);
+        shown.window.request_redraw();
+    }
+
+    /// Changes to the key map for `package`, lifting the old map's fingers first.
+    fn follow(&mut self, package: &str) {
+        let Some(dir) = &self.profiles else {
+            return;
+        };
+        let path = profiles::map_for(dir, package);
+        eprintln!("{}", copy::keymap_switched(package, path.as_deref()));
+        match path {
+            Some(path) => self.use_keymap(Some(path)),
+            None => self.use_keymap(None),
+        }
+    }
+
+    /// The mouse moved by this much, wherever the pointer is.
+    fn mouse_moved(&mut self, dx: f64, dy: f64) {
+        let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
+        if let Some(touches) = touches.map(|map| map.pointer(dx, dy)) {
+            self.apply(&touches);
+        }
+    }
+
+    fn key(&mut self, key: KeyCode, down: bool) {
+        if let Some(editor) = self.editor.as_mut()
+            && editor.wants_key()
+        {
+            if down {
+                editor.key(&key_name(key));
+            }
+            return;
+        }
+        if is_shortcut_modifier(key) {
+            return;
+        }
+        if shortcut_held(self.modifiers)
+            && let Some(shortcut) = shortcut(key, self.modifiers.shift_key())
+        {
+            if down {
+                self.shortcut(shortcut);
+            }
+            return;
+        }
+        if let Some(code) = linux_key(key)
+            && !self.mapped(code, down)
+        {
+            self.send(Command::Key {
+                code,
+                down: Some(down),
+            });
         }
     }
 }
@@ -363,12 +574,9 @@ impl ApplicationHandler<Notice> for App {
             .create_window(attributes)
             .map_err(|err| err.to_string())
             .and_then(|window| {
-                let window = Rc::new(window);
-                let context =
-                    softbuffer::Context::new(Rc::clone(&window)).map_err(|err| err.to_string())?;
-                let surface = softbuffer::Surface::new(&context, Rc::clone(&window))
-                    .map_err(|err| err.to_string())?;
-                Ok(Shown { window, surface })
+                let window = Arc::new(window);
+                let painter = Painter::new(event_loop, &window)?;
+                Ok(Shown { window, painter })
             });
         match shown {
             Ok(shown) => self.shown = Some(shown),
@@ -381,14 +589,14 @@ impl ApplicationHandler<Notice> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, notice: Notice) {
         match notice {
-            Notice::Frame => {
-                if let Some(shown) = &self.shown {
-                    shown.window.request_redraw();
-                }
-            }
+            Notice::Frame => self.frame_waiting = true,
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),
             Notice::Rotated(turns) => self.rotated(turns),
+            notice @ (Notice::Status(_) | Notice::Packages(_)) => self.gui.notice(notice),
+        }
+        if let Some(shown) = &self.shown {
+            shown.window.request_redraw();
         }
     }
 
@@ -398,16 +606,34 @@ impl ApplicationHandler<Notice> for App {
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        match shown.painter.repaint_at {
+            Some(at) if at <= Instant::now() => {
+                shown.window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // The controls see every event; what happens over the picture belongs to the guest.
+        let used = match self.shown.as_mut() {
+            Some(shown) => shown.painter.on_event(&shown.window, &event),
+            None => false,
+        };
+        let typing = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.painter.ctx.egui_wants_keyboard_input());
         match event {
             // The machine is switched off; the window closes when it has stopped.
             WindowEvent::CloseRequested => self.controller.power.off(),
             WindowEvent::RedrawRequested => self.draw(),
-            WindowEvent::Resized(_) => {
-                if let Some(shown) = &self.shown {
-                    shown.window.request_redraw();
-                }
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = position;
                 if self.touching {
@@ -416,17 +642,25 @@ impl ApplicationHandler<Notice> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == ElementState::Pressed;
+                let over_picture = self.pointer_pixel().is_some();
+                if self.editor.is_some() {
+                    return;
+                }
                 let index = match button {
                     MouseButton::Left => Some(0),
                     MouseButton::Right => Some(1),
                     MouseButton::Middle => Some(2),
                     _ => None,
                 };
-                let taken = index
-                    .and_then(button_code)
-                    .is_some_and(|code| self.mapped(code, pressed));
+                let taken = (over_picture || self.grabbed || !pressed)
+                    && index
+                        .and_then(button_code)
+                        .is_some_and(|code| self.mapped(code, pressed));
                 // The left button is the finger, unless the key map has the mouse or the button.
                 if !taken && !self.grabbed && button == MouseButton::Left {
+                    if pressed && !over_picture {
+                        return;
+                    }
                     self.touch(pressed);
                 }
             }
@@ -434,6 +668,7 @@ impl ApplicationHandler<Notice> for App {
             // An install takes a while; the window keeps drawing meanwhile.
             WindowEvent::DroppedFile(path) => {
                 let controller = Arc::clone(&self.controller);
+                self.gui.set_status(copy::gui::WORKING);
                 let installing = std::thread::Builder::new()
                     .name(copy::INSTALL_THREAD.into())
                     .spawn(move || match controller.execute(&Command::Install(path)) {
@@ -444,7 +679,7 @@ impl ApplicationHandler<Notice> for App {
                     log::error!("{}", copy::thread(&err));
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if !used => {
                 let scroll = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => Scroll::Turns(f64::from(lines)),
                     MouseScrollDelta::PixelDelta(moved) => Scroll::Pixels(moved.y),
@@ -455,113 +690,15 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
+            WindowEvent::KeyboardInput { event, .. } if !event.repeat && !typing => {
                 let PhysicalKey::Code(key) = event.physical_key else {
                     return;
                 };
-                let down = event.state == ElementState::Pressed;
-                if is_shortcut_modifier(key) {
-                    return;
-                }
-                if shortcut_held(self.modifiers)
-                    && let Some(shortcut) = shortcut(key, self.modifiers.shift_key())
-                {
-                    if down {
-                        self.shortcut(shortcut);
-                    }
-                    return;
-                }
-                if let Some(code) = linux_key(key)
-                    && !self.mapped(code, down)
-                {
-                    self.send(Command::Key {
-                        code,
-                        down: Some(down),
-                    });
-                }
+                self.key(key, event.state == ElementState::Pressed);
             }
             _ => {}
         }
     }
-}
-
-impl App {
-    /// Changes to the key map for `package`, lifting the old map's fingers first.
-    fn follow(&mut self, package: &str) {
-        let Some(dir) = &self.profiles else {
-            return;
-        };
-        let path = profiles::map_for(dir, package);
-        eprintln!("{}", copy::keymap_switched(package, path.as_deref()));
-        let mapper = path.and_then(|path| {
-            keymap::load(&path, orientation::any_way_up(self.guest))
-                .inspect_err(|why| eprintln!("{}", copy::fatal(why)))
-                .ok()
-        });
-        if let Some(old) = self.mapper.as_mut() {
-            let touches = old.release();
-            self.apply(&touches);
-        }
-        self.mapper = mapper;
-        self.sync_pointer();
-    }
-
-    /// Does what a shortcut stands for.
-    fn shortcut(&mut self, shortcut: Shortcut) {
-        match shortcut {
-            Shortcut::Button(code) => self.send(Command::Key { code, down: None }),
-            Shortcut::Turn(clockwise) => {
-                let step = if clockwise { 1 } else { QUARTER_TURNS - 1 };
-                self.device_turns = (self.device_turns + step) % QUARTER_TURNS;
-                let degrees = f64::from(self.device_turns) * DEGREES_PER_TURN;
-                self.send(Command::Rotate([0.0, 0.0, degrees]));
-            }
-            Shortcut::Screenshot => {
-                let path = crate::config::screenshot_path();
-                match self.controller.execute(&Command::Screenshot(path.clone())) {
-                    Ok(()) => eprintln!("{}", copy::screenshot_saved(&path)),
-                    Err(why) => eprintln!("{}", copy::fatal(&why)),
-                }
-            }
-        }
-    }
-
-    /// Android turned its screen: lift the finger, and give the window the picture's new shape.
-    fn rotated(&mut self, turns: u8) {
-        self.touch(false);
-        let Some(shown) = &self.shown else {
-            return;
-        };
-        let size = shown.window.inner_size();
-        let (width, height) = orientation::upright_size(self.guest, turns);
-        if (size.width > size.height) != (width > height) {
-            let _ = shown
-                .window
-                .request_inner_size(PhysicalSize::new(size.height, size.width));
-        }
-        shown.window.request_redraw();
-    }
-
-    /// The mouse moved by this much, wherever the pointer is.
-    fn mouse_moved(&mut self, dx: f64, dy: f64) {
-        let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
-        if let Some(touches) = touches.map(|map| map.pointer(dx, dy)) {
-            self.apply(&touches);
-        }
-    }
-}
-
-/// The window's first size, in logical pixels: the guest's picture, made smaller if needed so it
-/// fits a share of the monitor (`None` when the monitor is not known).
-fn initial_size(picture: (u32, u32), monitor: Option<(f64, f64)>) -> (f64, f64) {
-    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
-    let scale = monitor.map_or(1.0, |(monitor_w, monitor_h)| {
-        let share = crate::config::WINDOW_SCREEN_SHARE;
-        (monitor_w * share / width)
-            .min(monitor_h * share / height)
-            .min(1.0)
-    });
-    (width * scale, height * scale)
 }
 
 /// The window's event loop, before it runs. It has to be made, and run, on the program's first
@@ -587,31 +724,50 @@ impl WindowLoop {
 
     /// Shows a window for a guest display of `guest` pixels and serves it until it is told
     /// `Notice::Stopped`. Closing the window switches the machine off through `controller`.
+    /// Returns whether the user asked for the instance to start again.
     pub fn run(
         self,
         controller: Arc<Controller>,
         guest: (u32, u32),
-        mapper: Option<Mapper>,
+        keymap: Option<PathBuf>,
         profiles: Option<PathBuf>,
-    ) -> Result<(), VmmError> {
+        instance: Option<String>,
+    ) -> Result<bool, VmmError> {
+        let notify = Arc::new(self.notifier());
+        let mapper = keymap
+            .as_ref()
+            .map(|path| keymap::load(path, orientation::any_way_up(guest)))
+            .transpose()
+            .map_err(VmmError::Device)?;
+        let gui = Gui::new(Arc::clone(&controller), notify, instance, keymap.as_deref());
         let mut app = App {
             controller,
             guest,
             shown: None,
+            gui,
+            texture: None,
+            frame_waiting: true,
+            picture: None,
             pointer: PhysicalPosition::default(),
             touching: false,
             mapper,
             profiles,
+            editor: None,
             grabbed: false,
             failed: None,
             modifiers: ModifiersState::empty(),
             device_turns: 0,
+            restart: false,
+            panel_shown: false,
         };
         let ran = self.0.run_app(&mut app);
+        // The GPU objects go before the window they draw into.
+        app.texture = None;
+        app.shown = None;
         match (app.failed, ran) {
             (Some(why), _) => Err(VmmError::Device(copy::window_failed(&why))),
             (None, Err(err)) => Err(VmmError::Device(copy::window_failed(&err))),
-            (None, Ok(())) => Ok(()),
+            (None, Ok(())) => Ok(app.restart),
         }
     }
 }
@@ -625,43 +781,39 @@ mod tests {
 
     #[test]
     fn picture_fills_the_side_that_runs_out_first_and_is_centred() {
-        // Same shape: the whole window.
-        let same = Viewport::fit((2560, 1440), (1280, 720)).unwrap();
-        assert_eq!(
-            (same.left, same.top, same.width, same.height),
-            (0, 0, 2560, 1440)
-        );
-        // A wider window: bars left and right.
-        let wide = Viewport::fit((1000, 360), (1280, 720)).unwrap();
-        assert_eq!(
-            (wide.left, wide.top, wide.width, wide.height),
-            (180, 0, 640, 360)
-        );
-        // A taller window: bars above and below.
-        let tall = Viewport::fit((640, 1000), (1280, 720)).unwrap();
-        assert_eq!(
-            (tall.left, tall.top, tall.width, tall.height),
-            (0, 320, 640, 360)
-        );
-        assert!(Viewport::fit((0, 100), (1280, 720)).is_none());
-        assert!(Viewport::fit((100, 100), (0, 720)).is_none());
+        let space = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 360.0));
+        let rect = fit(space, (1280, 720)).unwrap();
+        assert_eq!(rect.min, egui::pos2(180.0, 0.0));
+        assert_eq!(rect.size(), egui::vec2(640.0, 360.0));
+        let tall = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(640.0, 1000.0));
+        let rect = fit(tall, (1280, 720)).unwrap();
+        assert_eq!(rect.min, egui::pos2(0.0, 320.0));
+        assert!(fit(space, (0, 720)).is_none());
     }
 
     #[test]
     fn pointer_maps_to_the_guest_pixel_under_it_and_to_nothing_on_the_bars() {
-        let view = Viewport::fit((1000, 360), (1280, 720)).unwrap();
-        assert_eq!(view.guest_pixel(180.0, 0.0), Some((0, 0)));
-        assert_eq!(view.guest_pixel(819.9, 359.9), Some((1279, 719)));
-        assert_eq!(view.guest_pixel(500.0, 180.0), Some((640, 360)));
-        assert_eq!(view.guest_pixel(179.9, 10.0), None);
-        assert_eq!(view.guest_pixel(820.0, 10.0), None);
-        assert_eq!(view.guest_pixel(500.0, -1.0), None);
-        assert_eq!(view.guest_pixel(500.0, 360.0), None);
+        let rect = egui::Rect::from_min_size(egui::pos2(180.0, 0.0), egui::vec2(640.0, 360.0));
+        let picture = (1280, 720);
+        assert_eq!(
+            guest_pixel(rect, picture, egui::pos2(180.0, 0.0)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            guest_pixel(rect, picture, egui::pos2(819.9, 359.9)),
+            Some((1279, 719))
+        );
+        assert_eq!(
+            guest_pixel(rect, picture, egui::pos2(500.0, 180.0)),
+            Some((640, 360))
+        );
+        assert_eq!(guest_pixel(rect, picture, egui::pos2(179.9, 10.0)), None);
+        assert_eq!(guest_pixel(rect, picture, egui::pos2(820.1, 10.0)), None);
     }
 
     #[test]
-    fn frame_is_scaled_into_the_picture_and_the_bars_are_cleared() {
-        // A 2x1 guest display: a red pixel and a blue one, in a layout with blue first.
+    fn frame_becomes_an_upright_rgba_image() {
+        // A 2x1 panel, red then blue, in a layout with blue first.
         let pixels = [0, 0, 255, 0, 255, 0, 0, 0];
         let frame = Frame {
             width: 2,
@@ -669,44 +821,51 @@ mod tests {
             format: FORMAT_BGRX,
             pixels: &pixels,
         };
-        // A 4x4 window: the picture is 4x2, in the middle rows.
-        let mut buffer = [0xdead_beefu32; 16];
-        assert!(blit(&frame, (4, 4), &mut buffer, 0));
-        const RED: u32 = 0x00ff_0000;
-        const BLUE: u32 = 0x0000_00ff;
-        assert_eq!(buffer[..4], [BACKGROUND; 4]);
-        assert_eq!(buffer[4..8], [RED, RED, BLUE, BLUE]);
-        assert_eq!(buffer[8..12], [RED, RED, BLUE, BLUE]);
-        assert_eq!(buffer[12..], [BACKGROUND; 4]);
+        let image = color_image(&frame, 0).unwrap();
+        assert_eq!(image.size, [2, 1]);
+        assert_eq!(image.pixels, [egui::Color32::RED, egui::Color32::BLUE]);
+        // A quarter turn: the panel's right end is the top.
+        let image = color_image(&frame, 1).unwrap();
+        assert_eq!(image.size, [1, 2]);
+        assert_eq!(image.pixels, [egui::Color32::BLUE, egui::Color32::RED]);
     }
 
     #[test]
-    fn turned_frame_is_shown_upright() {
-        // A 2x1 panel, red then blue. At a quarter turn the panel's right end is the top, so the
-        // window (1x2) shows blue above red.
-        let pixels = [0, 0, 255, 0, 255, 0, 0, 0];
+    fn channel_order_follows_the_frames_format() {
+        let pixels = [10, 20, 30, 0];
+        let frame = Frame {
+            width: 1,
+            height: 1,
+            format: FORMAT_RGBA,
+            pixels: &pixels,
+        };
+        let image = color_image(&frame, 0).unwrap();
+        assert_eq!(image.pixels, [egui::Color32::from_rgb(10, 20, 30)]);
+    }
+
+    #[test]
+    fn frames_of_the_wrong_size_are_left_alone() {
+        let pixels = [0u8; 4];
         let frame = Frame {
             width: 2,
             height: 1,
-            format: FORMAT_BGRX,
+            format: FORMAT_RGBA,
             pixels: &pixels,
         };
-        let mut buffer = [0u32; 2];
-        assert!(blit(&frame, (1, 2), &mut buffer, 1));
-        assert_eq!(buffer, [0x0000_00ff, 0x00ff_0000]);
+        assert!(color_image(&frame, 0).is_none());
     }
 
     #[test]
     fn first_window_fits_the_monitor_and_never_grows_the_picture() {
         let share = crate::config::WINDOW_SCREEN_SHARE;
+        let toolbar = f64::from(TOOLBAR_WIDTH);
         let (width, height) = initial_size((720, 1280), Some((1440.0, 900.0)));
         assert!((height - 900.0 * share).abs() < 1e-6);
-        assert!((width / height - 720.0 / 1280.0).abs() < 1e-6);
+        assert!(((width - toolbar) / height - 720.0 / 1280.0).abs() < 1e-6);
         assert_eq!(
             initial_size((720, 1280), Some((4000.0, 4000.0))),
-            (720.0, 1280.0)
+            (720.0 + toolbar, 1280.0)
         );
-        assert_eq!(initial_size((720, 1280), None), (720.0, 1280.0));
     }
 
     #[test]
@@ -735,41 +894,6 @@ mod tests {
         for key in [KEY_BACK, KEY_HOMEPAGE, KEY_APPSELECT] {
             assert!(crate::input::is_key(key), "{key}");
         }
-    }
-
-    #[test]
-    fn channel_order_follows_the_frames_format() {
-        let pixels = [10, 20, 30, 0];
-        let frame = Frame {
-            width: 1,
-            height: 1,
-            format: FORMAT_RGBA,
-            pixels: &pixels,
-        };
-        let mut buffer = [0u32; 1];
-        assert!(blit(&frame, (1, 1), &mut buffer, 0));
-        assert_eq!(buffer, [0x000a_141e]);
-    }
-
-    #[test]
-    fn buffers_of_the_wrong_size_are_left_alone() {
-        let pixels = [0u8; 8];
-        let frame = Frame {
-            width: 2,
-            height: 1,
-            format: FORMAT_RGBA,
-            pixels: &pixels,
-        };
-        let mut short = [7u32; 3];
-        assert!(!blit(&frame, (2, 2), &mut short, 0));
-        assert_eq!(short, [7; 3]);
-        let truncated = Frame {
-            pixels: &pixels[..4],
-            ..frame
-        };
-        let mut buffer = [7u32; 4];
-        assert!(!blit(&truncated, (2, 2), &mut buffer, 0));
-        assert_eq!(buffer, [7; 4]);
     }
 
     #[test]

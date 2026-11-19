@@ -201,10 +201,6 @@ pub const KEYMAP_TWO_SOURCES: &str = "give --keymap or --keymap-dir, not both";
 pub const FOREGROUND_THREAD: &str = "foreground app";
 pub const ORIENTATION_THREAD: &str = "orientation";
 
-pub fn screenshot_saved(path: &std::path::Path) -> String {
-    format!("emu: screenshot saved to {}", path.display())
-}
-
 pub fn keymap_switched(package: &str, path: Option<&Path>) -> String {
     match path {
         Some(path) => format!("{package} is in front: key map {}", path.display()),
@@ -224,13 +220,14 @@ pub fn audio_failed(err: &dyn Display) -> String {
     format!("sound output: {err}; the guest's sound will not be heard")
 }
 pub const WINDOW_TITLE: &str = "emu";
+/// Names egui keeps the window's parts by.
+pub const GUEST_TEXTURE: &str = "guest";
+pub const TOOLBAR_ID: &str = "toolbar";
+pub const PANEL_ID: &str = "panel";
+pub const STATUS_ID: &str = "status";
 
 pub fn window_failed(err: &dyn Display) -> String {
     format!("the window could not be opened (use --headless to run without one): {err}")
-}
-
-pub fn window_draw_failed(err: &dyn Display) -> String {
-    format!("the window could not be drawn: {err}")
 }
 
 pub fn window_grab_failed(err: &dyn Display) -> String {
@@ -392,3 +389,206 @@ pub fn sync_failed(target: &Path, why: &dyn Display) -> String {
 }
 
 pub const SYNC_THREAD: &str = "input sync";
+
+/// What the window's controls say.
+pub mod gui {
+    use std::path::Path;
+
+    pub const BACK: &str = "Back";
+    pub const BACK_HINT: &str = "Android's Back button (⌘⌫)";
+    pub const HOME: &str = "Home";
+    pub const HOME_HINT: &str = "Android's Home button (⌘⇧H)";
+    pub const RECENTS: &str = "Recents";
+    pub const RECENTS_HINT: &str = "Recent apps; swipe a card away there to close that app (⌘O)";
+    pub const POWER: &str = "Power";
+    pub const POWER_HINT: &str = "Power button: turns the screen off and on (⌘P)";
+    pub const VOLUME_UP: &str = "Vol +";
+    pub const VOLUME_UP_HINT: &str = "Volume up (⌘↑)";
+    pub const VOLUME_DOWN: &str = "Vol −";
+    pub const VOLUME_DOWN_HINT: &str = "Volume down (⌘↓)";
+    pub const TURN_LEFT: &str = "Turn left";
+    pub const TURN_RIGHT: &str = "Turn right";
+    pub const TURN_HINT: &str =
+        "Turn the device a quarter turn; Android follows when auto-rotate is on (⌘← ⌘→)";
+    pub const SCREENSHOT: &str = "Screenshot";
+    pub const SCREENSHOT_HINT: &str = "Save what the screen shows on the Desktop (⌘S)";
+
+    pub const APPS: &str = "Apps";
+    pub const LOCATION: &str = "Location";
+    pub const SENSORS: &str = "Sensors";
+    pub const MACROS: &str = "Macros";
+    pub const KEYS: &str = "Key map";
+    pub const CAPTURE: &str = "Capture";
+    pub const SETTINGS: &str = "Settings";
+
+    pub const WORKING: &str = "Working…";
+    pub const STARTING: &str = "Android is starting…";
+
+    pub fn keymap_in_use(path: &Path) -> String {
+        format!("Key map {} in use.", path.display())
+    }
+
+    pub const KEYMAP_NEEDS_PATH: &str = "Give the key map a file first, such as ~/game.toml.";
+    pub const KEYMAP_EDIT_HINT: &str =
+        "Add a tap or a stick, click where it goes on the screen, then press its key.";
+    pub const CLICK_PLACE: &str = "Click on the screen where it goes.";
+    pub const PRESS_KEY: &str = "Press the key for it.";
+    pub const STICK_WAYS: [&str; 4] = ["up", "down", "left", "right"];
+
+    pub fn press_way(way: &str) -> String {
+        format!("Press the key that pushes the stick {way}.")
+    }
+
+    pub const ADD_TAP: &str = "Add tap";
+    pub const ADD_STICK: &str = "Add stick";
+    pub const REBIND: &str = "Key";
+    pub const REMOVE: &str = "Remove";
+    pub const RADIUS: &str = "radius";
+    pub const SAVE_AND_USE: &str = "Save and use";
+    pub const DISCARD: &str = "Close without saving";
+
+    pub fn tap_line(key: &str, at: [u32; 2]) -> String {
+        format!("Tap {key} at {}, {}", at[0], at[1])
+    }
+
+    pub fn stick_line(keys: [&String; 4], center: [u32; 2]) -> String {
+        format!(
+            "Stick {}/{}/{}/{} at {}, {}",
+            keys[0], keys[1], keys[2], keys[3], center[0], center[1]
+        )
+    }
+    pub const INSTALL_HINT: &str =
+        "Drop APK, split-APK folder, .apks or .xapk files on the window, or give a path here.";
+    pub const INSTALL_PATH_HINT: &str = "/path/to/game.xapk";
+    pub const INSTALL: &str = "Install";
+    pub const INSTALLED: &str = "Installed.";
+    pub const LIST_APPS: &str = "List installed apps";
+    pub const CLOSE_BACKGROUND: &str = "Close background apps";
+    pub const CLOSE_BACKGROUND_HINT: &str =
+        "Stops every app's background processes, freeing memory";
+    pub const BACKGROUND_CLOSED: &str = "Background apps closed.";
+    pub const OPEN: &str = "Open";
+    pub const FORCE_STOP: &str = "Force stop";
+    pub const CLEAR_DATA: &str = "Clear data";
+    pub const UNINSTALL: &str = "Uninstall";
+    pub const UNINSTALL_SURE: &str = "Really uninstall?";
+
+    pub fn packages_listed(count: usize) -> String {
+        format!("{count} apps installed.")
+    }
+
+    pub fn stopped(package: &str) -> String {
+        format!("{package} stopped.")
+    }
+
+    pub const LOCATION_HINT: &str = "Where the device is. Apps see an ordinary GPS fix.";
+    pub const LATITUDE: &str = "Latitude";
+    pub const LONGITUDE: &str = "Longitude";
+    pub const SET_LOCATION: &str = "Go there";
+    pub const BAD_COORDINATES: &str = "Latitude and longitude need to be numbers.";
+    pub const MAP_LINK_HINT: &str = "Paste a map link or geo: link";
+    pub const SET_FROM_LINK: &str = "Go to link";
+    pub const BAD_LINK: &str = "That link has no coordinates in it.";
+    pub const SAVED_PLACES: &str = "Saved places";
+    pub const FORGET: &str = "Forget";
+    pub const SAVE_PLACE: &str = "Save as place";
+    pub const ROUTE: &str = "Follow a GPX route";
+    pub const GPX_HINT: &str = "/path/to/walk.gpx";
+    pub const KMH: &str = "km/h";
+    pub const FOLLOW_ROUTE: &str = "Follow";
+    pub const ROUTE_DONE: &str = "Route followed to its end.";
+    pub const WALK: &str = "Walk from here";
+    pub const BEARING: &str = "degrees from north";
+    pub const WALK_START: &str = "Walk";
+    pub const WALK_STOP: &str = "Stop";
+
+    pub const SENSORS_HINT: &str = "How the device is held, in degrees about its three axes.";
+    pub const AXES: [&str; 3] = ["x (tilt forward)", "y (tilt sideways)", "z (turn)"];
+    pub const POSES: [&str; 4] = ["Upright", "Landscape", "Landscape, other way", "Flat"];
+    pub const SHAKE: &str = "Shake";
+
+    pub fn macros_hint(dir: &Path) -> String {
+        format!(
+            "Macros are kept in {}. One command per line, as for `emu ctl`; `wait <ms>` pauses.",
+            dir.display()
+        )
+    }
+
+    pub const NEW_MACRO: &str = "New macro";
+    pub const NEW_MACRO_TEMPLATE: &str = "# tap 360 640\n# wait 500\n";
+    pub const BAD_FILE_NAME: &str = "Use letters, digits, spaces, - and _ for the name.";
+    pub const SAVE: &str = "Save";
+    pub const PLAY: &str = "Play";
+    pub const CANCEL: &str = "Stop playing";
+    pub const MACRO_DONE: &str = "Macro played.";
+    pub const RECORD: &str = "Record into this macro";
+    pub const RECORDING: &str = "Recording your touches and keys…";
+    pub const STOP_RECORDING: &str = "Stop recording";
+
+    pub const KEYS_HINT: &str = "A key map turns keys and the mouse into touches for games.";
+    pub const KEYMAP_PATH_HINT: &str = "/path/to/game.toml";
+    pub const USE_KEYMAP: &str = "Use this map";
+    pub const NO_KEYMAP: &str = "No map";
+    pub const EDIT_KEYMAP: &str = "Edit on screen";
+
+    pub const SECONDS: &str = "seconds";
+    pub const RECORD_SCREEN: &str = "Record the screen";
+    pub const RECORD_HINT: &str = "Recordings are saved on the Desktop, without sound.";
+
+    pub const NOT_AN_INSTANCE: &str = "This emulator was started with options on the command line. \
+        Save them as an instance to change them here; the instance starts with new Android data.";
+    pub const SAVE_AS_INSTANCE: &str = "Save as instance";
+    pub const RELOAD: &str = "Read again";
+    pub const MEMORY: &str = "Memory";
+    pub const MIB: &str = " MiB";
+    pub const CPUS: &str = "CPUs";
+    pub const SCREEN: &str = "Screen";
+    pub const DISPLAY_PHONE: &str = "Phone";
+    pub const DISPLAY_PHONE_HD: &str = "Phone, full HD";
+    pub const DISPLAY_TABLET: &str = "Tablet";
+    pub const BY: &str = "×";
+    pub const USE_SIZE: &str = "Use this size";
+    pub const GRAPHICS: &str = "Graphics";
+    pub const USE_GPU: &str = "Use this Mac's GPU";
+    pub const SOUND: &str = "Sound";
+    pub const SOUND_ON: &str = "On";
+    pub const SOUND_MUTED: &str = "Muted";
+    pub const SOUND_OFF: &str = "No sound card";
+    pub const GAMEPAD: &str = "Gamepad";
+    pub const GAMEPAD_AUTO: &str = "If plugged in";
+    pub const GAMEPAD_ALWAYS: &str = "Always";
+    pub const GAMEPAD_NEVER: &str = "Never";
+    pub const NETWORK: &str = "Network";
+    pub const NETWORK_ON: &str = "Internet";
+    pub const ALLOW_QUIC: &str = "Allow QUIC";
+    pub const HOST_LOOPBACK: &str = "Let apps reach this machine's localhost";
+    pub const HOST_LOOPBACK_HINT: &str =
+        "Every app in Android could then reach services meant only for this machine.";
+    pub const ADB_PORT: &str = "adb port";
+    pub const BLOCKLISTS: &str = "Blocklists";
+    pub const ALLOWLISTS: &str = "Allowlists";
+    pub const ONE_FILE_PER_LINE: &str = "One file per line";
+    pub const KEYMAP_FILE: &str = "Key map";
+    pub const KEYMAP_FOLDER: &str = "Key maps per app";
+    pub const KEYMAP_FOLDER_HINT: &str =
+        "A folder of <package>.toml maps; the map follows the app in front";
+    pub const SETTINGS_SAVED: &str = "Saved.";
+    pub const RESTART_NOW: &str = "Restart now";
+    pub const APPLIES_ON_RESTART: &str = "Settings apply when the emulator starts.";
+
+    pub fn preset(label: &str, size: (u32, u32)) -> String {
+        format!("{label} ({}×{})", size.0, size.1)
+    }
+
+    pub fn settings_for(name: &str) -> String {
+        format!("Instance \"{name}\"")
+    }
+
+    pub fn saved(path: &Path) -> String {
+        format!("Saved {}", path.display())
+    }
+
+    pub fn instance_made(name: &str) -> String {
+        format!("Instance \"{name}\" made. Start it with: emu instance start {name}")
+    }
+}

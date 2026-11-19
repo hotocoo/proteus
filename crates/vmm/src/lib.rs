@@ -16,18 +16,25 @@ pub mod ctl;
 pub mod frames;
 #[cfg(host_board)]
 pub mod gamepad;
+#[cfg(host_board)]
+mod gui;
 pub mod input;
 pub mod install;
 pub mod instance;
+#[cfg(host_board)]
+mod keyedit;
 pub mod keymap;
 pub mod location;
 mod logger;
 #[cfg(host_board)]
 pub mod machine;
 pub mod orientation;
+#[cfg(host_board)]
+mod painter;
 pub mod profiles;
 pub mod sensors;
 pub mod session;
+pub mod settings;
 #[cfg(host_board)]
 pub mod window;
 
@@ -82,8 +89,9 @@ impl From<devices::bus::BusError> for VmmError {
 }
 
 /// Runs the machine, with a window if the configuration asks for one, until it stops for good.
+/// Returns whether the user asked for the instance to start again.
 #[cfg(host_board)]
-fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
+fn run(config: &config::Config, started: Instant) -> Result<bool, VmmError> {
     use window::{Notice, WindowLoop};
 
     let session = session::Session::new(config)?;
@@ -98,13 +106,8 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
         if let Some(watching) = watching {
             let _ = watching.join();
         }
-        return ran;
+        return ran.map(|()| false);
     };
-    let mapper = config
-        .keymap
-        .as_ref()
-        .map(|path| keymap::load(path, orientation::any_way_up(display)));
-    let mapper = mapper.transpose().map_err(VmmError::Device)?;
     let window = WindowLoop::new()?;
     let notify = window.notifier();
     if let Some(screen) = &session.controller.screen {
@@ -138,7 +141,13 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
             None => None,
         };
         let controller = std::sync::Arc::clone(&session.controller);
-        let shown = window.run(controller, display, mapper, config.keymap_dir.clone());
+        let shown = window.run(
+            controller,
+            display,
+            config.keymap.clone(),
+            config.keymap_dir.clone(),
+            config.instance.clone(),
+        );
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -149,6 +158,21 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
         ran.unwrap_or(Err(VmmError::Config(copy::VCPU_PANICKED)))
             .and(shown)
     })
+}
+
+/// Starts the instance `name` again in place of this program, with the options it has saved now.
+#[cfg(host_board)]
+fn restart_instance(name: &str) -> VmmError {
+    use std::os::unix::process::CommandExt;
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(err) => return VmmError::Thread(err),
+    };
+    // Only comes back if the program could not be started.
+    let err = std::process::Command::new(program)
+        .args([config::INSTANCE_SUBCOMMAND, config::INSTANCE_START, name])
+        .exec();
+    VmmError::Thread(err)
 }
 
 /// Keeps the screen's way up in step with Android's, when there is a screen, until `done` is set.
@@ -221,7 +245,7 @@ fn boot_loop(
 }
 
 #[cfg(not(host_board))]
-fn run(_config: &config::Config, _started: Instant) -> Result<(), VmmError> {
+fn run(_config: &config::Config, _started: Instant) -> Result<bool, VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }
 
@@ -301,7 +325,10 @@ fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Conf
         InstanceCommand::Start { name, extra } => {
             let args = instance::start_args(&root, &name, &extra).map_err(failed)?;
             return match config::parse(args) {
-                Ok(config::Parsed::Run(config)) => Ok(Some(*config)),
+                Ok(config::Parsed::Run(mut config)) => {
+                    config.instance = Some(name);
+                    Ok(Some(*config))
+                }
                 Ok(_) => Err(copy::INSTANCE_USAGE.to_owned()),
                 Err(err) => Err(err.to_string()),
             };
@@ -378,7 +405,12 @@ pub fn cli_main() -> ExitCode {
         }
     }
     match run(&config, started) {
-        Ok(()) => ExitCode::SUCCESS,
+        #[cfg(host_board)]
+        Ok(true) if let Some(name) = &config.instance => {
+            eprintln!("{}", copy::fatal(&restart_instance(name)));
+            ExitCode::FAILURE
+        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{}", copy::fatal(&err));
             ExitCode::FAILURE
