@@ -11,7 +11,7 @@ use crate::copy;
 
 /// Beside the program: the release tag it came from, so an up-to-date install is left alone.
 pub const RELEASE_FILE: &str = "proteus.release";
-/// Where the running program is moved when it is replaced; removed at the next start.
+/// Added to the name of a file an update replaces, while it may still be open; removed at the next start.
 const OLD_EXTENSION: &str = "old";
 /// Scratch folder beside the program for the download.
 const WORK_DIR: &str = ".proteus-update";
@@ -51,18 +51,12 @@ pub fn update() -> Result<Outcome, String> {
     let work = dir.join(WORK_DIR);
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
-    let done = download_and_install(tag, suffix, &work, &dir, &program);
+    let done = download_and_install(tag, suffix, &work, &dir);
     let _ = std::fs::remove_dir_all(&work);
     done.map(|()| Outcome::Updated(tag.to_owned()))
 }
 
-fn download_and_install(
-    tag: &str,
-    suffix: &str,
-    work: &Path,
-    dir: &Path,
-    program: &Path,
-) -> Result<(), String> {
+fn download_and_install(tag: &str, suffix: &str, work: &Path, dir: &Path) -> Result<(), String> {
     let pattern = format!("*{suffix}");
     let work_arg = work.to_string_lossy();
     gh(&[
@@ -91,14 +85,14 @@ fn download_and_install(
         .map(|entry| entry.path())
         .find(|path| path.is_dir())
         .ok_or(copy::UPDATE_NO_ASSET)?;
-    install(&folder, dir, program)?;
+    install(&folder, dir)?;
     std::fs::write(dir.join(RELEASE_FILE), tag).map_err(|err| err.to_string())
 }
 
-/// Copies every file of `from` into `to`. The running `program` cannot be overwritten on
-/// Windows, so it is moved aside first and put back if its replacement cannot be copied.
-fn install(from: &Path, to: &Path, program: &Path) -> Result<(), String> {
-    let old = old_program(program);
+/// Copies every file of `from` into `to`. A running program and the libraries it has loaded
+/// (gfxstream's renderer) cannot be overwritten on Windows, so each file being replaced is moved
+/// aside first and put back if its replacement cannot be copied.
+fn install(from: &Path, to: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(from).map_err(|err| err.to_string())? {
         let source = entry.map_err(|err| err.to_string())?.path();
         let Some(name) = source.file_name() else {
@@ -108,22 +102,25 @@ fn install(from: &Path, to: &Path, program: &Path) -> Result<(), String> {
             continue;
         }
         let target = to.join(name);
-        if Some(name) == program.file_name() {
+        let old = moved_aside(&target);
+        let moved = target.exists();
+        if moved {
             let _ = std::fs::remove_file(&old);
-            std::fs::rename(program, &old).map_err(|err| err.to_string())?;
-            if let Err(err) = std::fs::copy(&source, &target) {
-                let _ = std::fs::rename(&old, program);
-                return Err(err.to_string());
+            std::fs::rename(&target, &old).map_err(|err| err.to_string())?;
+        }
+        if let Err(err) = std::fs::copy(&source, &target) {
+            if moved {
+                let _ = std::fs::rename(&old, &target);
             }
-        } else {
-            std::fs::copy(&source, &target).map_err(|err| err.to_string())?;
+            return Err(err.to_string());
         }
     }
     Ok(())
 }
 
-fn old_program(program: &Path) -> PathBuf {
-    let mut name = program.as_os_str().to_owned();
+/// Where `path` is moved while it is replaced.
+fn moved_aside(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
     name.push(".");
     name.push(OLD_EXTENSION);
     PathBuf::from(name)
@@ -135,10 +132,21 @@ fn installed(dir: &Path) -> Option<String> {
     Some(tag.trim().to_owned())
 }
 
-/// Removes the program a previous update moved aside, now that it is no longer running.
+/// Removes the files a previous update moved aside, now that nothing has them open.
 pub fn remove_leftovers() {
-    if let Ok(program) = std::env::current_exe() {
-        let _ = std::fs::remove_file(old_program(&program));
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|program| program.parent().map(Path::to_path_buf))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.extension().is_some_and(|ext| ext == OLD_EXTENSION) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -172,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn install_replaces_files_and_moves_the_program_aside() {
+    fn install_replaces_files_and_moves_each_replaced_file_aside() {
         let from = scratch("from");
         let to = scratch("to");
         std::fs::write(from.join("proteus.exe"), "new program").unwrap();
@@ -183,12 +191,13 @@ mod tests {
         std::fs::write(to.join("kernel-x86_64"), "old kernel").unwrap();
         std::fs::write(to.join("mine.txt"), "kept").unwrap();
 
-        install(&from, &to, &program).unwrap();
+        install(&from, &to).unwrap();
 
         let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
         assert_eq!(read(program.clone()), "new program");
-        assert_eq!(read(old_program(&program)), "old program");
+        assert_eq!(read(moved_aside(&program)), "old program");
         assert_eq!(read(to.join("kernel-x86_64")), "new kernel");
+        assert_eq!(read(moved_aside(&to.join("kernel-x86_64"))), "old kernel");
         assert_eq!(read(to.join("mine.txt")), "kept");
         assert!(!to.join("skipped").exists());
     }
