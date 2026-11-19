@@ -61,3 +61,13 @@ pub const CONSOLE_WORKER_NAME: &str = "virtio-console";
 pub const SOUND_WORKER_NAME: &str = "virtio-snd";
 pub const SOUND_WORKER_GONE: &str = "sound worker thread ended unexpectedly";
 pub const CONSOLE_WORKER_GONE: &str = "console worker thread ended unexpectedly";
+
+pub fn gpu_renderer_refused(what: &str, why: &dyn std::fmt::Display) -> String {
+    format!("virtio-gpu: the renderer refused a {what} command: {why}")
+}
+
+pub fn gpu_blob_misaligned(resource: u32, offset: u64, len: u64) -> String {
+    format!(
+        "virtio-gpu: blob {resource} at {offset:#x}, {len:#x} bytes, is not whole host pages inside the window"
+    )
+}
