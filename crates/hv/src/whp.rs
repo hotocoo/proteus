@@ -9,6 +9,7 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use windows_sys::Win32::System::Hypervisor::*;
@@ -31,12 +32,13 @@ fn max_vcpus() -> u32 {
 }
 
 /// Hyper-V enlightenments shown to the guest (bank 0 of the synthetic processor features, bit
-/// numbers from WinHvPlatformDefs.h; bit 7 is reserved): hypervisor present, Hv#1, partition
-/// reference counter, APIC access MSRs, hypercall MSRs, VP index, reference TSC page and the
-/// TSC/APIC frequency MSRs. SynIC and synthetic timers stay off, so the guest keeps time with its
-/// local APIC timer at the rate the frequency MSR gives.
+/// numbers from WinHvPlatformDefs.h): hypervisor present (0), Hv#1 (1), partition reference
+/// counter (3), APIC access MSRs (6), hypercall MSRs (7, without which Linux does not detect
+/// Hyper-V at all), VP index (8), reference TSC page (9) and the TSC/APIC frequency MSRs (11).
+/// SynIC and synthetic timers stay off, so the guest keeps time with its local APIC timer at the
+/// rate the frequency MSR gives.
 const SYNTHETIC_FEATURES: u64 =
-    1 << 0 | 1 << 1 | 1 << 3 | 1 << 6 | 1 << 8 | 1 << 9 | 1 << 10 | 1 << 12;
+    1 << 0 | 1 << 1 | 1 << 3 | 1 << 6 | 1 << 7 | 1 << 8 | 1 << 9 | 1 << 11;
 
 fn check(call: &'static str, result: HRESULT) -> Result<(), HvError> {
     if result >= 0 {
@@ -117,7 +119,8 @@ impl HypervisorBackend for Whp {
         // timers on this board (no PIT, no HPET), and would hang without a word.
         if wanted != SYNTHETIC_FEATURES {
             log::warn!(
-                "WHP offers synthetic features {offered:#x}; the guest gets {wanted:#x} of the                  {SYNTHETIC_FEATURES:#x} it needs to keep time"
+                "WHP offers synthetic features {offered:#x}; the guest gets {wanted:#x} of the \
+                 {SYNTHETIC_FEATURES:#x} it needs to keep time"
             );
         }
         property = unsafe { std::mem::zeroed() };
@@ -139,7 +142,7 @@ impl HypervisorBackend for Whp {
         Ok(WhpVm {
             ioapic: Arc::new(Ioapic::new(Arc::clone(&partition))),
             partition,
-            slots: Mutex::new(Vec::new()),
+            slots: Arc::default(),
         })
     }
 }
@@ -183,7 +186,34 @@ impl Drop for Partition {
 pub struct WhpVm {
     partition: Arc<Partition>,
     ioapic: Arc<Ioapic>,
-    slots: Mutex<Vec<(Gpa, usize)>>,
+    slots: Slots,
+}
+
+/// Guest RAM as mapped: start, length and host address of each range. The instruction emulator
+/// reads and writes through it when an access it emulates touches RAM, such as the rest of an
+/// instruction that crosses into the next page, which the exit does not carry.
+type Slots = Arc<Mutex<Vec<(Gpa, usize, usize)>>>;
+
+/// Copies between guest RAM and `data`, or says the range is not all RAM.
+fn ram_access(slots: &Slots, gpa: Gpa, data: &mut [u8], write: bool) -> bool {
+    let slots = slots.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(&(start, _, host)) = slots
+        .iter()
+        .find(|&&(start, len, _)| gpa >= start && gpa - start + data.len() as u64 <= len as u64)
+    else {
+        return false;
+    };
+    let at = (host + (gpa - start) as usize) as *mut u8;
+    // SAFETY: the range lies inside a mapping its owner keeps alive while it is mapped; the guest
+    // may race on it, as it may with any device.
+    unsafe {
+        if write {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), at, data.len());
+        } else {
+            std::ptr::copy_nonoverlapping(at, data.as_mut_ptr(), data.len());
+        }
+    }
+    true
 }
 
 impl Vm for WhpVm {
@@ -220,7 +250,7 @@ impl Vm for WhpVm {
         self.slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((gpa, len));
+            .push((gpa, len, host.as_ptr() as usize));
         Ok(())
     }
 
@@ -228,7 +258,7 @@ impl Vm for WhpVm {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         let index = slots
             .iter()
-            .position(|slot| *slot == (gpa, len))
+            .position(|&(start, length, _)| (start, length) == (gpa, len))
             .ok_or(HvError::BadArgument(copy::NOT_MAPPED))?;
         // SAFETY: the range was mapped by `map`.
         check("WHvUnmapGpaRange", unsafe {
@@ -252,6 +282,7 @@ impl Vm for WhpVm {
             partition: Arc::clone(&self.partition),
             index,
             ioapic: Arc::clone(&self.ioapic),
+            slots: Arc::clone(&self.slots),
             emulator: Emulator::new()?,
             kick: WhpKick(Arc::new(Mutex::new(Some((partition, index))))),
         };
@@ -276,7 +307,13 @@ impl Vm for WhpVm {
 pub struct Ioapic {
     partition: Arc<Partition>,
     state: Mutex<IoapicState>,
+    /// The two 8259 mask registers, kept only so Linux finds a legacy PIC (as on KVM) and numbers
+    /// IRQs 0-15 as the IOAPIC pins they are wired to; nothing is ever delivered through them.
+    pic_masks: [AtomicU8; 2],
 }
+
+/// Mask (data) ports of the primary and secondary 8259.
+const PIC_MASK_PORTS: [u16; 2] = [0x21, 0xa1];
 
 struct IoapicState {
     select: u32,
@@ -307,6 +344,7 @@ impl Ioapic {
                 entries: [RTE_MASKED; IOAPIC_PINS],
                 levels: [false; IOAPIC_PINS],
             }),
+            pic_masks: [AtomicU8::new(0xff), AtomicU8::new(0xff)],
         }
     }
 
@@ -458,6 +496,7 @@ struct EmulationContext<'a> {
     index: u32,
     io: &'a dyn IoHandler,
     ioapic: &'a Ioapic,
+    slots: &'a Slots,
 }
 
 const S_OK: HRESULT = 0;
@@ -470,7 +509,14 @@ unsafe extern "system" fn emulator_io_port(
     let (context, access) = unsafe { (&*context.cast::<EmulationContext<'_>>(), &mut *access) };
     let size = usize::from(access.AccessSize).min(4);
     let mut data = access.Data.to_le_bytes();
-    if access.Direction == 0 {
+    if let Some(chip) = PIC_MASK_PORTS.iter().position(|&port| port == access.Port) {
+        let mask = &context.ioapic.pic_masks[chip];
+        if access.Direction == 0 {
+            access.Data = u32::from(mask.load(Ordering::Relaxed));
+        } else {
+            mask.store(data[0], Ordering::Relaxed);
+        }
+    } else if access.Direction == 0 {
         context.io.pio_read(access.Port, &mut data[..size]);
         access.Data = u32::from_le_bytes(data);
     } else {
@@ -487,6 +533,10 @@ unsafe extern "system" fn emulator_memory(
     let (context, access) = unsafe { (&*context.cast::<EmulationContext<'_>>(), &mut *access) };
     let size = usize::from(access.AccessSize).min(8);
     let gpa = access.GpaAddress;
+    let write = access.Direction != 0;
+    if ram_access(context.slots, gpa, &mut access.Data[..size], write) {
+        return S_OK;
+    }
     if Ioapic::contains(gpa) {
         let offset = gpa - IOAPIC_BASE;
         if access.Direction == 0 {
@@ -560,6 +610,7 @@ pub struct WhpVcpu {
     partition: Arc<Partition>,
     index: u32,
     ioapic: Arc<Ioapic>,
+    slots: Slots,
     emulator: Emulator,
     kick: WhpKick,
 }
@@ -660,23 +711,35 @@ fn table_to(table: &Table) -> WHV_REGISTER_VALUE {
     }
 }
 
+/// A register value at the 16-byte alignment WinHvPlatform.h declares and the hypervisor's
+/// aligned SSE moves rely on; windows-sys leaves it out, and an 8-aligned array faults.
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct Aligned(WHV_REGISTER_VALUE);
+
+/// The exit context, for the same reason: some of its members hold 128-bit values.
+#[repr(C, align(16))]
+struct AlignedExit(WHV_RUN_VP_EXIT_CONTEXT);
+
+const _: () = assert!(std::mem::size_of::<Aligned>() == std::mem::size_of::<WHV_REGISTER_VALUE>());
+
 impl WhpVcpu {
     fn get<const N: usize>(
         &self,
         names: &[WHV_REGISTER_NAME; N],
     ) -> Result<[WHV_REGISTER_VALUE; N], HvError> {
-        let mut values = [WHV_REGISTER_VALUE { Reg64: 0 }; N];
-        // SAFETY: both arrays hold N entries.
+        let mut values = [Aligned(WHV_REGISTER_VALUE { Reg64: 0 }); N];
+        // SAFETY: both arrays hold N entries of the register value's size.
         check("WHvGetVirtualProcessorRegisters", unsafe {
             WHvGetVirtualProcessorRegisters(
                 self.partition.0,
                 self.index,
                 names.as_ptr(),
                 N as u32,
-                values.as_mut_ptr(),
+                values.as_mut_ptr().cast(),
             )
         })?;
-        Ok(values)
+        Ok(values.map(|value| value.0))
     }
 
     fn set(
@@ -685,14 +748,15 @@ impl WhpVcpu {
         values: &[WHV_REGISTER_VALUE],
     ) -> Result<(), HvError> {
         assert_eq!(names.len(), values.len());
-        // SAFETY: both slices hold the same number of entries.
+        let values: Vec<Aligned> = values.iter().copied().map(Aligned).collect();
+        // SAFETY: both slices hold the same number of entries of the register value's size.
         check("WHvSetVirtualProcessorRegisters", unsafe {
             WHvSetVirtualProcessorRegisters(
                 self.partition.0,
                 self.index,
                 names.as_ptr(),
                 names.len() as u32,
-                values.as_ptr(),
+                values.as_ptr().cast(),
             )
         })
     }
@@ -709,16 +773,18 @@ impl Vcpu for WhpVcpu {
             index: self.index,
             io,
             ioapic: &self.ioapic,
+            slots: &self.slots,
         };
         loop {
             // SAFETY: an all-zero exit context is valid; the run call fills it in.
-            let mut exit: WHV_RUN_VP_EXIT_CONTEXT = unsafe { std::mem::zeroed() };
+            let mut exit = AlignedExit(unsafe { std::mem::zeroed() });
+            let exit = &mut exit.0;
             // SAFETY: the buffer is a whole exit context and lives for the call.
             check("WHvRunVirtualProcessor", unsafe {
                 WHvRunVirtualProcessor(
                     self.partition.0,
                     self.index,
-                    (&raw mut exit).cast(),
+                    std::ptr::from_mut(exit).cast(),
                     std::mem::size_of::<WHV_RUN_VP_EXIT_CONTEXT>() as u32,
                 )
             })?;
@@ -901,6 +967,24 @@ mod tests {
         assert!(ioapic.set_irq(4, true).is_ok());
         assert!(ioapic.set_irq(4, true).is_ok());
         assert!(ioapic.set_irq(99, true).is_err());
+    }
+
+    #[test]
+    fn ram_access_reaches_mapped_ram_only() {
+        let mut ram = [0u8; 16];
+        let slots: Slots = Arc::default();
+        slots
+            .lock()
+            .unwrap()
+            .push((0x1000, ram.len(), ram.as_mut_ptr() as usize));
+        assert!(ram_access(&slots, 0x1004, &mut [1, 2], true));
+        let mut back = [0u8; 2];
+        assert!(ram_access(&slots, 0x1004, &mut back, false));
+        assert_eq!(back, [1, 2]);
+        // Past the end, or before the start: not RAM, so the bus gets it.
+        assert!(!ram_access(&slots, 0x100f, &mut back, false));
+        assert!(!ram_access(&slots, 0xfff, &mut back, false));
+        assert_eq!(ram[4..6], [1, 2]);
     }
 
     #[test]
