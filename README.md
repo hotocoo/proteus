@@ -92,7 +92,7 @@ What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several instances at once, with one able to drive the others.
 - Plain Linux kernels boot too, to a shell on the serial console.
 
-Not there yet: a Linux desktop check, a guest booted on Windows hosts, and an Android image of this project's own
+Not there yet: a Linux desktop check and an Android image of this project's own
 (stripped, with sign-in). See "What is missing" at the end.
 
 ## Run Android from the command line
@@ -243,6 +243,16 @@ scripts/bundle-macos.sh target/release/emu <gfxstream folder> <out folder>
 The out folder holds `emu`, gfxstream's renderer, the Vulkan loader and MoltenVK, and their
 licences, and runs as it is. `docs/gfxstream.md` has the details and the other driver, KosmicKrisp.
 
+On Windows, from Git Bash, with Visual Studio 2022 and its C++ Clang tools, and `cmake` and `ninja`
+on the path; the GPU's own Vulkan driver is used:
+
+```sh
+scripts/build-gfxstream.sh <work folder> <gfxstream folder>
+GFXSTREAM_PATH=<work folder>/build/host cargo build --release -p vmm --features gpu
+cp <gfxstream folder>/gfxstream_backend.dll target/release/
+target/release/emu.exe --kernel kernel-x86_64 --android <image directory> --gpu
+```
+
 A plain Linux kernel must be an uncompressed ARM64 `Image`. To use the serial console it needs the 8250
 driver; for disks it needs virtio-mmio and virtio-blk built in.
 
@@ -332,12 +342,15 @@ Honest list, most important first:
   on a Linux desktop; building needs `libasound2-dev` and `libudev-dev`. Plain Linux test kernels
   must find their hardware through the MP table and `virtio_mmio.device=` on the command line; the
   board has no ACPI.
-- **Windows hosts (preview, not yet booted).** `emu.exe` builds and its tests pass on Windows
-  x86_64 with a Windows Hypervisor Platform backend (`crates/hv/src/whp.rs`), the same x86_64
-  Cuttlefish image and kernel as Linux, and no GPU acceleration yet. It needs the
+- **Windows hosts (preview).** On Windows x86_64, `emu.exe` runs on the Windows Hypervisor
+  Platform (`crates/hv/src/whp.rs`) with the same x86_64 Cuttlefish image and kernel as Linux.
+  Checked on a Ryzen 7 9700X with an RTX 5070: Android boots to the home screen in about a
+  minute, adb answers on 127.0.0.1:5555, and with `--gpu` it draws through gfxstream on the GPU's
+  Vulkan driver (SurfaceFlinger reports ANGLE on "Virtio-GPU GFXStream (NVIDIA GeForce RTX
+  5070)"). An idle home screen costs about a sixth of one host core. It needs the
   HypervisorPlatform feature on (`Enable-WindowsOptionalFeature -Online -FeatureName
-  HypervisorPlatform` and `bcdedit /set hypervisorlaunchtype auto`, then a restart). No guest
-  has run on it yet.
+  HypervisorPlatform` and `bcdedit /set hypervisorlaunchtype auto`, then a restart). Sound,
+  gamepads and a long session have not been tried there yet.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
 answered by the emulator itself, so use a real connection to test the network. Games that detect

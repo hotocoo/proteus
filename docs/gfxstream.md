@@ -141,3 +141,20 @@ argument` and `CONTEXT_INIT failed with File exists`; the driver carries on.
 - That the function signatures, not only the names, match `rutabaga_gfx`'s declarations.
 - Whether the Cuttlefish image's guest side (its gfxstream guest drivers) talks to this build.
 - Windows and Linux builds.
+
+## Windows (2026-11-19, Ryzen 7 9700X, RTX 5070, NVIDIA 610.88)
+
+- The renderer builds at the same revision with Visual Studio 2022's clang-cl and Ninja
+  (`scripts/build-gfxstream.sh` from Git Bash). Two changes, both in the script: Windows.h is kept
+  lean (`WIN32_LEAN_AND_MEAN`) so it does not pull in `winsock.h` ahead of `winsock2.h`, and one
+  log call in `host/vulkan/vk_common_operations.cpp` passes a `std::string` to a printf-style
+  function, which clang-cl rejects; it gets `.c_str()`.
+- `gfxstream_backend.dll` is 6.7 MB and exports all 29 `stream_renderer_*` functions
+  `rutabaga_gfx` 0.1.85 declares. `rutabaga_gfx` links its import library from `GFXSTREAM_PATH`
+  (`<work>/build/host`) with no other change.
+- It loads the system `vulkan-1.dll` and picks the discrete GPU. On Windows it turns on
+  `VulkanAllocateHostMemory` itself ("Ensure host allocations are aligned to avoid VMM errors
+  when mapping"), and the blobs it maps were accepted by `WHvMapGpaRange` with no error.
+- With `--gpu` the x86_64 Cuttlefish image (build 16968706) switches to it: SurfaceFlinger reports
+  `ANGLE (NVIDIA, Vulkan 1.4.341 (NVIDIA Virtio-GPU GFXStream (NVIDIA GeForce RTX 5070)))`, OpenGL
+  ES 3.2, and boots to the lock screen. The guest encoders and this host revision handshake.
