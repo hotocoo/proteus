@@ -1,7 +1,7 @@
 //! Shared by the on-hardware guest tests.
 #![allow(dead_code)]
 
-use std::alloc::Layout;
+use std::alloc::{self, Layout};
 use std::ptr::NonNull;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -72,27 +72,9 @@ pub struct GuestPage {
 impl GuestPage {
     pub fn new(page_size: usize) -> Self {
         let layout = Layout::from_size_align(page_size, page_size).unwrap();
-        // WHP refuses to map heap pages whose allocation another partition already maps from,
-        // so on Windows each guest gets its own allocation, as the VMM's guest memory does.
-        #[cfg(windows)]
-        // SAFETY: a fresh, zeroed, committed region of `page_size` bytes; freed in `drop`.
-        let ptr = unsafe {
-            use windows_sys::Win32::System::Memory::*;
-            VirtualAlloc(
-                std::ptr::null(),
-                page_size,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            )
-        }
-        .cast::<u8>();
-        #[cfg(not(windows))]
         // SAFETY: `layout` has a non-zero size.
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-        Self {
-            ptr: NonNull::new(ptr).unwrap(),
-            layout,
-        }
+        let ptr = NonNull::new(unsafe { alloc::alloc_zeroed(layout) }).unwrap();
+        Self { ptr, layout }
     }
 
     pub fn load(&self, code: &[u8]) {
@@ -107,19 +89,7 @@ impl GuestPage {
 
 impl Drop for GuestPage {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        // SAFETY: reserved by `VirtualAlloc` in `new`.
-        unsafe {
-            windows_sys::Win32::System::Memory::VirtualFree(
-                self.ptr.as_ptr().cast(),
-                0,
-                windows_sys::Win32::System::Memory::MEM_RELEASE,
-            );
-        }
-        #[cfg(not(windows))]
         // SAFETY: allocated in `new` with this layout.
-        unsafe {
-            std::alloc::dealloc(self.ptr.as_ptr(), self.layout)
-        };
+        unsafe { alloc::dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }

@@ -322,11 +322,16 @@ pub fn machine_bootconfig(serial: bool, ram_bytes: u64, gpu: bool) -> Vec<(Strin
 
 /// Data folders this process has locked. The lock lasts as long as the file is open, so they stay
 /// open until the process ends.
-static DATA_LOCKS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+static DATA_LOCKS: Mutex<Vec<(PathBuf, File)>> = Mutex::new(Vec::new());
 
 /// Takes the exclusive lock on `data`, so that two emulators never write the same disk images.
 fn lock_data(data: &Path) -> Result<(), VmmError> {
     let path = data.join(DATA_LOCK_FILE);
+    let mut locks = DATA_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    // A guest reboot assembles again in the same process, which already holds the lock.
+    if locks.iter().any(|(held, _)| *held == path) {
+        return Ok(());
+    }
     let file = File::options()
         .write(true)
         .create(true)
@@ -336,10 +341,7 @@ fn lock_data(data: &Path) -> Result<(), VmmError> {
     if file.try_lock().is_err() {
         return Err(VmmError::Config(copy::DATA_DIR_LOCKED));
     }
-    DATA_LOCKS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(file);
+    locks.push((path, file));
     Ok(())
 }
 
@@ -432,9 +434,16 @@ mod tests {
     fn a_data_folder_is_locked_by_one_emulator_at_a_time() {
         let dir = std::env::temp_dir().join(format!("emu-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        // Someone else (another file description, as another emulator would have) holds `other`.
+        let held = File::create(other.join(DATA_LOCK_FILE)).unwrap();
+        held.try_lock().unwrap();
+        assert!(matches!(lock_data(&other), Err(VmmError::Config(_))));
         lock_data(&dir).unwrap();
-        // A second open file description conflicts, even inside this process.
-        assert!(matches!(lock_data(&dir), Err(VmmError::Config(_))));
+        // A guest reboot assembles again in this process, which already holds the lock.
+        lock_data(&dir).unwrap();
+        drop(held);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
