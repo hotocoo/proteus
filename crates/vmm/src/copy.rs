@@ -568,6 +568,9 @@ pub mod gui {
     pub const MACRO_TEXT_NAME: &str = "Macro commands";
     pub const TIMES: &str = "Times to play";
     pub const CUSTOM_WIDTH: &str = "Custom width";
+    pub const SYNC: &str = "Send my input to";
+    pub const SYNC_HINT: &str =
+        "Instance names, one per line: they get the same touches, keys and pad moves";
     pub const CUSTOM_HEIGHT: &str = "Custom height";
     pub const INSTALL: &str = "Install";
     pub const INSTALLED: &str = "Installed.";

@@ -28,11 +28,14 @@ pub enum Action {
 }
 
 pub struct Form {
+    /// The folder instances live in, and this one's name.
+    root: std::path::PathBuf,
     name: String,
     settings: Settings,
     custom_display: (u32, u32),
     blocklists: String,
     allowlists: String,
+    sync: String,
     /// Whether what is shown is what is saved.
     saved: bool,
     confirm_reset: bool,
@@ -42,15 +45,21 @@ pub struct Form {
 impl Form {
     /// Reads the saved options of the instance `name`.
     pub fn open(name: &str) -> Result<Self, String> {
-        let args = instance::root()
-            .and_then(|root| instance::args(&root, name))
-            .map_err(|err| err.to_string())?;
+        let root = instance::root().map_err(|err| err.to_string())?;
+        Self::open_in(root, name)
+    }
+
+    /// As `open`, for instances kept in `root`.
+    pub fn open_in(root: std::path::PathBuf, name: &str) -> Result<Self, String> {
+        let args = instance::args(&root, name).map_err(|err| err.to_string())?;
         let settings = Settings::from_args(&args);
         Ok(Self {
+            root,
             name: name.to_owned(),
             custom_display: settings.display,
             blocklists: settings.blocklists.join("\n"),
             allowlists: settings.allowlists.join("\n"),
+            sync: settings.sync.join("\n"),
             settings,
             saved: true,
             confirm_reset: false,
@@ -72,6 +81,7 @@ impl Form {
         };
         self.settings.blocklists = lines(&self.blocklists);
         self.settings.allowlists = lines(&self.allowlists);
+        self.settings.sync = lines(&self.sync);
         let args = self.settings.to_args();
         // Checked as the emulator will read them, so a mistake shows now and not at start.
         let mut check: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
@@ -80,9 +90,7 @@ impl Form {
             config::CHECK_DATA_DIR.into(),
         ]);
         config::parse(check).map_err(|err| err.to_string())?;
-        instance::root()
-            .and_then(|root| instance::set_args(&root, &self.name, &args))
-            .map_err(|err| err.to_string())
+        instance::set_args(&self.root, &self.name, &args).map_err(|err| err.to_string())
     }
 
     /// Shows the form. `running` says whether the instance is running now, which decides whether
@@ -113,20 +121,17 @@ impl Form {
         });
 
         style::section(ui, text::PERFORMANCE, |ui| {
-            style::row(ui, text::MEMORY, |ui| {
-                edited |= ui
-                    .add(
-                        egui::Slider::new(&mut settings.ram_mib, config::RAM_MIB_RANGE)
-                            .step_by(config::RAM_MIB_STEP)
-                            .suffix(text::MIB),
-                    )
-                    .changed();
-            });
-            style::row(ui, text::CPUS, |ui| {
-                edited |= ui
-                    .add(egui::Slider::new(&mut settings.vcpus, config::VCPUS_RANGE))
-                    .changed();
-            });
+            edited |= ui
+                .add(
+                    egui::Slider::new(&mut settings.ram_mib, config::RAM_MIB_RANGE)
+                        .step_by(config::RAM_MIB_STEP)
+                        .suffix(text::MIB)
+                        .text(text::MEMORY),
+                )
+                .changed();
+            edited |= ui
+                .add(egui::Slider::new(&mut settings.vcpus, config::VCPUS_RANGE).text(text::CPUS))
+                .changed();
             style::hint(ui, &text::host_has(host_cpus(), host_memory_mib()));
         });
 
@@ -194,6 +199,16 @@ impl Form {
                 Pick::Folder,
                 text::KEYMAP_FOLDER_HINT,
             );
+            style::label(ui, text::SYNC);
+            edited |= ui
+                .add(
+                    egui::TextEdit::multiline(&mut self.sync)
+                        .hint_text(text::SYNC_HINT)
+                        .desired_rows(config::LIST_ROWS)
+                        .desired_width(f32::INFINITY),
+                )
+                .accessible_name(text::SYNC)
+                .changed();
         });
 
         style::section(ui, text::NETWORK, |ui| {
@@ -236,14 +251,13 @@ impl Form {
         });
 
         style::section(ui, text::DATA, |ui| {
-            style::row(ui, text::DATA_SIZE, |ui| {
-                edited |= ui
-                    .add(
-                        egui::Slider::new(&mut settings.userdata_gib, config::USERDATA_GIB_RANGE)
-                            .suffix(text::GIB),
-                    )
-                    .changed();
-            });
+            edited |= ui
+                .add(
+                    egui::Slider::new(&mut settings.userdata_gib, config::USERDATA_GIB_RANGE)
+                        .suffix(text::GIB)
+                        .text(text::DATA_SIZE),
+                )
+                .changed();
             style::hint(ui, text::DATA_SIZE_HINT);
             ui.add_space(tune::GAP);
             if self.confirm_reset {
@@ -285,7 +299,7 @@ impl Form {
                 }
             }
             if !self.saved && ui.button(text::REVERT).clicked() {
-                match Self::open(&self.name) {
+                match Self::open_in(self.root.clone(), &self.name) {
                     Ok(form) => *self = form,
                     Err(why) => self.status = why,
                 }
@@ -316,4 +330,41 @@ fn host_memory_mib() -> u64 {
         )
     };
     (u64::try_from(pages).unwrap_or(0) * u64::try_from(page).unwrap_or(0)) / MIB
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    #[test]
+    fn settings_are_saved_as_options_the_emulator_reads() {
+        let root = std::env::temp_dir().join(format!("emu-form-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let args = ["--android", "/images", "--kernel", "/k"].map(str::to_owned);
+        instance::create(&root, "phone", &args, std::path::Path::new("/")).unwrap();
+        let form = Form::open_in(root.clone(), "phone").unwrap();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(600.0, 1600.0))
+            .build_ui_state(
+                |ui, form: &mut Form| {
+                    egui::ScrollArea::vertical().show(ui, |ui| form.show(ui, false));
+                },
+                form,
+            );
+        harness.get_by_label(text::USE_GPU).click();
+        harness.run();
+        harness.state_mut().sync = "farm".to_owned();
+        harness.get_by_label(text::SAVE).click();
+        harness.run();
+        assert_eq!(harness.state().status, text::SETTINGS_SAVED);
+        let saved = instance::args(&root, "phone").unwrap();
+        assert!(saved.contains(&"--gpu".to_owned()), "{saved:?}");
+        assert!(
+            saved.windows(2).any(|pair| pair == ["--sync", "farm"]),
+            "{saved:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

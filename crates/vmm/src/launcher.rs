@@ -422,7 +422,30 @@ pub fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
+
+    #[test]
+    fn the_launcher_refuses_an_instance_without_an_image() {
+        let launcher = Launcher {
+            window: None,
+            entries: Vec::new(),
+            // Listed just now, so the test does not read this machine's instances.
+            listed_at: Some(Instant::now()),
+            new: NewInstance::default(),
+            form: None,
+            confirm_delete: None,
+            status: String::new(),
+            failed: None,
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(720.0, 900.0))
+            .build_ui_state(|ui, launcher: &mut Launcher| launcher.ui(ui), launcher);
+        harness.get_by_label(text::CREATE_AND_START).click();
+        harness.run();
+        assert_eq!(harness.state().status, text::NEEDS_IMAGE);
+    }
 
     #[test]
     fn a_new_instance_gets_a_free_name_and_options_the_emulator_reads() {

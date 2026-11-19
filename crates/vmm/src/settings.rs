@@ -45,6 +45,8 @@ pub struct Settings {
     pub allowlists: Vec<String>,
     pub keymap: String,
     pub keymap_dir: String,
+    /// Instances (or sockets) that get this one's touches, keys and pad moves too.
+    pub sync: Vec<String>,
     /// Every other option, in order, values included.
     pub other: Vec<String>,
 }
@@ -68,12 +70,13 @@ const BLOCKLIST: &str = "--blocklist";
 const ALLOWLIST: &str = "--allowlist";
 const KEYMAP: &str = "--keymap";
 const KEYMAP_DIR: &str = "--keymap-dir";
+const SYNC: &str = "--sync";
 const SIZE_SEPARATOR: char = 'x';
 
 /// Options that take a value, of those the panel shows.
-const WITH_VALUE: [&str; 11] = [
+const WITH_VALUE: [&str; 12] = [
     ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, ADB_PORT, BLOCKLIST, ALLOWLIST, KEYMAP,
-    KEYMAP_DIR,
+    KEYMAP_DIR, SYNC,
 ];
 
 impl Settings {
@@ -98,6 +101,7 @@ impl Settings {
             allowlists: Vec::new(),
             keymap: String::new(),
             keymap_dir: String::new(),
+            sync: Vec::new(),
             other: Vec::new(),
         };
         let mut iter = args.iter();
@@ -126,6 +130,7 @@ impl Settings {
                 ALLOWLIST => settings.allowlists.push(value),
                 KEYMAP => settings.keymap = value,
                 KEYMAP_DIR => settings.keymap_dir = value,
+                SYNC => settings.sync.push(value),
                 GPU => settings.gpu = true,
                 MUTE => settings.sound = Sound::Muted,
                 NO_SOUND => settings.sound = Sound::Off,
@@ -183,6 +188,9 @@ impl Settings {
         if !self.keymap_dir.is_empty() {
             value(KEYMAP_DIR, self.keymap_dir.clone());
         }
+        for target in self.sync.iter().filter(|target| !target.is_empty()) {
+            value(SYNC, target.clone());
+        }
         let flags = [
             (self.gpu, GPU),
             (self.sound == Sound::Muted, MUTE),
@@ -235,6 +243,8 @@ mod tests {
             "/ads.txt",
             "--keymap-dir",
             "/maps",
+            "--sync",
+            "farm",
         ]);
         let settings = Settings::from_args(&args);
         assert_eq!(settings.ram_mib, 2048);
@@ -243,6 +253,7 @@ mod tests {
         assert_eq!(settings.sound, Sound::Muted);
         assert_eq!(settings.gamepad, Gamepad::Never);
         assert_eq!(settings.blocklists, ["/ads.txt"]);
+        assert_eq!(settings.sync, ["farm"]);
         assert_eq!(settings.android, "/img dir");
         assert_eq!(settings.kernel, "/k");
         assert!(settings.other.is_empty());
