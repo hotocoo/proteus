@@ -75,3 +75,11 @@ pub fn gpu_blob_misaligned(resource: u32, offset: u64, len: u64) -> String {
 pub fn gpu_renderer_failed(why: &dyn std::fmt::Display) -> String {
     format!("virtio-gpu: the host renderer did not start, so the display is unaccelerated: {why}")
 }
+
+pub fn gpu_readback(frames: u32, took: std::time::Duration, over: std::time::Duration) -> String {
+    let average = took.as_secs_f64() * 1000.0 / f64::from(frames.max(1));
+    format!(
+        "virtio-gpu: {:.1} frames read back per second, {average:.2} ms each",
+        f64::from(frames) / over.as_secs_f64()
+    )
+}

@@ -19,6 +19,7 @@ use std::thread::{self, JoinHandle};
 use virtio_bindings::virtio_gpu::{
     VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_DISPLAY_INFO as CMD_GET_DISPLAY_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_EDID as CMD_GET_EDID,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING as CMD_ATTACH_BACKING,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D as CMD_FIRST_2D,
     virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D as CMD_CREATE_2D,
@@ -34,6 +35,7 @@ use virtio_bindings::virtio_gpu::{
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY as RESP_ERR_OUT_OF_MEMORY,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_UNSPEC as RESP_ERR_UNSPEC,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_DISPLAY_INFO as RESP_OK_DISPLAY_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_EDID as RESP_OK_EDID,
     virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_NODATA as RESP_OK_NODATA,
 };
 use virtio_bindings::virtio_ids::VIRTIO_ID_GPU;
@@ -41,7 +43,7 @@ use virtio_queue::{Queue, QueueT};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
 use virtio_bindings::virtio_gpu::{
-    VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB, VIRTIO_GPU_F_VIRGL,
+    VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB, VIRTIO_GPU_F_VIRGL,
 };
 
 use super::gpu3d::{BlobMapper, Fence, Gpu3d, Header, PendingFences, RendererFactory};
@@ -71,6 +73,11 @@ pub const BYTES_PER_PIXEL: usize = 4;
 const MAX_DIMENSION: u32 = 8192;
 const MAX_RESOURCES: usize = 256;
 const MAX_BACKING_ENTRIES: u32 = 16_384;
+/// `struct virtio_gpu_resp_edid` after the header: size, padding, then room for the EDID.
+const EDID_ROOM: usize = 1024;
+/// Pixels per inch the display claims in its EDID: the density Android is told to use
+/// (`androidboot.lcd_density`), so the composer's DPI and the system's agree.
+pub const EDID_DPI: u32 = 320;
 
 /// A finished frame: `width * height` pixels of four bytes each, rows top to bottom.
 pub struct Frame<'a> {
@@ -336,6 +343,9 @@ impl Display {
         body: &mut impl Read,
     ) -> Vec<u8> {
         let kind = word(request, 0);
+        if kind == CMD_GET_EDID {
+            return edid_response(self.mode, request, body);
+        }
         let outcome = match kind {
             CMD_GET_DISPLAY_INFO => RESP_OK_DISPLAY_INFO,
             // With nowhere to show frames, there is nothing to keep track of.
@@ -343,7 +353,7 @@ impl Display {
             CMD_FIRST_2D..=CMD_LAST_2D => self
                 .execute(mem, kind, body)
                 .map_or_else(|error| error, |()| RESP_OK_NODATA),
-            // 3D, capability sets and EDID are not offered, so a driver has no business asking.
+            // 3D and capability sets are not offered, so a driver has no business asking.
             _ => RESP_ERR_UNSPEC,
         };
         respond(self.mode, request, outcome)
@@ -354,6 +364,31 @@ impl Display {
 pub struct DisplayMode {
     pub width: u32,
     pub height: u32,
+    /// Frames per second the display claims, through its EDID.
+    pub refresh_hz: u32,
+}
+
+impl DisplayMode {
+    /// The display's EDID, or `None` if this mode cannot be described by one.
+    fn edid(self) -> Option<[u8; super::edid::EDID_LEN]> {
+        super::edid::build(self.width, self.height, self.refresh_hz, EDID_DPI)
+    }
+}
+
+/// The answer to `GET_EDID`: the display's EDID for scanout 0.
+fn edid_response(mode: DisplayMode, request: &[u8; HEADER_LEN], body: &mut impl Read) -> Vec<u8> {
+    let scanout = Body(body).u32();
+    let edid = match scanout {
+        Ok(scanout) if scanout < SCANOUTS => mode.edid(),
+        _ => return respond(mode, request, RESP_ERR_INVALID_SCANOUT_ID),
+    };
+    let Some(edid) = edid else {
+        return respond(mode, request, RESP_ERR_UNSPEC);
+    };
+    let mut answer = vec![0u8; 2 * size_of::<u32>() + EDID_ROOM];
+    answer[..size_of::<u32>()].copy_from_slice(&(edid.len() as u32).to_le_bytes());
+    answer[2 * size_of::<u32>()..][..edid.len()].copy_from_slice(&edid);
+    respond_with(mode, request, RESP_OK_EDID, &answer)
 }
 
 fn word(bytes: &[u8], at: usize) -> u32 {
@@ -423,6 +458,9 @@ impl Accelerated {
         if header.kind == CMD_GET_DISPLAY_INFO {
             return (respond(mode, request, RESP_OK_DISPLAY_INFO), None);
         }
+        if header.kind == CMD_GET_EDID {
+            return (edid_response(mode, request, body), None);
+        }
         let (kind, answer) = match self.gpu.execute(mem, &header, body) {
             Ok(answer) => {
                 if let (
@@ -442,7 +480,11 @@ impl Accelerated {
                         pixels,
                     });
                 }
-                answer.response()
+                let response = answer.response();
+                if let super::gpu3d::Answer::Frame { pixels, .. } = answer {
+                    self.gpu.recycle(pixels);
+                }
+                response
             }
             Err(error) => (error, Vec::new()),
         };
@@ -676,7 +718,8 @@ impl VirtioDevice for Gpu {
             VIRTIO_GPU_F_RESOURCE_BLOB,
             VIRTIO_GPU_F_CONTEXT_INIT,
         ];
-        match self.acceleration {
+        let edid = self.mode.edid().map_or(0, |_| 1u64 << VIRTIO_GPU_F_EDID);
+        edid | match self.acceleration {
             Some(_) => accelerated.iter().map(|bit| 1u64 << bit).sum(),
             None => 0,
         }
@@ -782,6 +825,7 @@ mod tests {
     const MODE: DisplayMode = DisplayMode {
         width: 1280,
         height: 720,
+        refresh_hz: 120,
     };
     const MEM_SIZE: usize = 2 << 20;
     const REQUEST_AT: u64 = 0x10_0000;
@@ -1268,6 +1312,35 @@ mod tests {
         assert!(
             !drain_control(&mut queue, &mem, &mut display, MODE).unwrap(),
             "nothing left"
+        );
+    }
+
+    #[test]
+    fn edid_describes_the_configured_mode() {
+        let mut body: &[u8] = &0u32.to_le_bytes();
+        let response = display(None).handle(&memory(), &header(CMD_GET_EDID, 0, 0, 0), &mut body);
+        assert_eq!(word(&response, 0), RESP_OK_EDID);
+        let size = word(&response, HEADER_LEN) as usize;
+        assert_eq!(size, super::super::edid::EDID_LEN);
+        let edid = &response[HEADER_LEN + 8..HEADER_LEN + 8 + size];
+        assert_eq!(edid, MODE.edid().expect("fits"));
+        assert_eq!(response.len(), HEADER_LEN + 8 + EDID_ROOM);
+
+        let mut wrong: &[u8] = &1u32.to_le_bytes();
+        let response = display(None).handle(&memory(), &header(CMD_GET_EDID, 0, 0, 0), &mut wrong);
+        assert_eq!(word(&response, 0), RESP_ERR_INVALID_SCANOUT_ID);
+    }
+
+    #[test]
+    fn edid_is_offered_only_when_the_mode_fits_one() {
+        assert_ne!(Gpu::headless(MODE).features() & (1 << VIRTIO_GPU_F_EDID), 0);
+        let too_fast = DisplayMode {
+            refresh_hz: 100_000,
+            ..MODE
+        };
+        assert_eq!(
+            Gpu::headless(too_fast).features() & (1 << VIRTIO_GPU_F_EDID),
+            0
         );
     }
 

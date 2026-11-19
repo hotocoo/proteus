@@ -30,6 +30,7 @@ Usage: emu --kernel <file> [options]
   --bootconfig <k=v>      Add a bootconfig parameter, such as androidboot.hardware=emu (repeatable)
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 720x1280, a phone held upright)
+  --refresh-hz <n>        Frames per second the display runs at: 60 (default), 90, 120, 144
   --no-display            Give the guest no display device
   --headless              Open no window; the display can still be captured
   --keymap <file>         Keys and mouse movements that stand for touches (see the README)
@@ -80,6 +81,7 @@ Usage: emu --kernel <file> [options]
                                          printed, such as `am force-stop <package>`
   window-screenshot <file>               Save what the window shows, controls included, as a PNG
   window-click <x> <y>                   Click the window at a point, in points from its top left
+  window-resize <w> <h>                  Resize the window, in points, as dragging its edge would
   window-scroll <x> <y> <lines>          Turn the mouse wheel there (negative scrolls down)
   shutdown                               Shut Android down, then turn the machine off
   stop                                   Turn the machine off at once, like pulling the plug
@@ -121,6 +123,9 @@ pub const ANDROID_WITH_INITRD: &str =
 pub const DATA_DIR_NEEDS_ANDROID: &str = "--data-dir only applies with --android";
 pub const LOGCAT_NEEDS_ANDROID: &str = "--logcat only applies with --android";
 pub const BAD_DISPLAY: &str = "--display needs a size such as 720x1280";
+pub fn refresh_too_fast(most: u32) -> String {
+    format!("--refresh-hz is too fast for this display size; at most {most}")
+}
 pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";
 pub const BOOT_MARKER_NEEDS_SERIAL: &str =
@@ -352,6 +357,7 @@ pub fn ctl_record_failed(said: &str) -> String {
 }
 
 pub const INSTALL_THREAD: &str = "install";
+pub const GUI_FILL_THREAD: &str = "window shape";
 pub const INSTALLED: &str = "installed the dropped app";
 
 pub fn install_refused(said: &str) -> String {
@@ -598,6 +604,19 @@ pub mod gui {
     pub const BACKGROUND_CLOSED: &str = "Background apps closed.";
     pub const OPEN: &str = "Open";
     pub const FORCE_STOP: &str = "Force stop";
+    pub const RENDER_SCALE: &str = "Render:";
+    pub const RENDER_SCALE_HINT: &str = "Draw this game smaller and let Android scale it up: \
+        faster on a busy GPU, a little softer. Only for apps that say they are games; the game \
+        is stopped so its next start uses it.";
+    pub fn render_scale(scale: f32) -> String {
+        format!("{:.0}%", scale * 100.0)
+    }
+    pub fn render_scale_set(package: &str, scale: f32) -> String {
+        format!(
+            "{package} draws at {:.0}% from its next start.",
+            scale * 100.0
+        )
+    }
     pub const CLEAR_DATA: &str = "Clear data";
     pub const UNINSTALL: &str = "Uninstall";
     pub const UNINSTALL_SURE: &str = "Really uninstall?";
@@ -671,6 +690,23 @@ pub mod gui {
     pub const MEMORY: &str = "Memory";
     pub const MIB: &str = " MiB";
     pub const CPUS: &str = "CPUs";
+    pub const PRESETS: &str = "Quick setup";
+    pub const FPS_HINT: &str = "Frames Android showed in the last second. It drops to what \
+        changes: a still screen sends none.";
+    pub fn fps(rate: f64) -> String {
+        format!("{rate:.0} fps")
+    }
+    pub const PRESET_GAMING: &str = "Gaming";
+    pub const PRESET_BALANCED: &str = "Balanced";
+    pub const PRESET_LOW_END: &str = "Low-end Mac";
+    pub const PRESETS_HINT: &str =
+        "Sets memory, CPUs, frame rate and GPU in one click; change any of them after.";
+    pub const FRAME_RATE: &str = "Frame rate";
+    pub const FRAME_RATE_HINT: &str = "Android and games run up to this many frames per second. \
+        Higher feels smoother and responds faster to touches, and uses more of the Mac.";
+    pub fn hz(rate: u32) -> String {
+        format!("{rate} Hz")
+    }
     pub const SCREEN: &str = "Screen";
     pub const DISPLAY_PHONE: &str = "Phone";
     pub const DISPLAY_PHONE_HD: &str = "Phone, full HD";

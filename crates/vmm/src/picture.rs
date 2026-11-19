@@ -57,6 +57,11 @@ impl Picture {
             .map(|_| orientation::upright_size(self.panel, self.turns))
     }
 
+    /// Quarter turns the panel is shown turned by.
+    pub fn turns(&self) -> u8 {
+        self.turns
+    }
+
     /// Puts `frame`, turned by `turns`, on the GPU.
     pub fn update(
         &mut self,

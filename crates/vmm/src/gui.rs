@@ -69,6 +69,11 @@ const LAUNCH_SUFFIX: &str = "-c android.intent.category.LAUNCHER 1";
 const FORCE_STOP: &str = "am force-stop";
 const CLEAR_DATA: &str = "pm clear";
 const UNINSTALL: &str = "pm uninstall";
+/// Android's game mode: the app draws at a share of the screen's size and Android scales it up,
+/// which lightens the GPU's work. Followed by the share (or `disable`) and the package. Stopping
+/// the app makes its next start use it.
+const GAME_DOWNSCALE: &str = "cmd game set --downscale";
+const GAME_DOWNSCALE_OFF: &str = "disable";
 
 /// How the device can be held, as rotations about its x, y and z axes in degrees, in the order of
 /// `text::POSES`.
@@ -204,6 +209,8 @@ pub struct Gui {
     instance: Option<String>,
     pub open: Option<Panel>,
     status: String,
+    /// Frames the guest showed per second, as last counted.
+    pub fps: Option<f64>,
     apps: Apps,
     location: Location,
     sensors: [f64; 3],
@@ -235,6 +242,7 @@ impl Gui {
             instance,
             open: None,
             status: String::new(),
+            fps: None,
             apps: Apps::default(),
             location: Location {
                 latitude: String::new(),
@@ -341,6 +349,9 @@ impl Gui {
             config::TOOLBAR_BUTTON_HEIGHT,
         ];
         ui.vertical_centered_justified(|ui| {
+            if let Some(fps) = self.fps {
+                ui.label(text::fps(fps)).on_hover_text(text::FPS_HINT);
+            }
             let button = |ui: &mut Ui, label: &str, hint: &str| {
                 ui.add_sized(size, egui::Button::new(label))
                     .on_hover_text(hint)
@@ -474,6 +485,29 @@ impl Gui {
                     self.shell(format!("{} {quoted}", FORCE_STOP), move |_| {
                         Notice::Status(done)
                     });
+                }
+                ui.label(text::RENDER_SCALE)
+                    .on_hover_text(text::RENDER_SCALE_HINT);
+                for scale in config::RENDER_SCALES {
+                    if ui.button(text::render_scale(scale)).clicked() {
+                        let share = if scale >= 1.0 {
+                            GAME_DOWNSCALE_OFF.to_owned()
+                        } else {
+                            scale.to_string()
+                        };
+                        let done = text::render_scale_set(&package, scale);
+                        self.shell(
+                            format!("{GAME_DOWNSCALE} {share} {quoted} && {FORCE_STOP} {quoted}"),
+                            move |printed| {
+                                let printed = printed.trim();
+                                Notice::Status(if printed.is_empty() {
+                                    done
+                                } else {
+                                    printed.to_owned()
+                                })
+                            },
+                        );
+                    }
                 }
                 if ui.button(text::CLEAR_DATA).clicked() {
                     self.shell(format!("{} {quoted}", CLEAR_DATA), |printed| {

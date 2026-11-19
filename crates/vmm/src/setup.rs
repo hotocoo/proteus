@@ -1,8 +1,10 @@
 //! What the emulator does to Android once it has booted: stops the image's own log streaming when
 //! nobody reads it (it costs about one guest CPU), switches Bluetooth off (the board has no
 //! Bluetooth controller, so the stack crashes and restarts every few seconds), switches UWB off
-//! (its failure files bug reports with screenshots), and installs the apps a release carries beside
-//! the program (`apps/`, such as an app store) the first time a data folder boots.
+//! (its failure files bug reports with screenshots), gives the window back the panel's own shape,
+//! turns off what a game machine does not need (ad services, printing, screensavers), and
+//! installs the apps a release carries beside the program (`apps/`, such as an app store) the
+//! first time a data folder boots.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -31,6 +33,19 @@ const UWB_OFF: &str = "cmd uwb disable-uwb; \
      device_config put uwb device_error_bugreport_enabled false; \
      su 0 rm -rf /data/user_de/0/com.android.shell/files/bugreports; \
      am force-stop com.android.shell";
+/// Turns off parts of the image a game machine has no use for, every boot (an update of the image
+/// could bring them back): Android's ad services and the on-device ad and learning services that
+/// feed them, remote key provisioning (it calls Google's servers), device-lock financing, printing,
+/// screensavers, satellite messaging and demo and tracing apps. `pm enable <package>` brings one
+/// back. Packages the image does not have, or will not let go, are skipped.
+const GAMING_TRIM: &str = "for package in \
+     com.android.adservices.api com.android.federatedcompute.services \
+     com.android.ondevicepersonalization.services com.android.rkpdapp \
+     com.android.devicelockcontroller com.android.printspooler com.android.bips \
+     com.android.printservice.recommendation com.android.dreams.basic \
+     com.android.dreams.phototable com.google.android.telephony.satellite \
+     com.android.threadnetwork.demoapp com.android.traceur com.android.wallpaper.livepicker; \
+     do pm disable-user --user 0 $package >/dev/null 2>&1; done";
 /// Bundled apps are files with this ending.
 const APK_EXTENSION: &str = "apk";
 
@@ -88,7 +103,14 @@ pub fn spawn(
                 }
                 std::thread::sleep(SETUP_POLL);
             };
-            let mut steps = vec![BLUETOOTH_OFF, UWB_OFF];
+            // The window starts in the panel's own shape; a logical size from an earlier run would
+            // leave bars it does not know about.
+            let mut steps = vec![
+                BLUETOOTH_OFF,
+                UWB_OFF,
+                crate::fill::WM_SIZE_RESET,
+                GAMING_TRIM,
+            ];
             if !keep_log_stream {
                 steps.push(STOP_LOG_STREAM);
             }

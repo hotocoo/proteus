@@ -45,6 +45,12 @@ impl Painter {
         // ⌘+ and ⌘− belong to the guest's keys and the window's own shortcuts, not to zooming.
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let config = WgpuConfiguration {
+            // A frame is drawn when the guest shows one, not to a schedule: hand it to the screen
+            // at once, with no frame queued ahead, so a touch shows as soon as the guest drew it.
+            surface: egui_wgpu::SurfaceConfig {
+                present_mode: wgpu::PresentMode::AutoNoVsync,
+                desired_maximum_frame_latency: Some(1),
+            },
             wgpu_setup: WgpuSetup::from_display_handle(event_loop.owned_display_handle()),
             ..WgpuConfiguration::default()
         };

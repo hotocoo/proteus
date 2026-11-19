@@ -60,6 +60,8 @@ const SCANOUTS: u32 = 1;
 const MAX_DIMENSION: u32 = 8192;
 /// Bytes per pixel of every format a scanout can have.
 const BYTES_PER_PIXEL: u32 = 4;
+/// How often the time spent reading frames back from the renderer is logged.
+const READBACK_REPORT_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The fence timeline a fenced command belongs to: its context and ring when the guest asked for
 /// per-ring fences, one global timeline otherwise.
@@ -294,6 +296,10 @@ pub struct Gpu3d {
     /// Formats of 2D-created resources, for presenting them.
     formats: HashMap<u32, (u32, u32, u32)>,
     scanout: Option<Scanout>,
+    /// Frames read back since `since`, and the time the reads took.
+    readback: (u32, std::time::Duration, std::time::Instant),
+    /// A presented frame's pixel buffer, kept to read the next one into.
+    spare: Vec<u8>,
 }
 
 fn renderer_failed(what: &str) -> impl Fn(String) -> u32 + '_ {
@@ -359,6 +365,8 @@ impl Gpu3d {
             mapped: HashMap::new(),
             formats: HashMap::new(),
             scanout: None,
+            readback: (0, std::time::Duration::ZERO, std::time::Instant::now()),
+            spare: Vec::new(),
         }
     }
 
@@ -676,6 +684,22 @@ impl Gpu3d {
         Ok(Answer::NoData)
     }
 
+    /// Takes back a frame's pixel buffer once it has been presented, to read the next one into.
+    pub fn recycle(&mut self, pixels: Vec<u8>) {
+        self.spare = pixels;
+    }
+
+    /// Adds one frame's read-back time, and logs the rate and average every report period.
+    fn count_readback(&mut self, took: std::time::Duration) {
+        let (frames, total, since) = &mut self.readback;
+        *frames += 1;
+        *total += took;
+        if since.elapsed() >= READBACK_REPORT_PERIOD {
+            log::debug!("{}", copy::gpu_readback(*frames, *total, since.elapsed()));
+            self.readback = (0, std::time::Duration::ZERO, std::time::Instant::now());
+        }
+    }
+
     /// The shown resource flushed: its pixels, read back from the renderer, to present.
     fn flush(&mut self, resource: u32) -> Result<Answer, u32> {
         let Some(shown) = self.scanout.filter(|shown| shown.resource == resource) else {
@@ -686,7 +710,9 @@ impl Gpu3d {
         let (Some(stride), Some(len)) = (stride, len) else {
             return Err(RESP_ERR_INVALID_PARAMETER);
         };
-        let mut pixels = vec![0u8; len];
+        // Every byte is overwritten by the read; the buffer is only reused, not cleared.
+        let mut pixels = std::mem::take(&mut self.spare);
+        pixels.resize(len, 0);
         let transfer = Transfer {
             resource,
             x: shown.x,
@@ -697,8 +723,10 @@ impl Gpu3d {
             stride,
             ..Transfer::default()
         };
+        let started = std::time::Instant::now();
         let read = self.renderer.transfer_read(transfer, Some(&mut pixels));
         read.map_err(renderer_failed("read back"))?;
+        self.count_readback(started.elapsed());
         Ok(Answer::Frame {
             width: shown.width,
             height: shown.height,

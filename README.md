@@ -16,8 +16,36 @@ No QEMU, PCI, UEFI or ACPI: the guest sees a virtio-mmio board and is booted dir
    and press **Create and start**. Android boots in about 20 seconds; swipe up to unlock.
 
 Each instance is a phone of its own. The launcher starts, stops and deletes them, and **Settings**
-changes everything about one: the Android image (ROM) and kernel, memory, CPUs, screen size, GPU,
-sound, gamepad, key maps, network, storage size, and a factory reset.
+changes everything about one: the Android image (ROM) and kernel, memory, CPUs, screen size, frame
+rate, GPU, sound, gamepad, key maps, network, storage size, and a factory reset. **Quick setup**
+fills memory, CPUs, frame rate and GPU in one click: **Gaming** (8 CPUs, 8 GB, 120 Hz, GPU, capped
+to what the Mac can spare), **Balanced** or **Low-end Mac**.
+
+## Gaming
+
+- **Frame rate up to 144 Hz.** Android runs at the rate you pick in Settings (60, 90, 120 or 144 Hz;
+  `--refresh-hz` on the command line), not the 60 Hz it used to be stuck at. The display tells
+  Android its rate the way a real panel does (an EDID), so games that offer 90/120 fps modes see
+  them. Measured on an M4 Max: 110 frames per second scrolling at 120 Hz, against at most 60 before.
+  A game's own frame cap and your Mac's screen (60 Hz on most non-ProMotion displays) still apply.
+- **Lower input lag.** The window shows each frame as soon as Android draws it, with no frame queued
+  ahead; at 120 Hz Android itself also answers a touch in half the time.
+- **FPS counter** at the top of the toolbar: frames Android showed in the last second.
+- **Any window shape, no black bars.** Drag the window to any size or shape: once you let go, Android
+  is told the new shape and lays itself out to fill it, at the screen's full sharpness. Portrait
+  stays portrait (at most square) and landscape stays landscape, so a game turning the screen keeps
+  a sensible shape.
+- **Render scale (upscaler)** per game, in **Apps**: draw a game at 85%, 70% or 50% of the screen and
+  let Android scale it up (Android's own game mode), which lightens a busy GPU. 100% turns it off.
+  Only for apps that say they are games; the game is restarted so it takes effect.
+- **Trimmed Android.** Every boot turns off what a game machine has no use for: Android's ad
+  services and the on-device ad and learning services behind them, remote key provisioning (which
+  calls Google's servers), device-lock financing, printing, screensavers, satellite messaging and
+  demo apps. `emu ctl <instance> shell pm enable <package>` brings one back.
+- **Blocking ads and trackers** is yours to turn on: add a blocklist file (plain domains, hosts or
+  adblock format, such as the lists of the StevenBlack or HaGeZi projects) under **Settings, Network**.
+  Blocking a game's own servers can break its login or updates, and nothing here hides the emulator
+  from a game's anti-cheat; use it at your own risk.
 
 **Apps:** the release carries **Aurora Store**, installed on first start: Google Play's catalogue,
 signed in anonymously, without Google services. Apps that need Google services (Google sign-in, some
@@ -96,6 +124,7 @@ Useful options (`emu --help` lists all of them):
 | `--gpu` | Draw with this Mac's GPU; falls back to the CPU and says so if it cannot start |
 | `--ram-mib <n>`, `--vcpus <n>` | Guest memory (default 4096) and CPUs (default 4) |
 | `--display <WxH>` | Size of the guest's screen, held upright (default 720x1280; landscape apps turn the window) |
+| `--refresh-hz <n>` | Frames per second the screen runs at: 60 (default), 90, 120 or 144 |
 | `--mute`, `--no-sound` | Keep the sound card silent, or give the guest none |
 | `--headless` | No window; use the control socket or `--frame-dump` to see the screen |
 | `--ctl <socket>` | Listen for `emu ctl` commands on this local socket |
@@ -138,6 +167,7 @@ emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly 
 emu ctl /tmp/emu.sock window-screenshot win.png    # the window, toolbar and panels included
 emu ctl /tmp/emu.sock window-click 745 584         # click the window, as the mouse would
 emu ctl /tmp/emu.sock window-scroll 860 700 -10    # turn the mouse wheel there
+emu ctl /tmp/emu.sock window-resize 1280 720       # resize the window; Android takes its shape
 emu ctl /tmp/emu.sock shutdown                     # shut Android down, then switch off
 emu ctl /tmp/emu.sock stop                         # switch off at once, like pulling the plug
 ```
@@ -266,10 +296,13 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 Honest list, most important first:
 
 - **Google services.** Google's test image has no Play Services, so apps that sign in with Google
-  or buy through Play do not work; Aurora Store installs the rest. The planned image with microG or
-  user-supplied Google apps needs an Android build machine this project does not have.
+  or buy through Play do not work, and some games show "Google Play services are not supported"
+  (their e-mail or other logins still work); Aurora Store installs the rest. The planned image with
+  microG or user-supplied Google apps needs an Android build machine this project does not have.
+  Installing Google's apps into the running image is not done: a first try found no system
+  partition the image would remount.
 - **GPU acceleration is new.** It has not been measured against Google's emulator yet, and frames
-  are read back once on their way to the window. Under MoltenVK an app's drawing could stall (Aurora
+  are read back once on their way to the window (about 1.5 ms each for a 1080x2400 frame). Under MoltenVK an app's drawing could stall (Aurora
   Store froze on its first tap), which is why KosmicKrisp is tried first; on Macs where KosmicKrisp
   does not load (older than macOS 26), MoltenVK is what runs.
 - **No Bluetooth or phone network.** The board has neither, so Bluetooth is switched off at boot.

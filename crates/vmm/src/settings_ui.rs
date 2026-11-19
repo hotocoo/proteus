@@ -121,6 +121,20 @@ impl Form {
         });
 
         style::section(ui, text::PERFORMANCE, |ui| {
+            style::label(ui, text::PRESETS);
+            ui.horizontal_wrapped(|ui| {
+                for (label, preset) in [
+                    (text::PRESET_GAMING, &config::PRESET_GAMING),
+                    (text::PRESET_BALANCED, &config::PRESET_BALANCED),
+                    (text::PRESET_LOW_END, &config::PRESET_LOW_END),
+                ] {
+                    if ui.button(label).clicked() {
+                        apply_preset(settings, preset);
+                        edited = true;
+                    }
+                }
+            });
+            style::hint(ui, text::PRESETS_HINT);
             edited |= ui
                 .add(
                     egui::Slider::new(&mut settings.ram_mib, config::RAM_MIB_RANGE)
@@ -155,6 +169,15 @@ impl Form {
                 }
             });
             style::hint(ui, text::SCREEN_HINT);
+            style::label(ui, text::FRAME_RATE);
+            ui.horizontal_wrapped(|ui| {
+                for rate in config::REFRESH_CHOICES {
+                    edited |= ui
+                        .radio_value(&mut settings.refresh_hz, rate, text::hz(rate))
+                        .changed();
+                }
+            });
+            style::hint(ui, text::FRAME_RATE_HINT);
         });
 
         style::section(ui, text::GRAPHICS_AND_SOUND, |ui| {
@@ -322,6 +345,28 @@ impl Form {
         }
         action
     }
+}
+
+/// Puts `preset`'s values in `settings`, keeping CPUs and memory to what this Mac can spare.
+fn apply_preset(settings: &mut Settings, preset: &config::Preset) {
+    let cpus = u32::try_from(host_cpus()).unwrap_or(u32::MAX);
+    let spare_cpus = cpus.saturating_sub(config::PRESET_HOST_CPUS_KEPT).max(1);
+    let memory = host_memory_mib() / config::PRESET_HOST_MEMORY_SHARE;
+    settings.vcpus = if cpus == 0 {
+        preset.vcpus
+    } else {
+        preset.vcpus.min(spare_cpus)
+    };
+    settings.ram_mib = if memory == 0 {
+        preset.ram_mib
+    } else {
+        preset
+            .ram_mib
+            .min(memory)
+            .max(*config::RAM_MIB_RANGE.start())
+    };
+    settings.refresh_hz = preset.refresh_hz;
+    settings.gpu = preset.gpu;
 }
 
 fn host_cpus() -> usize {

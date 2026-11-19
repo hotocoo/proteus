@@ -53,6 +53,8 @@ pub enum Notice {
     Packages(Vec<String>),
     /// A request from the control socket that only the window can carry out.
     Request(crate::ctl::WindowRequest),
+    /// Android took this logical display size (natural orientation), or none.
+    Filled(Option<(u32, u32)>),
 }
 
 /// The largest rectangle of the picture's shape that fits in `space`, centred, in points.
@@ -221,8 +223,19 @@ struct App {
     /// The guest's picture, as last uploaded, and whether a newer frame has come since.
     picture_texture: Picture,
     frame_waiting: bool,
-    /// Where the picture was drawn last, in points, and its upright size in guest pixels.
+    /// Where the whole panel was drawn last, in points (it may reach past what is shown), and its
+    /// upright size in guest pixels.
     picture: Option<(egui::Rect, (u32, u32))>,
+    /// The part of the picture shown, in points: what Android draws its logical display into.
+    shown_part: Option<egui::Rect>,
+    /// The space the picture had to fit in, in points.
+    space: Option<egui::Rect>,
+    /// The logical display size Android was given (natural orientation), if any.
+    logical: Option<(u32, u32)>,
+    /// When the window last changed size, until Android has been given its new shape.
+    resized: Option<Instant>,
+    /// Passes news to the window from other threads.
+    notify: Arc<dyn Fn(Notice) + Send + Sync>,
     /// Where the pointer is, in window pixels.
     pointer: PhysicalPosition<f64>,
     /// Whether the mouse's finger is on the guest's screen.
@@ -336,7 +349,50 @@ impl App {
     /// The upright guest pixel under the pointer, if it is over the picture.
     fn pointer_pixel(&self) -> Option<(u32, u32)> {
         let (rect, size) = self.picture?;
-        guest_pixel(rect, size, self.pointer_points()?)
+        let point = self.pointer_points()?;
+        self.shown_part
+            .is_some_and(|part| part.contains(point))
+            .then(|| guest_pixel(rect, size, point))?
+    }
+
+    /// Gives Android the shape of the space the picture has, once the window has stopped
+    /// changing size, so the picture fills it.
+    fn fill(&mut self) {
+        let (Some(space), Some(part), Some(full)) =
+            (self.space, self.shown_part, self.picture_texture.upright())
+        else {
+            return;
+        };
+        if space.height() <= 0.0 || part.height() <= 0.0 {
+            return;
+        }
+        let aspect = space.width() / space.height();
+        let tolerance = crate::config::FILL_TOLERANCE;
+        if (aspect / (part.width() / part.height()) - 1.0).abs() <= tolerance {
+            return;
+        }
+        let turns = self.picture_texture.turns();
+        let range = crate::config::FILL_ASPECT_RANGE;
+        let wanted = crate::fill::logical_for(full, aspect, range, tolerance)
+            .map(|upright| orientation::upright_size(upright, turns));
+        if wanted == self.logical {
+            return;
+        }
+        let command = match wanted {
+            Some((width, height)) => format!("{} {width}x{height}", crate::fill::WM_SIZE),
+            None => crate::fill::WM_SIZE_RESET.to_owned(),
+        };
+        let controller = Arc::clone(&self.controller);
+        let notify = Arc::clone(&self.notify);
+        let asked = std::thread::Builder::new()
+            .name(copy::GUI_FILL_THREAD.into())
+            .spawn(move || match controller.shell(&command) {
+                Ok(_) => notify(Notice::Filled(wanted)),
+                Err(why) => log::debug!("{why}"),
+            });
+        if let Err(err) = asked {
+            log::error!("{}", copy::thread(&err));
+        }
     }
 
     /// Moves the mouse's finger to the pointer, puts it down or lifts it, as `pressed` says.
@@ -391,6 +447,9 @@ impl App {
         let texture = &self.picture_texture;
         let editor = &mut self.editor;
         let mut picture = None;
+        let mut shown_part = None;
+        let mut seen_space = None;
+        let logical = self.logical;
         shown.painter.paint(&shown.window, |ui| {
             egui::Panel::right(copy::TOOLBAR_ID)
                 .resizable(false)
@@ -416,10 +475,23 @@ impl App {
             }
             egui::CentralPanel::no_frame().show(ui, |ui| {
                 let space = ui.max_rect();
-                match (texture.upright(), fit(space, upright)) {
-                    (Some(_), Some(rect)) => {
-                        texture.paint(ui.painter(), rect);
+                seen_space = Some(space);
+                // The part of the panel Android draws its logical display into, if it has one.
+                let (x, y, width, height) =
+                    logical.map_or((0, 0, upright.0, upright.1), |natural| {
+                        let turns = texture.turns();
+                        crate::fill::shown_rect(upright, orientation::upright_size(natural, turns))
+                    });
+                match (texture.upright(), fit(space, (width, height))) {
+                    (Some(_), Some(part)) => {
+                        let scale = part.width() / width.max(1) as f32;
+                        let rect = egui::Rect::from_min_size(
+                            part.min - egui::vec2(x as f32 * scale, y as f32 * scale),
+                            egui::vec2(upright.0 as f32 * scale, upright.1 as f32 * scale),
+                        );
+                        texture.paint(&ui.painter().with_clip_rect(part), rect);
                         picture = Some((rect, upright));
+                        shown_part = Some(part);
                         if let Some(editor) = editor.as_mut() {
                             editor.overlay(ui, rect, upright);
                         }
@@ -431,6 +503,8 @@ impl App {
             });
         });
         self.picture = picture;
+        self.shown_part = shown_part;
+        self.space = seen_space;
         for effect in effects {
             self.effect(effect);
         }
@@ -540,6 +614,22 @@ impl App {
             }
             WindowRequest::Scroll { x, y, lines, reply } => {
                 let _ = reply.send(self.scroll(event_loop, x, y, lines));
+            }
+            WindowRequest::Resize {
+                width,
+                height,
+                reply,
+            } => {
+                let answer = match &self.shown {
+                    Some(shown) => {
+                        let _ = shown
+                            .window
+                            .request_inner_size(LogicalSize::new(width, height));
+                        Ok(())
+                    }
+                    None => Err(copy::CTL_NO_PICTURE.to_owned()),
+                };
+                let _ = reply.send(answer);
             }
         }
     }
@@ -651,10 +741,17 @@ impl App {
         };
         // The size the picture was drawn at, not the guest's turn, which has already changed.
         let scale = f64::from(rect.width()) / f64::from(drawn.0.max(1));
-        let new = orientation::upright_size(self.guest, turns);
+        let full = orientation::upright_size(self.guest, turns);
+        // Only the part Android draws its logical display into is shown.
+        let new = self.logical.map_or(full, |natural| {
+            let (_, _, width, height) =
+                crate::fill::shown_rect(full, orientation::upright_size(natural, turns));
+            (width, height)
+        });
         let window = &shown.window;
         let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-        let chrome = size.width - f64::from(rect.width());
+        let shown_width = self.shown_part.map_or(rect.width(), |part| part.width());
+        let chrome = size.width - f64::from(shown_width);
         let monitor = window.current_monitor().map(|monitor| {
             let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
             (size.width, size.height)
@@ -753,7 +850,9 @@ impl ApplicationHandler<Notice> for App {
                 self.frame_waiting = true;
                 self.frames += 1;
                 if self.counted.elapsed() >= crate::config::FRAME_RATE_PERIOD {
-                    log::debug!("{}", copy::frame_rate(self.frames, self.counted.elapsed()));
+                    log::trace!("{}", copy::frame_rate(self.frames, self.counted.elapsed()));
+                    let seconds = self.counted.elapsed().as_secs_f64();
+                    self.gui.fps = Some(f64::from(self.frames) / seconds);
                     self.frames = 0;
                     self.counted = Instant::now();
                 }
@@ -763,6 +862,10 @@ impl ApplicationHandler<Notice> for App {
             Notice::Rotated(turns) => self.rotated(turns),
             notice @ (Notice::Status(_) | Notice::Packages(_)) => self.gui.notice(notice),
             Notice::Request(request) => self.request(event_loop, request),
+            Notice::Filled(logical) => {
+                self.logical = logical;
+                self.frame_waiting = true;
+            }
         }
         if let Some(shown) = &self.shown {
             shown.window.request_redraw();
@@ -779,14 +882,23 @@ impl ApplicationHandler<Notice> for App {
         let Some(shown) = &self.shown else {
             return;
         };
-        match shown.painter.repaint_at {
-            Some(at) if at <= Instant::now() => {
-                shown.window.request_redraw();
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
-            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+        let mut wake = shown.painter.repaint_at;
+        if let Some(at) = shown.painter.repaint_at
+            && at <= Instant::now()
+        {
+            shown.window.request_redraw();
+            wake = None;
         }
+        if let Some(resized) = self.resized {
+            let settled = resized + crate::config::FILL_SETTLE;
+            if settled <= Instant::now() {
+                self.resized = None;
+                self.fill();
+            } else {
+                wake = Some(wake.map_or(settled, |at| at.min(settled)));
+            }
+        }
+        event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -810,6 +922,7 @@ impl ApplicationHandler<Notice> for App {
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 self.touch(false);
                 self.draw();
+                self.resized = Some(Instant::now());
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = position;
@@ -922,6 +1035,7 @@ impl WindowLoop {
             .map(|path| keymap::load(path, orientation::any_way_up(guest)))
             .transpose()
             .map_err(VmmError::Device)?;
+        let fill_notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(self.notifier());
         let gui = Gui::new(Arc::clone(&controller), notify, instance, keymap.as_deref());
         let mut app = App {
             controller,
@@ -931,6 +1045,11 @@ impl WindowLoop {
             picture_texture: Picture::default(),
             frame_waiting: true,
             picture: None,
+            shown_part: None,
+            space: None,
+            logical: None,
+            resized: None,
+            notify: fill_notify,
             pointer: PhysicalPosition::default(),
             touching: false,
             mapper,

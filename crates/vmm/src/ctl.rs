@@ -91,6 +91,7 @@ const WORD_SHELL: &str = "shell";
 const WORD_WINDOW_SHOT: &str = "window-screenshot";
 const WORD_WINDOW_CLICK: &str = "window-click";
 const WORD_WINDOW_SCROLL: &str = "window-scroll";
+const WORD_WINDOW_RESIZE: &str = "window-resize";
 /// Starts each line of what a `shell` command printed, so the answer line after them stands out.
 pub const SHELL_LINE: &str = "| ";
 const MACRO_COMMENT: char = '#';
@@ -168,6 +169,11 @@ pub enum Command {
         x: f64,
         y: f64,
         lines: f64,
+    },
+    /// Resize the window to this many points, as dragging its edge would.
+    WindowResize {
+        width: f64,
+        height: f64,
     },
     /// Turn the machine off without asking the guest.
     Stop,
@@ -251,6 +257,9 @@ impl std::fmt::Display for Command {
             Self::WindowShot(path) => write!(f, "{WORD_WINDOW_SHOT} {}", path.display()),
             Self::WindowClick { x, y } => write!(f, "{WORD_WINDOW_CLICK} {x} {y}"),
             Self::WindowScroll { x, y, lines } => write!(f, "{WORD_WINDOW_SCROLL} {x} {y} {lines}"),
+            Self::WindowResize { width, height } => {
+                write!(f, "{WORD_WINDOW_RESIZE} {width} {height}")
+            }
             Self::Stop => f.write_str(WORD_STOP),
             Self::Shutdown => f.write_str(WORD_SHUTDOWN),
             Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
@@ -290,6 +299,11 @@ pub fn parse(line: &str) -> Option<Command> {
         (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
         (WORD_WINDOW_CLICK, Some(&[x, y])) if x.is_finite() && y.is_finite() => {
             return Some(Command::WindowClick { x, y });
+        }
+        (WORD_WINDOW_RESIZE, Some(&[width, height]))
+            if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 =>
+        {
+            return Some(Command::WindowResize { width, height });
         }
         (WORD_WINDOW_SCROLL, Some(&[x, y, lines]))
             if x.is_finite() && y.is_finite() && lines.is_finite() =>
@@ -519,6 +533,11 @@ pub enum WindowRequest {
         lines: f64,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    Resize {
+        width: f64,
+        height: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 /// Hands a request to the window's thread.
@@ -733,6 +752,13 @@ impl Controller {
             }
             Command::WindowScroll { x, y, lines } => {
                 self.ask_window(|reply| WindowRequest::Scroll { x, y, lines, reply })
+            }
+            Command::WindowResize { width, height } => {
+                self.ask_window(|reply| WindowRequest::Resize {
+                    width,
+                    height,
+                    reply,
+                })
             }
             Command::Install(ref path) => {
                 let port = self.adb_port.load(Ordering::SeqCst);
@@ -1232,6 +1258,10 @@ mod tests {
             Command::Shutdown,
             Command::WindowShot("w.png".into()),
             Command::WindowClick { x: 1.5, y: 2.0 },
+            Command::WindowResize {
+                width: 800.0,
+                height: 450.5,
+            },
             Command::WindowScroll {
                 x: 1.0,
                 y: 2.0,

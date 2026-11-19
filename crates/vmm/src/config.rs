@@ -17,6 +17,13 @@ pub const DEFAULT_VCPUS: u32 = 4;
 /// Size of the guest's display, in pixels.
 /// A phone held upright: the shape Google's phone image is made for. Landscape apps turn it.
 pub const DEFAULT_DISPLAY: (u32, u32) = (720, 1280);
+/// Frames per second the guest's display runs at unless told otherwise.
+pub const DEFAULT_REFRESH_HZ: u32 = 60;
+/// Refresh rates the settings offer: phone panels' usual ones.
+pub const REFRESH_CHOICES: [u32; 4] = [60, 90, 120, 144];
+/// Shares of the screen's size a game can be drawn at, then scaled up by Android (game mode).
+/// Only the values Android's `cmd game set --downscale` accepts; 1.0 turns it off.
+pub const RENDER_SCALES: [f32; 4] = [1.0, 0.85, 0.7, 0.5];
 /// Size the guest's data partition is created with.
 pub const DEFAULT_USERDATA_GIB: u64 = 8;
 /// Android shows a phone's storage as the data and system partitions together, rounded up to a
@@ -225,6 +232,39 @@ pub const RAM_MIB_RANGE: std::ops::RangeInclusive<u64> = 1024..=32_768;
 pub const RAM_MIB_STEP: f64 = 64.0;
 pub const VCPUS_RANGE: std::ops::RangeInclusive<u32> = 1..=16;
 pub const DISPLAY_RANGE: std::ops::RangeInclusive<u32> = 320..=3840;
+
+/// A one-click setup in the settings form. Memory and CPUs are capped by what the Mac has.
+pub struct Preset {
+    pub ram_mib: u64,
+    pub vcpus: u32,
+    pub refresh_hz: u32,
+    pub gpu: bool,
+}
+/// Games: many CPUs, memory for big games, a fast display, the GPU.
+pub const PRESET_GAMING: Preset = Preset {
+    ram_mib: 8192,
+    vcpus: 8,
+    refresh_hz: 120,
+    gpu: true,
+};
+/// Everyday apps without spending the Mac's battery.
+pub const PRESET_BALANCED: Preset = Preset {
+    ram_mib: 4096,
+    vcpus: 4,
+    refresh_hz: 60,
+    gpu: true,
+};
+/// Older or busy Macs.
+pub const PRESET_LOW_END: Preset = Preset {
+    ram_mib: 3072,
+    vcpus: 2,
+    refresh_hz: 60,
+    gpu: false,
+};
+/// CPUs a preset leaves to the Mac itself.
+pub const PRESET_HOST_CPUS_KEPT: u32 = 2;
+/// A preset uses at most this share of the Mac's memory.
+pub const PRESET_HOST_MEMORY_SHARE: u64 = 2;
 /// The key map editor's markers: radius and outline in points, label size, colour (RGBA), and a
 /// new stick's radius in guest pixels and the range its slider allows.
 pub const EDITOR_MARKER_RADIUS: f32 = 18.0;
@@ -250,8 +290,8 @@ pub const CHECK_DATA_DIR: &str = "check";
 /// What the settings' storage slider allows, in GiB, and how tall the list fields are.
 pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
 pub const LIST_ROWS: usize = 2;
-/// How often the debug log reports the guest's frame rate.
-pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(5);
+/// How often the toolbar's frame counter (and the trace log) counts the guest's frame rate.
+pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
 /// How long Android may take to answer the request to shut down, and to finish shutting down,
 /// before the power is cut.
 pub const SHUTDOWN_ASK: Duration = Duration::from_secs(5);
@@ -263,6 +303,14 @@ pub const WINDOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `window-click` holds the button down: about as long as a quick click by hand.
 pub const WINDOW_CLICK_HOLD: Duration = Duration::from_millis(80);
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
+/// How long the window's size must stay still before Android is given its shape: a drag sends
+/// many sizes, and each new logical size makes apps lay themselves out again.
+pub const FILL_SETTLE: Duration = Duration::from_millis(400);
+/// Shapes closer than this share (2%) count as the same, so rounding never asks Android again.
+pub const FILL_TOLERANCE: f32 = 0.02;
+/// Widths per unit of height Android's picture may take: from a third to three times as wide as
+/// high, so a sliver of a window cannot make Android unusable.
+pub const FILL_ASPECT_RANGE: std::ops::RangeInclusive<f32> = (1.0 / 3.0)..=3.0;
 /// Apps a release carries beside the program, installed when a data folder first boots, and the
 /// file in the data folder that notes which were.
 pub const BUNDLED_APPS_DIR: &str = "apps";
@@ -353,6 +401,8 @@ pub struct Config {
     pub net: Option<NetOptions>,
     /// Width and height of the guest's display, or `None` for no display device.
     pub display: Option<(u32, u32)>,
+    /// Frames per second the guest's display claims (its EDID), which Android draws at.
+    pub refresh_hz: u32,
     /// Keep this PNG file up to date with what the guest's display shows.
     pub frame_dump: Option<PathBuf>,
     /// Show the guest's display in a window.
@@ -397,6 +447,7 @@ impl Config {
             serial: false,
             net: Some(NetOptions::default()),
             display: Some(DEFAULT_DISPLAY),
+            refresh_hz: DEFAULT_REFRESH_HZ,
             frame_dump: None,
             window: true,
             sound: true,
@@ -609,6 +660,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                         .ok_or_else(|| ConfigError(copy::BAD_DISPLAY.into()))?,
                 );
             }
+            Long("refresh-hz") => config.refresh_hz = positive(&mut parser, "refresh-hz")?,
             Long("blocklist") => net.blocklists.push(parser.value()?.into()),
             Long("allowlist") => net.allowlists.push(parser.value()?.into()),
             Long("adb-port") => {
@@ -636,6 +688,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
         }
     }
 
+    if let Some((width, height)) = config.display {
+        let most = devices::virtio::edid::max_refresh(width, height);
+        if config.refresh_hz > most {
+            return Err(ConfigError(copy::refresh_too_fast(most)));
+        }
+    }
     // Android needs no kernel named: the one a release carries beside the program boots it.
     let bundled = android_images.as_ref().and_then(|_| bundled_kernel());
     config.kernel = kernel

@@ -11,6 +11,7 @@ use crate::{InterruptLine, copy};
 
 pub mod blk;
 pub mod console;
+pub mod edid;
 pub mod gpu;
 pub mod gpu3d;
 pub mod input;

@@ -2,7 +2,9 @@
 //! read into named fields and written back. Options the panel does not show (the kernel, the image,
 //! disks…) are kept as they are.
 
-use crate::config::{DEFAULT_DISPLAY, DEFAULT_RAM_MIB, DEFAULT_USERDATA_GIB, DEFAULT_VCPUS};
+use crate::config::{
+    DEFAULT_DISPLAY, DEFAULT_RAM_MIB, DEFAULT_REFRESH_HZ, DEFAULT_USERDATA_GIB, DEFAULT_VCPUS,
+};
 use net::config::ADB_PORT as DEFAULT_ADB_PORT;
 
 /// What happens to sound.
@@ -34,6 +36,8 @@ pub struct Settings {
     pub ram_mib: u64,
     pub vcpus: u32,
     pub display: (u32, u32),
+    /// Frames per second the guest's display runs at.
+    pub refresh_hz: u32,
     pub gpu: bool,
     pub sound: Sound,
     pub gamepad: Gamepad,
@@ -57,6 +61,7 @@ const USERDATA: &str = "--userdata-gib";
 const RAM: &str = "--ram-mib";
 const VCPUS: &str = "--vcpus";
 const DISPLAY: &str = "--display";
+const REFRESH: &str = "--refresh-hz";
 const GPU: &str = "--gpu";
 const MUTE: &str = "--mute";
 const NO_SOUND: &str = "--no-sound";
@@ -74,9 +79,9 @@ const SYNC: &str = "--sync";
 const SIZE_SEPARATOR: char = 'x';
 
 /// Options that take a value, of those the panel shows.
-const WITH_VALUE: [&str; 12] = [
-    ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, ADB_PORT, BLOCKLIST, ALLOWLIST, KEYMAP,
-    KEYMAP_DIR, SYNC,
+const WITH_VALUE: [&str; 13] = [
+    ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, REFRESH, ADB_PORT, BLOCKLIST, ALLOWLIST,
+    KEYMAP, KEYMAP_DIR, SYNC,
 ];
 
 impl Settings {
@@ -90,6 +95,7 @@ impl Settings {
             ram_mib: DEFAULT_RAM_MIB,
             vcpus: DEFAULT_VCPUS,
             display: DEFAULT_DISPLAY,
+            refresh_hz: DEFAULT_REFRESH_HZ,
             gpu: false,
             sound: Sound::On,
             gamepad: Gamepad::Auto,
@@ -125,6 +131,7 @@ impl Settings {
                 RAM => settings.ram_mib = value.parse().unwrap_or(settings.ram_mib),
                 VCPUS => settings.vcpus = value.parse().unwrap_or(settings.vcpus),
                 DISPLAY => settings.display = parse_size(&value).unwrap_or(settings.display),
+                REFRESH => settings.refresh_hz = value.parse().unwrap_or(settings.refresh_hz),
                 ADB_PORT => settings.adb_port = value.parse().unwrap_or(settings.adb_port),
                 BLOCKLIST => settings.blocklists.push(value),
                 ALLOWLIST => settings.allowlists.push(value),
@@ -172,6 +179,9 @@ impl Settings {
                 DISPLAY,
                 format!("{}{SIZE_SEPARATOR}{}", self.display.0, self.display.1),
             );
+        }
+        if self.refresh_hz != DEFAULT_REFRESH_HZ {
+            value(REFRESH, self.refresh_hz.to_string());
         }
         if self.adb_port != DEFAULT_ADB_PORT {
             value(ADB_PORT, self.adb_port.to_string());
@@ -236,6 +246,8 @@ mod tests {
             "--ram-mib",
             "2048",
             "--display=1080x1920",
+            "--refresh-hz",
+            "120",
             "--gpu",
             "--mute",
             "--no-gamepad",
@@ -249,6 +261,7 @@ mod tests {
         let settings = Settings::from_args(&args);
         assert_eq!(settings.ram_mib, 2048);
         assert_eq!(settings.display, (1080, 1920));
+        assert_eq!(settings.refresh_hz, 120);
         assert!(settings.gpu);
         assert_eq!(settings.sound, Sound::Muted);
         assert_eq!(settings.gamepad, Gamepad::Never);

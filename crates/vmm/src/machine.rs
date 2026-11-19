@@ -803,7 +803,11 @@ pub fn run_in(
 
     let controller = &session.controller;
     if let Some((width, height)) = config.display {
-        let mode = DisplayMode { width, height };
+        let mode = DisplayMode {
+            width,
+            height,
+            refresh_hz: config.refresh_hz,
+        };
         let gpu = match &controller.screen {
             Some(screen) => Gpu::with_sink(mode, Arc::clone(screen) as Arc<dyn FrameSink>),
             None => Gpu::headless(mode),

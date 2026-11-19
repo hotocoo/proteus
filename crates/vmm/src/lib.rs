@@ -13,6 +13,7 @@ pub mod config;
 pub mod console;
 mod copy;
 pub mod ctl;
+pub mod fill;
 pub mod frames;
 #[cfg(host_board)]
 pub mod gamepad;
