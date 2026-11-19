@@ -24,6 +24,7 @@ pub mod location;
 mod logger;
 #[cfg(host_board)]
 pub mod machine;
+pub mod orientation;
 pub mod profiles;
 pub mod sensors;
 pub mod session;
@@ -86,16 +87,23 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
     use window::{Notice, WindowLoop};
 
     let session = session::Session::new(config)?;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let Some(display) = config.display.filter(|_| config.window) else {
         if config.keymap.is_some() || config.keymap_dir.is_some() {
             return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
         }
-        return boot_loop(config, &session, started);
+        let watching = watch_orientation(&session, &done, |_| {})?;
+        let ran = boot_loop(config, &session, started);
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(watching) = watching {
+            let _ = watching.join();
+        }
+        return ran;
     };
     let mapper = config
         .keymap
         .as_ref()
-        .map(|path| keymap::load(path, display));
+        .map(|path| keymap::load(path, orientation::any_way_up(display)));
     let mapper = mapper.transpose().map_err(VmmError::Device)?;
     let window = WindowLoop::new()?;
     let notify = window.notifier();
@@ -113,7 +121,10 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
                 ran
             })
             .map_err(VmmError::Thread)?;
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rotated = notify.clone();
+        let turning = watch_orientation(&session, &done, move |turns| {
+            rotated(Notice::Rotated(turns));
+        })?;
         let watching = match &config.keymap_dir {
             Some(_) => {
                 let notify = notify.clone();
@@ -131,13 +142,34 @@ fn run(config: &config::Config, started: Instant) -> Result<(), VmmError> {
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(watching) = watching {
+        for watching in [watching, turning].into_iter().flatten() {
             let _ = watching.join();
         }
         let ran = machine.join();
         ran.unwrap_or(Err(VmmError::Config(copy::VCPU_PANICKED)))
             .and(shown)
     })
+}
+
+/// Keeps the screen's way up in step with Android's, when there is a screen, until `done` is set.
+#[cfg(host_board)]
+fn watch_orientation(
+    session: &session::Session,
+    done: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    changed: impl Fn(u8) + Send + 'static,
+) -> Result<Option<std::thread::JoinHandle<()>>, VmmError> {
+    let Some(screen) = session.controller.screen.clone() else {
+        return Ok(None);
+    };
+    let watch = orientation::watch(
+        std::sync::Arc::clone(&session.controller.adb_port),
+        std::sync::Arc::clone(done),
+        move |turns| {
+            screen.set_turns(turns);
+            changed(turns);
+        },
+    );
+    watch.map(Some).map_err(VmmError::Thread)
 }
 
 /// Boots the machine, and boots it again each time the guest asks to restart.
@@ -306,7 +338,7 @@ pub fn cli_main() -> ExitCode {
         }
         Ok(config::Parsed::Ctl { socket, command }) => {
             let socket = instance::resolve(&socket);
-            return match ctl::request(&socket, &command) {
+            return match ctl::request(&socket, &command, &mut std::io::stdout()) {
                 Ok(reply) if reply == copy::CTL_OK => ExitCode::SUCCESS,
                 Ok(reply) => {
                     eprintln!("{}", copy::fatal(&reply));

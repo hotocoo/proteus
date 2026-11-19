@@ -84,6 +84,9 @@ const WORD_RUN: &str = "run";
 const WORD_RECORD: &str = "record";
 const WORD_RECORD_STOP: &str = "record-stop";
 const WORD_CANCEL: &str = "cancel";
+const WORD_SHELL: &str = "shell";
+/// Starts each line of what a `shell` command printed, so the answer line after them stands out.
+pub const SHELL_LINE: &str = "| ";
 const MACRO_COMMENT: char = '#';
 const WORD_DOWN: &str = "down";
 const WORD_UP: &str = "up";
@@ -145,6 +148,8 @@ pub enum Command {
     /// Degrees about the device's x, y and z axes.
     Rotate([f64; 3]),
     Shake,
+    /// Run a command in the guest's shell, through adb.
+    Shell(String),
     /// Turn the machine off without asking the guest.
     Stop,
     Wait(Duration),
@@ -221,6 +226,7 @@ impl std::fmt::Display for Command {
             }
             Self::Rotate([x, y, z]) => write!(f, "{WORD_ROTATE} {x} {y} {z}"),
             Self::Shake => f.write_str(WORD_SHAKE),
+            Self::Shell(command) => write!(f, "{WORD_SHELL} {command}"),
             Self::Stop => f.write_str(WORD_STOP),
             Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
             Self::Run { path, times } => write!(f, "{WORD_RUN} {} {times}", path.display()),
@@ -238,6 +244,9 @@ pub fn parse(line: &str) -> Option<Command> {
     let rest = rest.trim();
     let numbers: Option<Vec<u32>> = rest.split_whitespace().map(|n| n.parse().ok()).collect();
     let reals: Option<Vec<f64>> = rest.split_whitespace().map(|n| n.parse().ok()).collect();
+    if word == WORD_SHELL && !rest.is_empty() {
+        return Some(Command::Shell(rest.to_owned()));
+    }
     match (word, reals.as_deref()) {
         (WORD_LOCATION, Some(&[latitude, longitude])) => {
             return Some(Command::Location {
@@ -484,6 +493,20 @@ pub struct Controller {
 }
 
 impl Controller {
+    /// Which way up the screen is shown, in quarter turns (see `orientation`).
+    pub fn turns(&self) -> u8 {
+        self.screen.as_ref().map_or(0, |screen| screen.turns())
+    }
+
+    /// Puts `finger` down, or moves it, at `(x, y)` of the screen as it is shown upright.
+    fn place(&self, finger: u32, x: u32, y: u32) -> Result<(), String> {
+        let turns = self.turns();
+        self.touch(|touch| {
+            let (x, y) = crate::orientation::to_panel(x, y, touch.size(), turns)?;
+            touch.place(finger, x, y)
+        })
+    }
+
     fn touch(
         &self,
         change: impl FnOnce(&mut Touch) -> Option<Vec<InputEvent>>,
@@ -501,6 +524,15 @@ impl Controller {
             return Err(copy::CTL_BAD_KEY.to_owned());
         }
         send(keyboard, &input::key(code, down))
+    }
+
+    /// Runs `command` in the guest's shell and gives back what it printed.
+    pub fn shell(&self, command: &str) -> Result<String, String> {
+        let port = self.adb_port.load(Ordering::SeqCst);
+        if port == 0 {
+            return Err(copy::CTL_NO_ADB.to_owned());
+        }
+        crate::adb::output(port, command).map_err(|err| copy::ctl_shell_failed(&err))
     }
 
     /// Records the guest's screen for `duration`, then copies the recording to `path`.
@@ -568,11 +600,11 @@ impl Controller {
 
     fn perform(&self, command: &Command) -> Result<(), String> {
         match *command {
-            Command::Touch { finger, x, y } => self.touch(|touch| touch.place(finger, x, y)),
+            Command::Touch { finger, x, y } => self.place(finger, x, y),
             Command::Lift { finger } => self.touch(|touch| touch.lift(finger)),
             Command::Tap { x, y } => {
                 let _gesture = self.gesture.lock().unwrap_or_else(PoisonError::into_inner);
-                self.touch(|touch| touch.place(GESTURE_FINGER, x, y))?;
+                self.place(GESTURE_FINGER, x, y)?;
                 thread::sleep(TAP_HOLD);
                 self.touch(|touch| touch.lift(GESTURE_FINGER))
             }
@@ -581,11 +613,11 @@ impl Controller {
                 let steps =
                     (duration.as_millis() / SWIPE_STEP.as_millis()).clamp(1, u128::from(u32::MAX));
                 let steps = steps as u32;
-                self.touch(|touch| touch.place(GESTURE_FINGER, from.0, from.1))?;
+                self.place(GESTURE_FINGER, from.0, from.1)?;
                 let moved = (1..=steps).try_for_each(|step| {
                     thread::sleep(SWIPE_STEP);
                     let (x, y) = along(from, to, step, steps);
-                    self.touch(|touch| touch.place(GESTURE_FINGER, x, y))
+                    self.place(GESTURE_FINGER, x, y)
                 });
                 // The finger comes up even if the swipe left the screen part of the way.
                 self.touch(|touch| touch.lift(GESTURE_FINGER)).and(moved)
@@ -603,6 +635,7 @@ impl Controller {
                 let gamepad = self.gamepad.as_ref().ok_or(copy::CTL_NO_GAMEPAD)?;
                 send(gamepad, &input::pad_event(control, value))
             }
+            Command::Shell(ref command) => self.shell(command).map(drop),
             Command::Install(ref path) => {
                 let port = self.adb_port.load(Ordering::SeqCst);
                 crate::install::install(port, path).map_err(|err| copy::install_failed(path, &err))
@@ -718,6 +751,13 @@ pub fn serve(controller: &Controller, reader: impl BufRead, mut writer: impl Wri
             continue;
         }
         let done = match parse(&line) {
+            // What the shell printed goes back too, a line at a time, before the answer.
+            Some(Command::Shell(command)) => controller.shell(&command).and_then(|printed| {
+                printed
+                    .lines()
+                    .try_for_each(|printed| writeln!(writer, "{SHELL_LINE}{printed}"))
+                    .map_err(|err| err.to_string())
+            }),
             Some(command) => controller.execute(&command),
             None => Err(copy::CTL_USAGE.to_owned()),
         };
@@ -818,17 +858,24 @@ impl Drop for Server {
 }
 
 /// Sends one command to a running instance and returns its one-line answer.
-pub fn request(socket: &Path, command: &str) -> std::io::Result<String> {
+/// Sends `command` and gives back the answer line. Lines a `shell` command printed go to `printed`.
+pub fn request(socket: &Path, command: &str, printed: &mut impl Write) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket)?;
     writeln!(stream, "{command}")?;
-    let mut reply = String::new();
-    if BufReader::new(stream).read_line(&mut reply)? == 0 {
-        return Err(std::io::Error::new(
-            ErrorKind::UnexpectedEof,
-            copy::CTL_NO_REPLY,
-        ));
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut reply = String::new();
+        if reader.read_line(&mut reply)? == 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                copy::CTL_NO_REPLY,
+            ));
+        }
+        match reply.strip_prefix(SHELL_LINE) {
+            Some(line) => printed.write_all(line.as_bytes())?,
+            None => return Ok(reply.trim_end().to_owned()),
+        }
     }
-    Ok(reply.trim_end().to_owned())
 }
 
 #[cfg(test)]
@@ -984,6 +1031,11 @@ mod tests {
             Some(Command::Rotate([-90.0, 0.0, 12.5]))
         );
         assert_eq!(parse("shake"), Some(Command::Shake));
+        assert_eq!(
+            parse("shell am force-stop com.example.game"),
+            Some(Command::Shell("am force-stop com.example.game".into()))
+        );
+        assert_eq!(parse("shell"), None);
         assert_eq!(parse("stop"), Some(Command::Stop));
         for line in ["location 1", "location a b", "rotate 1 2", "shake 1"] {
             assert_eq!(parse(line), None, "{line:?}");
@@ -1064,6 +1116,7 @@ mod tests {
             },
             Command::Rotate([-90.0, 0.0, 12.5]),
             Command::Shake,
+            Command::Shell("dumpsys window | grep -i rotation".into()),
             Command::Stop,
             Command::Wait(Duration::from_millis(1500)),
             Command::Run {

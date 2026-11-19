@@ -29,7 +29,7 @@ Usage: emu --kernel <file> [options]
   --ro-disk <file>        Attach a read-only raw disk image (repeatable, in slot order)
   --bootconfig <k=v>      Add a bootconfig parameter, such as androidboot.hardware=emu (repeatable)
   --serial                Attach the debug serial console to this terminal
-  --display <WxH>         Size of the guest display in pixels (default 1280x720)
+  --display <WxH>         Size of the guest display in pixels (default 720x1280, a phone held upright)
   --no-display            Give the guest no display device
   --headless              Open no window; the display can still be captured
   --keymap <file>         Keys and mouse movements that stand for touches (see the README)
@@ -76,6 +76,8 @@ Usage: emu --kernel <file> [options]
   rotate <x> <y> <z>                     Turn the device, in degrees about its three axes;
                                          0 0 0 is upright, -90 0 0 is flat on a table
   shake                                  Shake the device
+  shell <command>                        Run a command in Android's shell and print what it
+                                         printed, such as `am force-stop <package>`
   stop                                   Turn the machine off at once, like pulling the plug;
                                          shut Android down from inside when you can
   record <file>                          Record the touches and keys that follow as a macro
@@ -114,7 +116,7 @@ pub const ANDROID_WITH_INITRD: &str =
     "--android brings its own ramdisk; do not pass --initrd with it";
 pub const DATA_DIR_NEEDS_ANDROID: &str = "--data-dir only applies with --android";
 pub const LOGCAT_NEEDS_ANDROID: &str = "--logcat only applies with --android";
-pub const BAD_DISPLAY: &str = "--display needs a size such as 1280x720";
+pub const BAD_DISPLAY: &str = "--display needs a size such as 720x1280";
 pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";
 pub const BOOT_MARKER_NEEDS_SERIAL: &str =
@@ -197,6 +199,11 @@ pub const KEYMAP_NEEDS_WINDOW: &str =
     "key maps need a window; do not combine them with --headless or --no-display";
 pub const KEYMAP_TWO_SOURCES: &str = "give --keymap or --keymap-dir, not both";
 pub const FOREGROUND_THREAD: &str = "foreground app";
+pub const ORIENTATION_THREAD: &str = "orientation";
+
+pub fn screenshot_saved(path: &std::path::Path) -> String {
+    format!("emu: screenshot saved to {}", path.display())
+}
 
 pub fn keymap_switched(package: &str, path: Option<&Path>) -> String {
     match path {
@@ -273,6 +280,11 @@ pub fn sensor_request(request: &str) -> String {
 pub const CTL_THREAD: &str = "ctl";
 /// The control socket's answer to a command that worked.
 pub const CTL_OK: &str = "ok";
+pub const CTL_NO_ADB: &str = "adb is not up yet (or was turned off with --adb-port 0)";
+
+pub fn ctl_shell_failed(err: &dyn Display) -> String {
+    format!("the guest's shell did not answer: {err}")
+}
 
 /// The control socket's answer to a command that did not.
 pub fn ctl_error(why: &dyn Display) -> String {

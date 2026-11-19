@@ -38,6 +38,12 @@ const TRACKING_ID_NONE: i32 = -1;
 const KEYBOARD_CODES: RangeInclusive<u16> = 1..=248;
 /// `KEY_APPSELECT`, which Android reads as its "recent apps" button.
 pub const KEY_APPSELECT: u16 = 0x244;
+/// Android's other buttons, by Linux key code.
+pub const KEY_BACK: u16 = 158;
+pub const KEY_HOMEPAGE: u16 = 172;
+pub const KEY_POWER: u16 = 116;
+pub const KEY_VOLUMEUP: u16 = 115;
+pub const KEY_VOLUMEDOWN: u16 = 114;
 
 /// How far a stick reaches from its centre, in the units the gamepad reports.
 const STICK_REACH: i32 = 32767;
@@ -375,6 +381,11 @@ impl Touch {
 
     /// Puts finger `slot` at a pixel, or moves it there if it is already down.
     /// `None` if the slot or the position is outside the screen.
+    /// Width and height of the panel, in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     pub fn place(&mut self, slot: u32, x: u32, y: u32) -> Option<Vec<InputEvent>> {
         if slot >= TOUCH_SLOTS || x >= self.width || y >= self.height {
             return None;

@@ -15,7 +15,8 @@ const MIB: u64 = 1 << 20;
 pub const DEFAULT_RAM_MIB: u64 = 4096;
 pub const DEFAULT_VCPUS: u32 = 4;
 /// Size of the guest's display, in pixels.
-pub const DEFAULT_DISPLAY: (u32, u32) = (1280, 720);
+/// A phone held upright: the shape Google's phone image is made for. Landscape apps turn it.
+pub const DEFAULT_DISPLAY: (u32, u32) = (720, 1280);
 /// Size the guest's data partition is created with.
 pub const DEFAULT_USERDATA_GIB: u64 = 8;
 /// Where an Android instance keeps what the guest writes, inside the images directory, unless told otherwise.
@@ -119,6 +120,26 @@ pub fn home_default() -> Option<PathBuf> {
 }
 /// How often the app in front is checked, for key maps that follow it.
 pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
+/// How often the guest is asked which way up its screen is, and how long it may take to answer.
+/// Most of the monitor the window takes when it first opens, so a tall phone screen fits.
+/// Where ⌘S saves screenshots: the Desktop, named by the time, so they never overwrite each other.
+pub fn screenshot_path() -> PathBuf {
+    const DESKTOP: &str = "Desktop";
+    const PREFIX: &str = "emu-";
+    const EXTENSION: &str = "png";
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    home.join(DESKTOP)
+        .join(format!("{PREFIX}{stamp}.{EXTENSION}"))
+}
+pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
+pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
+pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for the `adb` forward to accept a connection.
 pub const ADB_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A guest command may print nothing for this long and still be running (a screen recording

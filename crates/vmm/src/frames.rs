@@ -4,6 +4,7 @@
 //! open it. The PNG is written without compression, which needs no library and is fast.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use devices::disk::gpt::crc32;
@@ -104,6 +105,8 @@ pub struct Screen {
     latest: Mutex<Latest>,
     /// Called after every new frame, on the thread that delivered it.
     listener: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Which way up the picture is shown, in quarter turns (see `orientation`).
+    turns: AtomicU8,
 }
 
 #[derive(Default)]
@@ -140,7 +143,16 @@ impl Screen {
         *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(listener));
     }
 
-    /// Lets `look` see the newest frame. `None` if the guest has not shown anything yet.
+    /// Which way up the picture is shown, in quarter turns (see `orientation`).
+    pub fn turns(&self) -> u8 {
+        self.turns.load(Ordering::SeqCst)
+    }
+
+    pub fn set_turns(&self, turns: u8) {
+        self.turns.store(turns, Ordering::SeqCst);
+    }
+
+    /// Lets `look` see the newest frame, as the panel holds it (not turned upright). `None` if the guest has not shown anything yet.
     pub fn with_latest<R>(&self, look: impl FnOnce(&Frame<'_>) -> R) -> Option<R> {
         let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
         (latest.serial != 0).then(|| {
@@ -158,11 +170,19 @@ impl Screen {
     fn save_latest(&self, path: &Path) -> std::io::Result<u64> {
         let (image, serial) = {
             let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
-            let image = png(&Frame {
+            let panel = Frame {
                 width: latest.width,
                 height: latest.height,
                 format: latest.format,
                 pixels: &latest.pixels,
+            };
+            // Saved upright, as the window shows it.
+            let (width, height, pixels) = crate::orientation::upright(&panel, self.turns());
+            let image = png(&Frame {
+                width,
+                height,
+                format: latest.format,
+                pixels: &pixels,
             });
             (image, latest.serial)
         };

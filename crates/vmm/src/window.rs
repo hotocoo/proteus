@@ -16,16 +16,19 @@ use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
 use crate::input::button_code;
 use crate::keymap::{self, Mapper, Scroll, Touch};
-use crate::profiles;
 use crate::{VmmError, copy};
+use crate::{orientation, profiles};
 
+/// Quarter turns in a whole turn, and degrees in a quarter turn.
+const QUARTER_TURNS: u8 = 4;
+const DEGREES_PER_TURN: f64 = 90.0;
 /// The finger the mouse stands for.
 const MOUSE_FINGER: u32 = 0;
 /// What the window shows where the guest's picture does not reach, and before there is one.
@@ -40,6 +43,8 @@ pub enum Notice {
     Stopped,
     /// This app is now in front.
     Foreground(String),
+    /// Android turned its screen; the window turns the picture back upright.
+    Rotated(u8),
 }
 
 /// Where the guest's picture sits inside the window: as large as fits, in proportion, centred.
@@ -89,10 +94,12 @@ impl Viewport {
     }
 }
 
-/// Draws `frame` into a window buffer of `window` pixels (one `0x00RRGGBB` word each), scaled to fit.
-/// Returns false, drawing nothing, if the buffer or the frame is not the size it claims.
-fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32]) -> bool {
-    let guest = (frame.width, frame.height);
+/// Draws `frame` into a window buffer of `window` pixels (one `0x00RRGGBB` word each), turned
+/// upright by `turns` and scaled to fit. Returns false, drawing nothing, if the buffer or the frame
+/// is not the size it claims.
+fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32], turns: u8) -> bool {
+    let panel = (frame.width, frame.height);
+    let guest = orientation::upright_size(panel, turns);
     let Some(view) = Viewport::fit(window, guest) else {
         return false;
     };
@@ -103,9 +110,9 @@ fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32]) -> bool {
         return false;
     }
     let [red, green, blue] = channel_order(frame.format);
-    // Which guest column each picture column shows; the same for every row.
-    let columns: Vec<usize> = (0..u64::from(view.width))
-        .map(|x| (x * u64::from(guest.0) / u64::from(view.width)) as usize * BYTES_PER_PIXEL)
+    // Which upright guest column each picture column shows; the same for every row.
+    let columns: Vec<u32> = (0..u64::from(view.width))
+        .map(|x| (x * u64::from(guest.0) / u64::from(view.width)) as u32)
         .collect();
     for (y, row) in buffer.chunks_exact_mut(window.0 as usize).enumerate() {
         let inside = (y as u32)
@@ -115,19 +122,65 @@ fn blit(frame: &Frame<'_>, window: (u32, u32), buffer: &mut [u32]) -> bool {
             row.fill(BACKGROUND);
             continue;
         };
-        let guest_y = (u64::from(picture_y) * u64::from(guest.1) / u64::from(view.height)) as usize;
-        let source = &frame.pixels[guest_y * stride..(guest_y + 1) * stride];
+        let guest_y = (u64::from(picture_y) * u64::from(guest.1) / u64::from(view.height)) as u32;
         let (left, rest) = row.split_at_mut(view.left as usize);
         let (picture, right) = rest.split_at_mut(view.width as usize);
         left.fill(BACKGROUND);
         right.fill(BACKGROUND);
-        for (pixel, at) in picture.iter_mut().zip(&columns) {
-            *pixel = u32::from(source[at + red]) << 16
-                | u32::from(source[at + green]) << 8
-                | u32::from(source[at + blue]);
+        for (pixel, &guest_x) in picture.iter_mut().zip(&columns) {
+            let (x, y) = orientation::to_panel(guest_x, guest_y, panel, turns).unwrap_or_default();
+            let at = y as usize * stride + x as usize * BYTES_PER_PIXEL;
+            *pixel = u32::from(frame.pixels[at + red]) << 16
+                | u32::from(frame.pixels[at + green]) << 8
+                | u32::from(frame.pixels[at + blue]);
         }
     }
     true
+}
+
+/// What a shortcut does: one of Android's buttons, a turn of the device, or a screenshot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shortcut {
+    Button(u16),
+    /// Turn the device a quarter turn: clockwise when true.
+    Turn(bool),
+    Screenshot,
+}
+
+/// Whether the shortcut modifier is held: ⌘ on a Mac, Ctrl+Alt elsewhere (the Windows/Super key
+/// belongs to the desktop there).
+fn shortcut_held(modifiers: ModifiersState) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.super_key()
+    } else {
+        modifiers.control_key() && modifiers.alt_key()
+    }
+}
+
+/// The shortcut for `key` pressed with the shortcut modifier, if it is one. Keys used this way never
+/// reach the guest.
+fn shortcut(key: KeyCode, shift: bool) -> Option<Shortcut> {
+    use crate::input::{
+        KEY_APPSELECT, KEY_BACK, KEY_HOMEPAGE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP,
+    };
+    Some(match key {
+        KeyCode::Backspace | KeyCode::KeyB => Shortcut::Button(KEY_BACK),
+        KeyCode::KeyH if shift => Shortcut::Button(KEY_HOMEPAGE),
+        KeyCode::KeyO => Shortcut::Button(KEY_APPSELECT),
+        KeyCode::KeyP => Shortcut::Button(KEY_POWER),
+        KeyCode::ArrowUp => Shortcut::Button(KEY_VOLUMEUP),
+        KeyCode::ArrowDown => Shortcut::Button(KEY_VOLUMEDOWN),
+        KeyCode::ArrowLeft => Shortcut::Turn(false),
+        KeyCode::ArrowRight => Shortcut::Turn(true),
+        KeyCode::KeyS => Shortcut::Screenshot,
+        _ => return None,
+    })
+}
+
+/// Whether `key` is the key that makes shortcuts, which is not passed to the guest on a Mac (⌘ is
+/// no key Android knows, and as Meta it would start Android's own shortcuts too).
+fn is_shortcut_modifier(key: KeyCode) -> bool {
+    cfg!(target_os = "macos") && matches!(key, KeyCode::SuperLeft | KeyCode::SuperRight)
 }
 
 /// The Linux key code the guest's keyboard sends for a key of the host's keyboard, by position.
@@ -158,6 +211,10 @@ struct App {
     grabbed: bool,
     /// Why the window could not be made, if it could not.
     failed: Option<String>,
+    /// Modifier keys held now.
+    modifiers: ModifiersState,
+    /// How far the device is turned about the screen's axis, in quarter turns clockwise.
+    device_turns: u8,
 }
 
 impl App {
@@ -226,6 +283,11 @@ impl App {
         }
     }
 
+    /// Size of the guest's picture as it is shown, upright.
+    fn upright(&self) -> (u32, u32) {
+        orientation::upright_size(self.guest, self.controller.turns())
+    }
+
     fn window_size(&self) -> Option<PhysicalSize<u32>> {
         Some(self.shown.as_ref()?.window.inner_size())
     }
@@ -233,7 +295,7 @@ impl App {
     /// Moves the mouse's finger to the pointer, puts it down or lifts it, as `pressed` says.
     fn touch(&mut self, pressed: bool) {
         let size = self.window_size().unwrap_or_default();
-        let view = Viewport::fit((size.width, size.height), self.guest);
+        let view = Viewport::fit((size.width, size.height), self.upright());
         let at = view.and_then(|view| view.guest_pixel(self.pointer.x, self.pointer.y));
         match (pressed, at) {
             (true, Some((x, y))) => {
@@ -269,7 +331,9 @@ impl App {
             let mut buffer = shown.surface.buffer_mut()?;
             let screen = self.controller.screen.as_ref();
             let drawn = screen.and_then(|screen| {
-                screen.with_latest(|frame| blit(frame, (size.width, size.height), &mut buffer))
+                let turns = screen.turns();
+                screen
+                    .with_latest(|frame| blit(frame, (size.width, size.height), &mut buffer, turns))
             });
             if drawn != Some(true) {
                 buffer.fill(BACKGROUND);
@@ -287,9 +351,14 @@ impl ApplicationHandler<Notice> for App {
         if self.shown.is_some() {
             return;
         }
+        let monitor = event_loop.primary_monitor().map(|monitor| {
+            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            (size.width, size.height)
+        });
+        let (width, height) = initial_size(self.upright(), monitor);
         let attributes = Window::default_attributes()
             .with_title(copy::WINDOW_TITLE)
-            .with_inner_size(LogicalSize::new(self.guest.0, self.guest.1));
+            .with_inner_size(LogicalSize::new(width, height));
         let shown = event_loop
             .create_window(attributes)
             .map_err(|err| err.to_string())
@@ -319,6 +388,7 @@ impl ApplicationHandler<Notice> for App {
             }
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),
+            Notice::Rotated(turns) => self.rotated(turns),
         }
     }
 
@@ -384,11 +454,23 @@ impl ApplicationHandler<Notice> for App {
                     self.apply(&touches);
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 let PhysicalKey::Code(key) = event.physical_key else {
                     return;
                 };
                 let down = event.state == ElementState::Pressed;
+                if is_shortcut_modifier(key) {
+                    return;
+                }
+                if shortcut_held(self.modifiers)
+                    && let Some(shortcut) = shortcut(key, self.modifiers.shift_key())
+                {
+                    if down {
+                        self.shortcut(shortcut);
+                    }
+                    return;
+                }
                 if let Some(code) = linux_key(key)
                     && !self.mapped(code, down)
                 {
@@ -412,7 +494,7 @@ impl App {
         let path = profiles::map_for(dir, package);
         eprintln!("{}", copy::keymap_switched(package, path.as_deref()));
         let mapper = path.and_then(|path| {
-            keymap::load(&path, self.guest)
+            keymap::load(&path, orientation::any_way_up(self.guest))
                 .inspect_err(|why| eprintln!("{}", copy::fatal(why)))
                 .ok()
         });
@@ -424,6 +506,42 @@ impl App {
         self.sync_pointer();
     }
 
+    /// Does what a shortcut stands for.
+    fn shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::Button(code) => self.send(Command::Key { code, down: None }),
+            Shortcut::Turn(clockwise) => {
+                let step = if clockwise { 1 } else { QUARTER_TURNS - 1 };
+                self.device_turns = (self.device_turns + step) % QUARTER_TURNS;
+                let degrees = f64::from(self.device_turns) * DEGREES_PER_TURN;
+                self.send(Command::Rotate([0.0, 0.0, degrees]));
+            }
+            Shortcut::Screenshot => {
+                let path = crate::config::screenshot_path();
+                match self.controller.execute(&Command::Screenshot(path.clone())) {
+                    Ok(()) => eprintln!("{}", copy::screenshot_saved(&path)),
+                    Err(why) => eprintln!("{}", copy::fatal(&why)),
+                }
+            }
+        }
+    }
+
+    /// Android turned its screen: lift the finger, and give the window the picture's new shape.
+    fn rotated(&mut self, turns: u8) {
+        self.touch(false);
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let size = shown.window.inner_size();
+        let (width, height) = orientation::upright_size(self.guest, turns);
+        if (size.width > size.height) != (width > height) {
+            let _ = shown
+                .window
+                .request_inner_size(PhysicalSize::new(size.height, size.width));
+        }
+        shown.window.request_redraw();
+    }
+
     /// The mouse moved by this much, wherever the pointer is.
     fn mouse_moved(&mut self, dx: f64, dy: f64) {
         let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
@@ -431,6 +549,19 @@ impl App {
             self.apply(&touches);
         }
     }
+}
+
+/// The window's first size, in logical pixels: the guest's picture, made smaller if needed so it
+/// fits a share of the monitor (`None` when the monitor is not known).
+fn initial_size(picture: (u32, u32), monitor: Option<(f64, f64)>) -> (f64, f64) {
+    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
+    let scale = monitor.map_or(1.0, |(monitor_w, monitor_h)| {
+        let share = crate::config::WINDOW_SCREEN_SHARE;
+        (monitor_w * share / width)
+            .min(monitor_h * share / height)
+            .min(1.0)
+    });
+    (width * scale, height * scale)
 }
 
 /// The window's event loop, before it runs. It has to be made, and run, on the program's first
@@ -473,6 +604,8 @@ impl WindowLoop {
             profiles,
             grabbed: false,
             failed: None,
+            modifiers: ModifiersState::empty(),
+            device_turns: 0,
         };
         let ran = self.0.run_app(&mut app);
         match (app.failed, ran) {
@@ -538,13 +671,70 @@ mod tests {
         };
         // A 4x4 window: the picture is 4x2, in the middle rows.
         let mut buffer = [0xdead_beefu32; 16];
-        assert!(blit(&frame, (4, 4), &mut buffer));
+        assert!(blit(&frame, (4, 4), &mut buffer, 0));
         const RED: u32 = 0x00ff_0000;
         const BLUE: u32 = 0x0000_00ff;
         assert_eq!(buffer[..4], [BACKGROUND; 4]);
         assert_eq!(buffer[4..8], [RED, RED, BLUE, BLUE]);
         assert_eq!(buffer[8..12], [RED, RED, BLUE, BLUE]);
         assert_eq!(buffer[12..], [BACKGROUND; 4]);
+    }
+
+    #[test]
+    fn turned_frame_is_shown_upright() {
+        // A 2x1 panel, red then blue. At a quarter turn the panel's right end is the top, so the
+        // window (1x2) shows blue above red.
+        let pixels = [0, 0, 255, 0, 255, 0, 0, 0];
+        let frame = Frame {
+            width: 2,
+            height: 1,
+            format: FORMAT_BGRX,
+            pixels: &pixels,
+        };
+        let mut buffer = [0u32; 2];
+        assert!(blit(&frame, (1, 2), &mut buffer, 1));
+        assert_eq!(buffer, [0x0000_00ff, 0x00ff_0000]);
+    }
+
+    #[test]
+    fn first_window_fits_the_monitor_and_never_grows_the_picture() {
+        let share = crate::config::WINDOW_SCREEN_SHARE;
+        let (width, height) = initial_size((720, 1280), Some((1440.0, 900.0)));
+        assert!((height - 900.0 * share).abs() < 1e-6);
+        assert!((width / height - 720.0 / 1280.0).abs() < 1e-6);
+        assert_eq!(
+            initial_size((720, 1280), Some((4000.0, 4000.0))),
+            (720.0, 1280.0)
+        );
+        assert_eq!(initial_size((720, 1280), None), (720.0, 1280.0));
+    }
+
+    #[test]
+    fn shortcuts_press_androids_buttons_and_leave_other_keys_alone() {
+        use crate::input::{KEY_APPSELECT, KEY_BACK, KEY_HOMEPAGE};
+        assert_eq!(
+            shortcut(KeyCode::Backspace, false),
+            Some(Shortcut::Button(KEY_BACK))
+        );
+        assert_eq!(
+            shortcut(KeyCode::KeyH, true),
+            Some(Shortcut::Button(KEY_HOMEPAGE))
+        );
+        // Without shift, ⌘H stays the Mac's "hide".
+        assert_eq!(shortcut(KeyCode::KeyH, false), None);
+        assert_eq!(
+            shortcut(KeyCode::KeyO, false),
+            Some(Shortcut::Button(KEY_APPSELECT))
+        );
+        assert_eq!(
+            shortcut(KeyCode::ArrowRight, false),
+            Some(Shortcut::Turn(true))
+        );
+        // ⌘Q quits the Mac way and is not taken.
+        assert_eq!(shortcut(KeyCode::KeyQ, false), None);
+        for key in [KEY_BACK, KEY_HOMEPAGE, KEY_APPSELECT] {
+            assert!(crate::input::is_key(key), "{key}");
+        }
     }
 
     #[test]
@@ -557,7 +747,7 @@ mod tests {
             pixels: &pixels,
         };
         let mut buffer = [0u32; 1];
-        assert!(blit(&frame, (1, 1), &mut buffer));
+        assert!(blit(&frame, (1, 1), &mut buffer, 0));
         assert_eq!(buffer, [0x000a_141e]);
     }
 
@@ -571,14 +761,14 @@ mod tests {
             pixels: &pixels,
         };
         let mut short = [7u32; 3];
-        assert!(!blit(&frame, (2, 2), &mut short));
+        assert!(!blit(&frame, (2, 2), &mut short, 0));
         assert_eq!(short, [7; 3]);
         let truncated = Frame {
             pixels: &pixels[..4],
             ..frame
         };
         let mut buffer = [7u32; 4];
-        assert!(!blit(&truncated, (2, 2), &mut buffer));
+        assert!(!blit(&truncated, (2, 2), &mut buffer, 0));
         assert_eq!(buffer, [7; 4]);
     }
 

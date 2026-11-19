@@ -54,13 +54,30 @@ Swipe up to unlock. `adb connect 127.0.0.1:5555` works once Android is up. Close
 the machine off; that is like pulling the plug, so shut Android down from inside when you can
 (`adb shell reboot -p`).
 
+The screen starts upright, like a phone in the hand. When an app turns it to landscape (most games
+do) or the device is turned, the window turns with it. The mouse is a finger: drag up from the
+bottom edge for Home, in from the left or right edge for Back, or use the buttons Android shows at
+the bottom (Settings > System > Navigation mode switches between buttons and gestures).
+
+Window shortcuts (⌘ on a Mac, Ctrl+Alt on Linux):
+
+| Keys | Does |
+|---|---|
+| ⌘⌫ or ⌘B | Back |
+| ⌘⇧H | Home |
+| ⌘O | Recent apps (swipe a card away there to close that app) |
+| ⌘P | Power button: screen off and on |
+| ⌘↑ / ⌘↓ | Volume up / down |
+| ⌘← / ⌘→ | Turn the device a quarter turn (Android follows when auto-rotate is on) |
+| ⌘S | Screenshot, saved on the Desktop |
+
 Useful options (`emu --help` lists all of them):
 
 | Option | Effect |
 |---|---|
 | `--gpu` | Draw with this Mac's GPU; falls back to the CPU and says so if it cannot start |
 | `--ram-mib <n>`, `--vcpus <n>` | Guest memory (default 4096) and CPUs (default 4) |
-| `--display <WxH>` | Size of the guest's screen (default 1280x720) |
+| `--display <WxH>` | Size of the guest's screen, held upright (default 720x1280; landscape apps turn the window) |
 | `--headless` | No window; use the control socket or `--frame-dump` to see the screen |
 | `--ctl <socket>` | Listen for `emu ctl` commands on this local socket |
 | `--logcat <file>` | Save Android's system log |
@@ -85,8 +102,8 @@ Start `emu` with `--ctl /tmp/emu.sock` (keep the path short; the system limits i
 characters), then:
 
 ```sh
-emu ctl /tmp/emu.sock tap 640 360
-emu ctl /tmp/emu.sock swipe 640 650 640 150
+emu ctl /tmp/emu.sock tap 360 640                  # pixels of the screen as shown, upright
+emu ctl /tmp/emu.sock swipe 360 1100 360 300
 emu ctl /tmp/emu.sock key 116                  # Linux key code; 116 is the power button
 emu ctl /tmp/emu.sock screenshot shot.png
 emu ctl /tmp/emu.sock screenrecord clip.mp4 30  # seconds, at most 180; no sound
@@ -97,6 +114,7 @@ emu ctl /tmp/emu.sock route walk.gpx 5         # follow a GPX track at 5 km/h
 emu ctl /tmp/emu.sock walk 90 5                # walk east at 5 km/h; `walk stop` stops
 emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lays the device flat
 emu ctl /tmp/emu.sock shake
+emu ctl /tmp/emu.sock shell am force-stop com.example.game   # any command in Android's shell
 emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly rx ry, triggers lt rt
 emu ctl /tmp/emu.sock stop
 ```
@@ -120,7 +138,7 @@ To have the map follow the app in front, put maps in a folder named after the ap
 emu instance create farm --kernel kernel-arm64 --android <image directory> --ram-mib 2048
 emu instance start farm                      # its own data, control socket and adb port
 emu instance list
-emu ctl farm tap 640 360                     # an instance name works where a socket path does
+emu ctl farm tap 360 640                     # an instance name works where a socket path does
 emu instance rm farm                         # asks first; deletes its Android data for good
 ```
 
