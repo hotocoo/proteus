@@ -106,26 +106,29 @@ and frame latency) has not been run.
 
 ## Running it
 
-The release ships MoltenVK, in the layout gfxstream reads by itself:
+A release carries two Vulkan drivers, in the layout gfxstream reads by itself, and `emu --gpu` tries
+them best first, each in a child process with a time limit:
 
 ```text
-emu
-libgfxstream_backend.dylib       found through emu's @executable_path rpath
-lib64/vulkan/libvulkan.dylib     the Vulkan loader (gfxstream looks here before the system)
-lib64/vulkan/MoltenVK_icd.json   library_path ./libMoltenVK.dylib, relative to the file
+lib64/vulkan/libvulkan.dylib                    the Vulkan loader
+lib64/vulkan/libkosmickrisp_icd.json            KosmicKrisp (Mesa), with the libraries it links
+lib64/vulkan/libvulkan_kosmickrisp.dylib        (zstd, xcb, SPIRV-Tools…), pointed at each other
+lib64/vulkan/MoltenVK_icd.json                  MoltenVK, the fallback
 lib64/vulkan/libMoltenVK.dylib
-licenses/                        gfxstream and its third-party code, MoltenVK, Vulkan-Loader
+licenses/                                       gfxstream and its third-party code, Mesa and the
+                                                libraries above, MoltenVK, Vulkan-Loader
 ```
 
-`emu --gpu` sets `ANDROID_EMU_VK_ICD=moltenvk` itself when that file is there and none of
-`ANDROID_EMU_VK_ICD`, `VK_DRIVER_FILES` or `VK_ICD_FILENAMES` is set, before the check runs, so the
-check and the renderer use the same driver. `scripts/build-gfxstream.sh <work> <out>` and
-`scripts/bundle-macos.sh` build that folder; the release workflow runs the same two scripts. MoltenVK
-was picked to ship because it links only system frameworks; Homebrew's KosmicKrisp links zstd, xcb
-and SPIRV-Tools from Homebrew.
+`lib64` sits beside `emu`, or in `Contents/Resources` inside Emu.app; `emu` points gfxstream there
+through `ANDROID_EMULATOR_LAUNCHER_DIR` and picks the driver with `ANDROID_EMU_VK_ICD`
+(`kosmickrisp`, then `moltenvk`), unless the user set `ANDROID_EMU_VK_ICD`, `VK_DRIVER_FILES` or
+`VK_ICD_FILENAMES`. `scripts/build-gfxstream.sh <work> <out>`, `scripts/bundle-macos.sh` (which uses
+`scripts/bundle-dylib.py` for KosmicKrisp's libraries) and `scripts/make-app.sh` build all of it;
+the release workflow runs the same scripts on a macOS 26 runner, where Homebrew's Mesa has
+KosmicKrisp.
 
-KosmicKrisp is still reachable: `VK_DRIVER_FILES=<its icd.json> emu ... --gpu`, with the Vulkan loader
-beside `emu` as above or `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
+KosmicKrisp is preferred because under MoltenVK an app's render thread could wait for ever in
+`vkQueueWaitIdle` (Aurora Store froze on its first tap); the same steps under KosmicKrisp did not.
 
 Known messages that do not stop it: the guest's `DRM_IOCTL_VIRTGPU_GET_CAPS failed with Invalid
 argument` and `CONTEXT_INIT failed with File exists`; the driver carries on.

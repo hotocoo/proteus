@@ -6,17 +6,37 @@ owner may want to revisit.
 
 ## Layout
 
-- **No `gfx`, `ui`, `ctl` or `xtask` crates.** The control socket, key maps, macros, window, sound,
-  gamepads, instances and the adb client live in `crates/vmm`. They are small enough not to need
-  their own crates yet; `gfx` arrives with GPU acceleration.
-- **Configuration is command-line flags**, not `assets/default.toml`. Timings and sizes live in
+- **No `ui`, `ctl` or `xtask` crates.** The control socket, key maps, macros, window, GUI, sound,
+  gamepads, instances and the adb client live in `crates/vmm`. `gfx` exists and wraps gfxstream.
+- **Configuration is command-line flags**, not `assets/default.toml`. An instance keeps its flags in
+  its `args` file, which the settings form reads and writes. Timings, sizes and colours live in
   `crates/vmm/src/config.rs` and the boards' `layout.rs` files.
+
+## GUI
+
+- **egui is drawn with wgpu (Metal on macOS) in the emulator's own window**, not with `ash` in a
+  transparent overlay window above a gfxstream swapchain. gfxstream does not present to the window
+  here: the guest's frames are read back and uploaded to a texture (one copy per frame), so there is
+  no swapchain to keep untouched, and one window is simpler. The overlay design comes back with the
+  blueprint's zero-copy present path, which is not built.
+- **The launcher** (`emu` with no arguments, or Emu.app) is the instance manager the blueprint puts in
+  the overlay. Settings are a form over an instance's flags, applied on restart.
+- **Macros are the control socket's commands, one per line** (with `wait`), not TOML. Repeating is
+  `run <file> <times>`.
+- **Closing the window shuts Android down** (`reboot -p` over adb, then power off), where the blueprint
+  only said closing switches the machine off.
 
 ## Guest
 
 - **Google's prebuilt Cuttlefish images, not the stripped `emu_*` products.** Building AOSP needs a
   large Linux machine the project does not have. So there is no strip manifest, no sign-in flavours,
   no EROFS images, and the idle-RAM and idle-flow gates cannot be measured against the base image.
+- **Aurora Store is bundled** (GPL-3.0, F-Droid's build, pinned by SHA-256) and installed on a data
+  folder's first boot, so Play's catalogue is reachable without Google's apps. The blueprint's
+  sign-in flavours (microG, user-supplied Google apps) need the project's own image.
+- **After boot the emulator adjusts the stock image over adb**: it stops the serial copy of logcat
+  unless `--logcat` asks for it, and switches Bluetooth off (no controller; the stack aborts and
+  restarts). In the project's own image these belong in its build.
 - **Android's own boot images are read** (`init_boot.img`, `vendor_boot.img`, `super.img` behind a
   GPT disk assembled in memory), instead of loose files concatenated by `xtask`.
 - **adb without a key.** The images' `adbd` does not ask for one (`ro.adb.secure` is unset), so the
@@ -40,8 +60,7 @@ owner may want to revisit.
 
 - **Windows (WHPX).** No Windows machine, and `virtio-queue` enables a `vm-memory` feature that does
   not compile for Windows, so the device crates do not build there yet.
-- **GPU acceleration.** gfxstream's host renderer builds on macOS (`docs/gfxstream.md`), but it
-  needs a Vulkan driver at run time and none is installed. How one gets onto a user's Mac, and
-  whether a release bundles it, is the project owner's decision.
-- **The GUI (milestone 6)** depends on the milestone-3 overlay check, which needs the same Vulkan
-  driver.
+- **The stripped image, both sign-in flavours, and ARM translation on x86_64 hosts.** All need AOSP
+  builds, so a Linux build machine.
+- **The zero-copy present path** (gfxstream drawing straight to the window's swapchain), and the
+  benchmarks against Google's emulator.

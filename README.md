@@ -3,61 +3,77 @@
 A small virtual machine monitor in Rust, being built into a lightweight Android emulator for games.
 No QEMU, PCI, UEFI or ACPI: the guest sees a virtio-mmio board and is booted directly from a kernel image.
 
+## Start here (Mac)
+
+1. Download `emu-<version>-macos-arm64-app.zip` from the latest release, unzip it, and drag
+   **Emu.app** to Applications. The app is not notarised, so the first time macOS refuses it; run
+   `xattr -dr com.apple.quarantine /Applications/Emu.app` once, then open it.
+2. Get an Android image (this project may not redistribute Google's): open
+   <https://ci.android.com/builds/branches/aosp-android-latest-release/grid>, pick a green build of
+   `aosp_cf_arm64_only_phone-userdebug`, download `aosp_cf_arm64_only_phone-img-<build>.zip` from its
+   artifacts (about 1.1 GB) and unzip it into a folder.
+3. Open Emu. Under **New instance**, choose that folder as the image, keep "Use this Mac's GPU" on,
+   and press **Create and start**. Android boots in about 20 seconds; swipe up to unlock.
+
+Each instance is a phone of its own. The launcher starts, stops and deletes them, and **Settings**
+changes everything about one: the Android image (ROM) and kernel, memory, CPUs, screen size, GPU,
+sound, gamepad, key maps, network, storage size, and a factory reset.
+
+**Apps:** the release carries **Aurora Store**, installed on first start: Google Play's catalogue,
+signed in anonymously, without Google services. Apps that need Google services (Google sign-in, some
+games' logins and purchases) do not work, because the image has none (see "What is missing"). APKs,
+split sets and `.apks`/`.xapk` files can also be dropped on the window.
+
+**The window:** Android's own Back, Home and Recents are at the bottom of the screen (or the
+gesture bar: swipe up for Home, in from a side edge for Back), and also on the toolbar beside the
+screen with Power, volume, turning and screenshots. The toolbar's panels do the rest: **Apps**
+(install, open, force stop, clear data, uninstall, close background apps), **Location** (coordinates,
+map links, saved places, GPX routes, walking), **Sensors** (tilt, shake), **Macros** (record, edit,
+play), **Key map** (load, or place taps and sticks on the screen), **Capture** (screenshots and
+recordings) and **Settings**. The screen starts upright like a phone; when a game turns it to
+landscape, the window turns with it.
+
+Closing the window shuts Android down properly first (about 3 seconds); closing it again cuts the
+power at once.
+
 ## Status
 
-Early. What works today, on Apple Silicon Macs (macOS 15 or later):
+What works today, on Apple Silicon Macs (macOS 15 or later):
 
 - **Android boots to its home screen**, from Google's prebuilt AOSP virtual-device image and a kernel
   built by this repository, in about 20 seconds.
-- **GPU acceleration** (`--gpu`): Android draws with this Mac's GPU through gfxstream and MoltenVK,
-  both shipped in the release. Without `--gpu`, or where it cannot start, the guest's CPU draws:
-  slow, fine for looking around but not for games.
-- A window that shows the guest's display, with the mouse as a finger and the keyboard as a keyboard.
+- **GPU acceleration**: Android draws with this Mac's GPU through gfxstream and KosmicKrisp (Mesa's
+  Vulkan driver for Apple GPUs), with MoltenVK as the fallback, all shipped in the release. Where
+  neither starts, the guest's CPU draws: slow, fine for looking around but not for games.
+- The launcher and the window's controls described above.
 - Networking without any host driver or admin rights: DHCP, DNS through the host's resolver, TCP and UDP.
 - A sinkhole that blocks domains you list (trackers, ads) at the DNS and TLS server-name level.
 - `adb` over a loopback port.
-- A control socket: taps, swipes, keys, gamepad controls, screenshots, a location, device rotation
-  and shaking, and macros recorded from it or written by hand.
+- A control socket: everything the window's controls do, from scripts (`emu ctl`).
 - Key maps for playing with keyboard and mouse, including mouse-wheel pinch zoom.
 - A host gamepad shows up in Android as a gamepad.
-- Installing apps by dropping them on the window: single APKs, split sets and `.apks`/`.xapk`
-  archives with their OBB files. Screen recordings to MP4.
-- Sound, played through this machine's default output (`--mute` turns it off).
-- Several virtual CPUs, disks, a serial console.
+- Sound, played through this machine's default output.
+- Several instances at once, with one able to drive the others.
 - Plain Linux kernels boot too, to a shell on the serial console.
 
-- Several instances at once, with one able to drive the others.
+Not there yet: a Linux desktop check, Windows hosts, and an Android image of this project's own
+(stripped, with sign-in). See "What is missing" at the end.
 
-Not there yet: a GUI,
-a Linux desktop check, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
-"What is missing" at the end.
+## Run Android from the command line
 
-## Run Android
-
-You need three things: the `emu` program, a guest kernel, and an Android image.
-
-1. **`emu` and the kernel** are in each release: unpack `emu-<version>-macos-arm64.tar.gz` and keep its
-   folder together (`emu` finds its GPU libraries in it). To build `emu` yourself, see "Build" below;
-   the kernel is built by the "Guest kernel" workflow (see `guest/kernel/README.md`).
-2. **The Android image** is Google's: open
-   <https://ci.android.com/builds/branches/aosp-android-latest-release/grid>, pick a green build of
-   `aosp_cf_arm64_only_phone-userdebug`, and download `aosp_cf_arm64_only_phone-img-<build>.zip` from
-   its artifacts (about 1.1 GB). Unzip it into a directory. This project does not redistribute it.
-3. Start it:
+You need three things: the `emu` program, a guest kernel, and an Android image (see "Start here").
+The release's `emu-<version>-macos-arm64.tar.gz` holds `emu` with everything it loads; keep its folder
+together. To build it yourself, see "Build" below; the kernel is built by the "Guest kernel" workflow
+(see `guest/kernel/README.md`).
 
 ```sh
+emu                                          # the launcher
+emu --android <image directory> --gpu        # one machine, with the kernel beside emu
 emu --kernel kernel-arm64 --android <image directory> --gpu
 ```
 
-The first start creates `emu-data/` inside the image directory for this instance's own storage.
-Swipe up to unlock. `adb connect 127.0.0.1:5555` works once Android is up. Close the window to switch
-the machine off; that is like pulling the plug, so shut Android down from inside when you can
-(`adb shell reboot -p`).
-
-The screen starts upright, like a phone in the hand. When an app turns it to landscape (most games
-do) or the device is turned, the window turns with it. The mouse is a finger: drag up from the
-bottom edge for Home, in from the left or right edge for Back, or use the buttons Android shows at
-the bottom (Settings > System > Navigation mode switches between buttons and gestures).
+Without an instance, the first start creates `emu-data/` inside the image directory for its storage.
+`adb connect 127.0.0.1:5555` works once Android is up.
 
 Window shortcuts (⌘ on a Mac, Ctrl+Alt on Linux):
 
@@ -78,6 +94,7 @@ Useful options (`emu --help` lists all of them):
 | `--gpu` | Draw with this Mac's GPU; falls back to the CPU and says so if it cannot start |
 | `--ram-mib <n>`, `--vcpus <n>` | Guest memory (default 4096) and CPUs (default 4) |
 | `--display <WxH>` | Size of the guest's screen, held upright (default 720x1280; landscape apps turn the window) |
+| `--mute`, `--no-sound` | Keep the sound card silent, or give the guest none |
 | `--headless` | No window; use the control socket or `--frame-dump` to see the screen |
 | `--ctl <socket>` | Listen for `emu ctl` commands on this local socket |
 | `--logcat <file>` | Save Android's system log |
@@ -116,7 +133,8 @@ emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lay
 emu ctl /tmp/emu.sock shake
 emu ctl /tmp/emu.sock shell am force-stop com.example.game   # any command in Android's shell
 emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly rx ry, triggers lt rt
-emu ctl /tmp/emu.sock stop
+emu ctl /tmp/emu.sock shutdown                     # shut Android down, then switch off
+emu ctl /tmp/emu.sock stop                         # switch off at once, like pulling the plug
 ```
 
 The socket is created for your user only. Anyone who can connect to it controls the guest.
@@ -242,9 +260,14 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 
 Honest list, most important first:
 
-- **GPU acceleration is new.** `emu --gpu` draws Android with this Mac's GPU through gfxstream (see
-  `docs/gfxstream.md`). It has not been measured against Google's emulator yet, and frames are copied
-  once on their way to the window.
+- **Google services.** Google's test image has no Play Services, so apps that sign in with Google
+  or buy through Play do not work; Aurora Store installs the rest. The planned image with microG or
+  user-supplied Google apps needs an Android build machine this project does not have.
+- **GPU acceleration is new.** It has not been measured against Google's emulator yet, and frames
+  are read back once on their way to the window. Under MoltenVK an app's drawing could stall (Aurora
+  Store froze on its first tap), which is why KosmicKrisp is tried first; on Macs where KosmicKrisp
+  does not load (older than macOS 26), MoltenVK is what runs.
+- **No Bluetooth or phone network.** The board has neither, so Bluetooth is switched off at boot.
 - **More game controls.** Key maps are written by hand.
 - **Not yet tried for real:** a physical gamepad plugged in at start (the guest pad was checked
   with `--gamepad` and the `pad` command), dropping a file on the window (the same install was
@@ -261,7 +284,6 @@ Honest list, most important first:
   on a Linux desktop; building needs `libasound2-dev` and `libudev-dev`. Plain Linux test kernels
   must find their hardware through the MP table and `virtio_mmio.device=` on the command line; the
   board has no ACPI. There is no Windows backend.
-- **A settings window**, and the rest of the planned GUI.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
 answered by the emulator itself, so use a real connection to test the network. Games that detect
