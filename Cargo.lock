@@ -1954,6 +1954,7 @@ dependencies = [
  "cpal",
  "devices",
  "getrandom 0.3.4",
+ "gfx",
  "gilrs",
  "hv",
  "lexopt",
