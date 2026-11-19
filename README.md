@@ -27,7 +27,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 - Several instances at once, with one able to drive the others.
 
 Not there yet: GPU acceleration, a GUI,
-Android checked on Linux hosts, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
+a Linux desktop check, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
 ## Run Android
@@ -206,13 +206,13 @@ Honest list, most important first:
 - **An image of this project's own.** Building Android needs a large Linux machine this project does
   not have, so it runs Google's unmodified test image: no Google sign-in, no app store, and none of
   the planned stripping. Apps are installed from files (drop them on the window, or `emu ctl ... install`).
-- **Linux and Windows hosts.** On x86_64 Linux, `emu` boots a Linux kernel on KVM (checked in CI
-  with two CPUs, disks and the network). The window (X11 or Wayland), sound (ALSA) and gamepads
-  are built there too but have not been tried on a Linux desktop; building needs `libasound2-dev`
-  and `libudev-dev`. Android does not run there yet:
-  that needs the x86_64 Android image, a window and a display that Linux has not got yet. The
-  test kernel must find its hardware through the MP table and `virtio_mmio.device=` on its command
-  line; the board has no ACPI. There is no Windows backend.
+- **Linux and Windows hosts.** On x86_64 Linux, `emu` runs on KVM: Google's x86_64 Cuttlefish image
+  with this repository's kernel boots to Android with adb in about a minute, headless, in CI
+  (`scripts/fetch-cuttlefish.sh aosp_cf_x86_64_only_phone-userdebug <dir>` fetches the image). The
+  window (X11 or Wayland), sound (ALSA) and gamepads are built there too but have not been tried
+  on a Linux desktop; building needs `libasound2-dev` and `libudev-dev`. Plain Linux test kernels
+  must find their hardware through the MP table and `virtio_mmio.device=` on the command line; the
+  board has no ACPI. There is no Windows backend.
 - **A settings window**, and the rest of the planned GUI.
 
 Things to know: closing the window does not shut Android down cleanly. A ping to any address is
