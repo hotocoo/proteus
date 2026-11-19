@@ -42,6 +42,27 @@ value there, and read it back on the host.
 | `Vm::map` (HVF) accepts it | yes | yes |
 | Guest's store seen by the host | yes | yes |
 
+## The guest's side
+
+Google's Cuttlefish launcher (`github.com/google/android-cuttlefish`,
+`base/cvd/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp`) switches the image to gfxstream
+with these bootconfig values, where the emulator sets the software ones today:
+
+| Key | gfxstream (`gfxstream_guest_angle`) | Now (software) |
+|---|---|---|
+| `androidboot.hardware.vulkan` | `ranchu` | `pastel` |
+| `androidboot.hardware.egl` | `angle` | `angle` |
+| `androidboot.cpuvulkan.version` | `0` | `4202496` (1.2) |
+| `androidboot.hardware.gltransport` | `virtio-gpu-asg` | not set |
+| `androidboot.vendor.apex.com.google.cf.vulkan` | `com.google.cf.vulkan.gfxstream` | not set |
+
+`gralloc` (`minigbm`), `hwcomposer`, its display finder and framebuffer format, and the OpenGL ES
+version stay as they are. The image (build 16644040) has `com.google.cf.vulkan.apex` and the
+gfxstream GLES encoders in `/vendor/lib64`.
+
+The image's guest gfxstream and the host renderer built from GitHub's head are not a matched pair.
+If their handshake fails, the host revision moves toward the image's build date.
+
 ## How the renderer behaves around failure
 
 - When no Vulkan driver works, `stream_renderer_init` logs "Failed to initialize renderer" and
