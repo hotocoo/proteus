@@ -21,7 +21,7 @@ Usage: emu --kernel <file> [options]
   --android <dir>         Boot Android from a directory of AOSP virtual-device images
                           (init_boot.img, vendor_boot.img, super.img, vbmeta*.img)
   --data-dir <dir>        Where this Android instance keeps its data (default: <dir>/emu-data)
-  --userdata-gib <n>      Size of the Android data partition when first created
+  --userdata-gib <n>      Storage, in GB as Android shows it, when the data is first made
   --cmdline <text>        Kernel command line
   --ram-mib <n>           Guest RAM in MiB
   --vcpus <n>             Number of virtual CPUs
@@ -527,6 +527,13 @@ pub mod gui {
     pub const DATA_SIZE: &str = "Storage";
     pub const GIB: &str = " GB";
     pub const DATA_SIZE_HINT: &str = "Used when the data is made: on first start or after a reset.";
+    pub const DATA_SIZE_NEEDS_RESET: &str = "A new size takes effect after a factory reset, which \
+        erases this instance's apps and data: Android's data storage is encrypted and cannot be \
+        grown in place.";
+
+    pub fn data_size_now(gib: u64) -> String {
+        format!("This instance's storage is {gib} GB now.")
+    }
     pub const FACTORY_RESET: &str = "Factory reset…";
     pub const RESET_SURE: &str = "Every app and file in this instance will be deleted.";
     pub const RESET_CONFIRM: &str = "Erase everything";

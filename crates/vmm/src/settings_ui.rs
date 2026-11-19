@@ -258,7 +258,16 @@ impl Form {
                         .text(text::DATA_SIZE),
                 )
                 .changed();
-            style::hint(ui, text::DATA_SIZE_HINT);
+            match instance::userdata_bytes(&self.root, &self.name) {
+                Some(bytes) => {
+                    let now = config::storage_gb(bytes);
+                    style::hint(ui, &text::data_size_now(now));
+                    if now != settings.userdata_gib {
+                        style::hint(ui, text::DATA_SIZE_NEEDS_RESET);
+                    }
+                }
+                None => style::hint(ui, text::DATA_SIZE_HINT),
+            }
             ui.add_space(tune::GAP);
             if self.confirm_reset {
                 ui.label(text::RESET_SURE);
@@ -371,6 +380,8 @@ mod tests {
         harness.get_by_label(text::SAVE).click();
         harness.run();
         assert_eq!(harness.state().0.status, text::SETTINGS_SAVED);
+        // No data made yet: the size applies when it is.
+        assert!(harness.query_by_label(text::DATA_SIZE_HINT).is_some());
         let saved = instance::args(&root, "phone").unwrap();
         assert!(saved.contains(&"--gpu".to_owned()), "{saved:?}");
         assert!(

@@ -1,6 +1,7 @@
 //! What the emulator does to Android once it has booted: stops the image's own log streaming when
 //! nobody reads it (it costs about one guest CPU), switches Bluetooth off (the board has no
-//! Bluetooth controller, so the stack crashes and restarts every few seconds), and installs the apps a release carries beside
+//! Bluetooth controller, so the stack crashes and restarts every few seconds), switches UWB off
+//! (its failure files bug reports with screenshots), and installs the apps a release carries beside
 //! the program (`apps/`, such as an app store) the first time a data folder boots.
 
 use std::collections::BTreeSet;
@@ -22,6 +23,14 @@ const STOP_LOG_STREAM: &str = "su 0 stop seriallogging";
 /// HAL" when it finds no controller, and Android starts it again at once.
 const BLUETOOTH_OFF: &str = "cmd bluetooth_manager disable; settings put global bluetooth_on 0; \
      settings put global ble_scan_always_enabled 0";
+/// Switches UWB off: the board has no UWB radio, the service fails to start, and on that error
+/// Android files a bug report (a screenshot and about half a minute of work) and shows a
+/// notification for it. Reports it already made are deleted, and their notification goes with
+/// the shell app's.
+const UWB_OFF: &str = "cmd uwb disable-uwb; \
+     device_config put uwb device_error_bugreport_enabled false; \
+     su 0 rm -rf /data/user_de/0/com.android.shell/files/bugreports; \
+     am force-stop com.android.shell";
 /// Bundled apps are files with this ending.
 const APK_EXTENSION: &str = "apk";
 
@@ -79,7 +88,7 @@ pub fn spawn(
                 }
                 std::thread::sleep(SETUP_POLL);
             };
-            let mut steps = vec![BLUETOOTH_OFF];
+            let mut steps = vec![BLUETOOTH_OFF, UWB_OFF];
             if !keep_log_stream {
                 steps.push(STOP_LOG_STREAM);
             }

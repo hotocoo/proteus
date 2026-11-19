@@ -19,6 +19,25 @@ pub const DEFAULT_VCPUS: u32 = 4;
 pub const DEFAULT_DISPLAY: (u32, u32) = (720, 1280);
 /// Size the guest's data partition is created with.
 pub const DEFAULT_USERDATA_GIB: u64 = 8;
+/// Android shows a phone's storage as the data and system partitions together, rounded up to a
+/// power of two in decimal gigabytes, and counts the rounding as used. The data partition is made
+/// this much under the size asked for, so the system partition fits and Android shows that size.
+const STORAGE_SYSTEM_ALLOWANCE: u64 = 1_500_000_000;
+const DECIMAL_GB: u64 = 1_000_000_000;
+
+/// The storage size, in GB, a data partition of `bytes` was made for (`userdata_bytes` turned
+/// back), rounded to the nearest GB.
+pub fn storage_gb(bytes: u64) -> u64 {
+    (bytes + STORAGE_SYSTEM_ALLOWANCE + DECIMAL_GB / 2) / DECIMAL_GB
+}
+
+/// The data partition's size, in bytes, for a phone that shows `gb` GB of storage. `None` if too
+/// small to hold the system allowance, or too large to count.
+pub fn userdata_bytes(gb: u64) -> Option<u64> {
+    gb.checked_mul(DECIMAL_GB)?
+        .checked_sub(STORAGE_SYSTEM_ALLOWANCE)
+        .filter(|bytes| *bytes > 0)
+}
 /// Where an Android instance keeps what the guest writes, inside the images directory, unless told otherwise.
 pub const DEFAULT_DATA_DIR: &str = "emu-data";
 pub const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::Warn;
@@ -631,8 +650,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             if config.initrd.is_some() {
                 return Err(ConfigError(copy::ANDROID_WITH_INITRD.into()));
             }
-            let userdata_bytes = userdata_gib
-                .checked_mul(MIB << 10)
+            let userdata_bytes = userdata_bytes(userdata_gib)
                 .ok_or_else(|| ConfigError(copy::bad_number("userdata-gib")))?;
             let data = data_dir.unwrap_or_else(|| images.join(DEFAULT_DATA_DIR));
             Some(AndroidOptions {
@@ -777,7 +795,17 @@ mod tests {
             .unwrap();
         assert_eq!(android.images, PathBuf::from("images"));
         assert_eq!(android.data, PathBuf::from("images").join(DEFAULT_DATA_DIR));
-        assert_eq!(android.userdata_bytes, DEFAULT_USERDATA_GIB << 30);
+        assert_eq!(
+            Some(android.userdata_bytes),
+            userdata_bytes(DEFAULT_USERDATA_GIB)
+        );
+        // 64 GB asked for: data plus system stays under 64e9, so Android shows 64 GB, not 128.
+        let data = userdata_bytes(64).unwrap();
+        assert!(data + 918_964 * 1024 <= 64 * DECIMAL_GB);
+        assert!(data > 60 * DECIMAL_GB);
+        assert_eq!(storage_gb(data), 64);
+        // A 64 GiB partition made by an older release is not what "64 GB" makes now.
+        assert_ne!(storage_gb(64 << 30), 64);
         let custom = run(&[
             "--kernel",
             "k",
@@ -791,7 +819,7 @@ mod tests {
         let custom = custom.android.unwrap();
         assert_eq!(
             (custom.data, custom.userdata_bytes),
-            (PathBuf::from("mine"), 32 << 30)
+            (PathBuf::from("mine"), userdata_bytes(32).unwrap())
         );
     }
 

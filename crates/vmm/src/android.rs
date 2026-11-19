@@ -38,6 +38,9 @@ enum Contents {
 
 /// The disk layout, in order. Names are what Android's fstab and verified boot look up under
 /// `/dev/block/by-name/`.
+/// The data partition's file in an Android data folder.
+pub(crate) const USERDATA_FILE: &str = "userdata.img";
+
 const PARTITIONS: &[(&str, Contents)] = &[
     (
         "misc",
@@ -119,7 +122,7 @@ const PARTITIONS: &[(&str, Contents)] = &[
     (
         "userdata",
         Contents::Userdata {
-            file: "userdata.img",
+            file: USERDATA_FILE,
         },
     ),
 ];

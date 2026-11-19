@@ -199,6 +199,15 @@ fn check_args(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// The size of an instance's Android data partition as it is now, if it has been made.
+pub fn userdata_bytes(root: &Path, name: &str) -> Option<u64> {
+    let file = folder(root, name)
+        .ok()?
+        .join(DATA_DIR)
+        .join(crate::android::USERDATA_FILE);
+    std::fs::metadata(file).ok().map(|meta| meta.len())
+}
+
 /// Deletes a stopped instance's Android data, so it next starts as a new phone. Its options stay.
 pub fn wipe_data(root: &Path, name: &str) -> io::Result<()> {
     let dir = folder(root, name)?;

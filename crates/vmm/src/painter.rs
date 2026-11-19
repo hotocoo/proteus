@@ -35,6 +35,8 @@ pub struct Painter {
     pub repaint_at: Option<Instant>,
     /// Screenshots of the window to take with the next frame.
     shots: Vec<egui::ScreenshotCallback>,
+    /// The size the surface was last set to, in physical pixels.
+    surface_size: (u32, u32),
 }
 
 impl Painter {
@@ -68,6 +70,7 @@ impl Painter {
             painter,
             repaint_at: None,
             shots: Vec::new(),
+            surface_size: (0, 0),
         })
     }
 
@@ -107,6 +110,7 @@ impl Painter {
         {
             self.painter
                 .on_window_resized(egui::ViewportId::ROOT, width, height);
+            self.surface_size = (size.width, size.height);
         }
         let response = self.state.on_window_event(window, event);
         // egui asks to repaint after every event, a redraw included; asking again for that one
@@ -119,6 +123,18 @@ impl Painter {
 
     /// Lays out and draws one frame with `ui`.
     pub fn paint(&mut self, window: &Arc<Window>, ui: impl FnMut(&mut egui::Ui)) {
+        // The surface follows the window's size before every frame. A resize the program asks
+        // for (a turn, a panel opening) can be drawn before its Resized event arrives; a frame
+        // drawn at the old size is then stretched by the system to the new one.
+        let size = window.inner_size();
+        if (size.width, size.height) != self.surface_size
+            && let (Some(width), Some(height)) =
+                (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+        {
+            self.painter
+                .on_window_resized(egui::ViewportId::ROOT, width, height);
+            self.surface_size = (size.width, size.height);
+        }
         let input = self.state.take_egui_input(window);
         let output = self.ctx.run_ui(input, ui);
         self.state
