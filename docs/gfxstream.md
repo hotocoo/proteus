@@ -26,10 +26,40 @@ its build script. Its dependencies (`cfg-if`, `libc`, `log`, `magma-gpu`, `remai
 `serde_json`, `thiserror`, `zerocopy`, optional `vulkano`) include nothing `deny.toml` bans; the
 full tree has not been run through `cargo deny` yet.
 
+## The two Vulkan drivers (2026-11-19, Apple M4 Max, macOS 26.5)
+
+Both from Homebrew: `molten-vk` 1.4.2 and `mesa` 26.3.0, whose macOS 26 build includes
+KosmicKrisp. A small C program that calls `stream_renderer_init` with Vulkan only and then reads
+the Vulkan capset (`virtio-gpu` capset 3) was run against each.
+
+| | MoltenVK 1.4.2 | KosmicKrisp (Mesa 26.3.0) |
+|---|---|---|
+| `vulkaninfo` API version | 1.4.357 | 1.4.363 |
+| Conformance version reported | 1.4.4.0 | 1.4.6.2 |
+| Device extensions | 153 | 165 |
+| `VK_EXT_external_memory_metal` | yes | yes |
+| `VK_KHR_portability_subset` | yes (a portability driver) | no |
+| `stream_renderer_init` | succeeds | succeeds |
+| Device gfxstream picks, and API version it uses | Apple M4 Max, 1.1.357 | Apple M4 Max, 1.4.363 |
+| External memory mode gfxstream picks | Metal | Metal |
+| Vulkan capset | 116 bytes, blob alignment 16 KiB | the same |
+
+How each is selected matters for packaging:
+- gfxstream has a dedicated MoltenVK path (`ANDROID_EMU_VK_ICD=moltenvk`). It then ignores
+  `VK_DRIVER_FILES` and loads `lib64/vulkan/MoltenVK_icd.json` from beside the program, and sets
+  MoltenVK's configuration variables itself. Shipping MoltenVK therefore means shipping that file
+  and `libMoltenVK.dylib` in that layout.
+- KosmicKrisp goes through gfxstream's generic path: `ANDROID_EMU_VK_ICD` unset, and the Vulkan
+  loader finds the driver through `VK_DRIVER_FILES`. Both need the Vulkan loader
+  (`libvulkan.dylib`) as well.
+- The 16 KiB blob alignment matches the host page size, as blueprint section 7.1 wants.
+
+Nothing has been drawn yet: the comparison the blueprint asks for (a Vulkan and a GLES test app,
+benchmarks against Google's emulator) needs gfxstream wired into virtio-gpu first.
+
 ## Not checked yet
 
-- Rendering. gfxstream loads a Vulkan driver at run time, and this Mac has none installed.
-  MoltenVK and KosmicKrisp are the candidates (blueprint section 2.1); neither has been tried.
+- Rendering, on either driver.
 - That the function signatures, not only the names, match `rutabaga_gfx`'s declarations.
 - Whether the Cuttlefish image's guest side (its gfxstream guest drivers) talks to this build.
 - Windows and Linux builds.
