@@ -55,6 +55,11 @@ const GAMING_TRIM: &str = "for package in \
 const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
      su 0 cmd thread_network force-stop-ot-daemon enabled; \
      su 0 setprop ctl.stop vendor.threadnetwork_hal; su 0 setprop ctl.stop vendor.ril-daemon";
+/// Makes apps share memory through memfd. The guest kernel has no `/dev/ashmem`, and without this
+/// Android still tries it: every shared bitmap (a notification's icon, say) and database cursor
+/// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
+/// so it reaches apps started after setup (every app the user opens).
+const SHARED_MEMORY: &str = "su 0 setprop sys.use_memfd true";
 /// Bundled apps are files with this ending.
 const APK_EXTENSION: &str = "apk";
 
@@ -132,7 +137,13 @@ fn booted(adb_port: &AtomicU16, done: &AtomicBool) -> Option<u16> {
 }
 
 fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Path>) {
-    let mut steps = vec![BLUETOOTH_OFF, UWB_OFF, RADIOS_OFF, GAMING_TRIM];
+    let mut steps = vec![
+        SHARED_MEMORY,
+        BLUETOOTH_OFF,
+        UWB_OFF,
+        RADIOS_OFF,
+        GAMING_TRIM,
+    ];
     // Without a window to give Android its shape, a logical size from an earlier run would
     // leave bars in every frame; a window sets (and reads back) the shape itself.
     if reset_shape {
