@@ -89,13 +89,16 @@ pub const GPU_CHECK_ARG: &str = "--gpu-check";
 pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the check is looked at while it runs.
 pub const GPU_CHECK_POLL: Duration = Duration::from_millis(50);
-/// Where a release keeps its Vulkan driver (MoltenVK) and loader, beside the program: the layout
+/// The Vulkan drivers a release may carry beside the program, best first, by gfxstream's name for
+/// each and the file it reads: KosmicKrisp (Mesa, Vulkan 1.4), then MoltenVK. The layout is the one
 /// gfxstream looks in itself.
-pub const BUNDLED_VULKAN_ICD: &str = "lib64/vulkan/MoltenVK_icd.json";
-/// gfxstream's switch to its MoltenVK path, which reads the bundled driver above.
+pub const BUNDLED_VULKAN_DRIVERS: [(&str, &str); 2] = [
+    ("kosmickrisp", "lib64/vulkan/libkosmickrisp_icd.json"),
+    ("moltenvk", "lib64/vulkan/MoltenVK_icd.json"),
+];
+/// gfxstream's switch between its driver paths.
 pub const VULKAN_ICD_VARIABLE: &str = "ANDROID_EMU_VK_ICD";
-pub const BUNDLED_VULKAN_DRIVER: &str = "moltenvk";
-/// Any of these set means the user picked a Vulkan driver, so the bundled one is left alone.
+/// Any of these set means the user picked a Vulkan driver, so the bundled ones are left alone.
 pub const VULKAN_DRIVER_VARIABLES: [&str; 3] =
     [VULKAN_ICD_VARIABLE, "VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
 /// Environment variable naming the emulator's home folder, where instances live.
@@ -104,6 +107,21 @@ pub const INSTANCES_DIR: &str = "instances";
 pub const INSTANCE_NAME_MAX: usize = 32;
 /// Longest Unix socket path the system takes (macOS: 104 bytes with the terminating zero).
 pub const SOCKET_PATH_MAX: usize = 103;
+
+/// The guest kernel a release carries: beside the program, or in the app's Resources folder.
+pub fn bundled_kernel() -> Option<PathBuf> {
+    let program = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let dir = program.parent()?;
+    [
+        dir.join(BUNDLED_KERNEL),
+        dir.join(APP_RESOURCES).join(BUNDLED_KERNEL),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+/// The kernel's file name in a release, and where a macOS app keeps it, from its program's folder.
+pub const BUNDLED_KERNEL: &str = "kernel-arm64";
+pub const APP_RESOURCES: &str = "../Resources";
 
 /// The emulator's home folder when `EMU_HOME` is not set: the platform's place for app data.
 pub fn home_default() -> Option<PathBuf> {
@@ -177,7 +195,31 @@ pub const EDITOR_LABEL_SIZE: f32 = 13.0;
 pub const EDITOR_MARKER_RGBA: [u8; 4] = [30, 110, 220, 190];
 pub const EDITOR_STICK_RADIUS: u32 = 100;
 pub const EDITOR_STICK_RADIUS_RANGE: std::ops::RangeInclusive<u32> = 20..=400;
+/// The launcher: its window's size, how often it reads the instance list, a new instance's name.
+pub const LAUNCHER_SIZE: (f64, f64) = (720.0, 760.0);
+pub const LAUNCHER_REFRESH: Duration = Duration::from_secs(2);
+pub const DEFAULT_INSTANCE: &str = "phone";
+/// Where Google's prebuilt Android images are listed.
+pub const ANDROID_IMAGES_URL: &str =
+    "https://ci.android.com/builds/branches/aosp-android-latest-release/grid";
+/// Options the launcher and settings write, by name.
+pub const ANDROID_OPTION: &str = "--android";
+pub const KERNEL_OPTION: &str = "--kernel";
+pub const GPU_OPTION: &str = "--gpu";
+pub const DATA_DIR_OPTION: &str = "--data-dir";
+/// A data folder named only to check options; nothing is made there.
+pub const CHECK_DATA_DIR: &str = "check";
+/// What the settings' storage slider allows, in GiB, and how tall the list fields are.
+pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
+pub const LIST_ROWS: usize = 2;
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
+/// Apps a release carries beside the program, installed when a data folder first boots, and the
+/// file in the data folder that notes which were.
+pub const BUNDLED_APPS_DIR: &str = "apps";
+pub const INSTALLED_APPS_FILE: &str = "bundled-apps-installed";
+/// How often the guest is asked whether it has booted, and how long it may take to answer.
+pub const SETUP_POLL: Duration = Duration::from_secs(2);
+pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long to wait for the `adb` forward to accept a connection.
@@ -356,6 +398,8 @@ pub enum Parsed {
         command: String,
     },
     Help,
+    /// No arguments: open the launcher window.
+    Launcher,
 }
 
 #[derive(Debug)]
@@ -423,6 +467,9 @@ fn instance_command(args: Vec<OsString>) -> Result<InstanceCommand, ConfigError>
 /// Parses arguments as they follow the program name.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigError> {
     let mut args = args.into_iter().peekable();
+    if args.peek().is_none() {
+        return Ok(Parsed::Launcher);
+    }
     if args.peek().is_some_and(|first| first == CTL_SUBCOMMAND) {
         let socket = args.nth(1);
         let words: Vec<String> = args
@@ -539,7 +586,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
         }
     }
 
-    config.kernel = kernel.ok_or_else(|| ConfigError(copy::MISSING_KERNEL.into()))?;
+    // Android needs no kernel named: the one a release carries beside the program boots it.
+    let bundled = android_images.as_ref().and_then(|_| bundled_kernel());
+    config.kernel = kernel
+        .or(bundled)
+        .ok_or_else(|| ConfigError(copy::MISSING_KERNEL.into()))?;
     if config.keymap.is_some() && config.keymap_dir.is_some() {
         return Err(ConfigError(copy::KEYMAP_TWO_SOURCES.into()));
     }
@@ -785,6 +836,11 @@ mod tests {
     }
 
     #[test]
+    fn no_arguments_open_the_launcher() {
+        assert_eq!(parse_str(&[]).unwrap(), Parsed::Launcher);
+    }
+
+    #[test]
     fn help_wins() {
         assert_eq!(parse_str(&["--help"]).unwrap(), Parsed::Help);
     }
@@ -792,7 +848,6 @@ mod tests {
     #[test]
     fn invalid_command_lines_are_refused() {
         let cases: &[&[&str]] = &[
-            &[],
             &["--initrd", "r"],
             &["--kernel"],
             &["--kernel", "k", "--vcpus", "0"],
@@ -825,4 +880,33 @@ mod tests {
             assert!(parse_str(args).is_err(), "{args:?} should be refused");
         }
     }
+}
+
+/// The look of the emulator's windows: colours (RGB), corner radii, gaps and sizes, in points.
+pub mod style {
+    pub const ACCENT: [u8; 3] = [0x3d, 0x8b, 0xfd];
+    pub const DANGER: [u8; 3] = [0xc9, 0x3c, 0x3c];
+    pub const GOOD: [u8; 3] = [0x4c, 0xc3, 0x6b];
+    pub const PANEL: [u8; 3] = [0x16, 0x18, 0x1d];
+    pub const CARD: [u8; 3] = [0x1f, 0x23, 0x2a];
+    pub const FIELD: [u8; 3] = [0x11, 0x13, 0x17];
+    pub const BUTTON: [u8; 3] = [0x2a, 0x2f, 0x38];
+    pub const BUTTON_HOVER: [u8; 3] = [0x34, 0x3a, 0x45];
+    pub const TITLE: [u8; 3] = [0xe8, 0xea, 0xee];
+    pub const MUTED: [u8; 3] = [0x9a, 0xa1, 0xad];
+    pub const STROKE: f32 = 1.0;
+    pub const RADIUS: u8 = 6;
+    pub const CARD_RADIUS: u8 = 10;
+    pub const CARD_PAD: i8 = 12;
+    pub const GAP: f32 = 8.0;
+    pub const SECTION_GAP: f32 = 6.0;
+    pub const BUTTON_PAD_X: f32 = 10.0;
+    pub const BUTTON_PAD_Y: f32 = 5.0;
+    pub const ROW_HEIGHT: f32 = 26.0;
+    pub const SLIDER_WIDTH: f32 = 140.0;
+    pub const LABEL_WIDTH: f32 = 96.0;
+    pub const CHOOSE_WIDTH: f32 = 100.0;
+    pub const HEADING_SIZE: f32 = 19.0;
+    pub const BODY_SIZE: f32 = 13.5;
+    pub const SMALL_SIZE: f32 = 11.5;
 }

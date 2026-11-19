@@ -110,7 +110,8 @@ pub fn bad_number(option: &str) -> String {
     format!("--{option} needs a positive whole number")
 }
 
-pub const MISSING_KERNEL: &str = "--kernel is required";
+pub const MISSING_KERNEL: &str =
+    "--kernel is required (with --android it can be left out when kernel-arm64 is beside emu)";
 pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
 pub const ANDROID_WITH_INITRD: &str =
     "--android brings its own ramdisk; do not pass --initrd with it";
@@ -200,6 +201,15 @@ pub const KEYMAP_NEEDS_WINDOW: &str =
 pub const KEYMAP_TWO_SOURCES: &str = "give --keymap or --keymap-dir, not both";
 pub const FOREGROUND_THREAD: &str = "foreground app";
 pub const ORIENTATION_THREAD: &str = "orientation";
+pub const SETUP_THREAD: &str = "android setup";
+
+pub fn setup_failed(err: &dyn Display) -> String {
+    format!("could not finish setting Android up: {err}")
+}
+
+pub fn bundled_installed(name: &str) -> String {
+    format!("emu: installed {name}")
+}
 
 pub fn keymap_switched(package: &str, path: Option<&Path>) -> String {
     match path {
@@ -222,6 +232,12 @@ pub fn audio_failed(err: &dyn Display) -> String {
 pub const WINDOW_TITLE: &str = "emu";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
+
+pub fn window_touch(window_x: f64, window_y: f64, x: u32, y: u32) -> String {
+    format!("window pixel {window_x:.0},{window_y:.0} touches guest pixel {x},{y}")
+}
+pub const LAUNCHER_TITLE: &str = "emu";
+pub const LAUNCHER_HEADER_ID: &str = "launcher header";
 pub const TOOLBAR_ID: &str = "toolbar";
 pub const PANEL_ID: &str = "panel";
 pub const STATUS_ID: &str = "status";
@@ -422,6 +438,83 @@ pub mod gui {
     pub const SETTINGS: &str = "Settings";
 
     pub const WORKING: &str = "Working…";
+    pub const CHOOSE: &str = "Choose…";
+
+    pub const LAUNCHER_TITLE: &str = "Android emulator";
+    pub const LAUNCHER_SUBTITLE: &str =
+        "Each instance is a phone of its own: its own apps, data and settings.";
+    pub const INSTANCES: &str = "Instances";
+    pub const NO_INSTANCES: &str = "None yet. Make one below from an Android image folder.";
+    pub const RUNNING: &str = "Running";
+    pub const STOPPED: &str = "Stopped";
+    pub const START: &str = "Start";
+    pub const STOP: &str = "Stop";
+    pub const DELETE: &str = "Delete";
+    pub const DELETE_SURE: &str = "Delete it and its apps?";
+    pub const NEW_INSTANCE: &str = "New instance";
+    pub const NAME: &str = "Name";
+    pub const CREATE_AND_START: &str = "Create and start";
+    pub const NEEDS_IMAGE: &str = "Choose the Android image folder first.";
+    pub const BACK_TO_LIST: &str = "← Instances";
+    pub const GET_ANDROID: &str = "Getting an Android image";
+    pub const GET_ANDROID_HINT: &str = "Open this page, pick a green build of \
+        aosp_cf_arm64_only_phone-userdebug, download aosp_cf_arm64_only_phone-img-<build>.zip \
+        (about 1.1 GB) and unzip it into a folder. Choose that folder above.";
+    pub const COPY: &str = "Copy";
+    pub const RESTART_FROM_WINDOW: &str =
+        "Saved. Stop and start the instance, or use Restart in its window, to apply.";
+    pub const STOP_FIRST: &str = "Stop the instance first.";
+
+    pub fn starting(name: &str) -> String {
+        format!("Starting {name}…")
+    }
+
+    pub fn stopping(name: &str) -> String {
+        format!("Stopping {name}.")
+    }
+
+    pub fn deleted(name: &str) -> String {
+        format!("Deleted {name}.")
+    }
+
+    pub fn reset_done(name: &str) -> String {
+        format!("{name} will start as a new phone.")
+    }
+
+    pub const ROM: &str = "Android image (ROM)";
+    pub const ROM_HINT: &str = "The folder of Google's virtual-device image, and the kernel that \
+        boots it. Leave the kernel empty to use the one that comes with emu.";
+    pub const IMAGE_FOLDER: &str = "Image folder";
+    pub const IMAGE_FOLDER_HINT: &str = "/path/to/aosp_cf_arm64_only_phone-img";
+    pub const KERNEL: &str = "Kernel";
+    pub const KERNEL_HINT: &str = "Built in";
+    pub const PERFORMANCE: &str = "Performance";
+
+    pub fn host_has(cpus: usize, memory_mib: u64) -> String {
+        format!(
+            "This Mac has {cpus} CPUs and {} GB of memory.",
+            memory_mib / 1024
+        )
+    }
+
+    pub const CUSTOM: &str = "Custom";
+    pub const DISPLAY_PHONE_TALL: &str = "Phone, tall";
+    pub const SCREEN_HINT: &str =
+        "Sizes are upright; the window turns when an app turns the screen.";
+    pub const GRAPHICS_AND_SOUND: &str = "Graphics and sound";
+    pub const GPU_HINT: &str = "Draws with this Mac's GPU. Without it Android draws with the CPU, \
+        which is slow for games.";
+    pub const CONTROLS: &str = "Controls";
+    pub const DATA: &str = "Data";
+    pub const DATA_SIZE: &str = "Storage";
+    pub const GIB: &str = " GB";
+    pub const DATA_SIZE_HINT: &str = "Used when the data is made: on first start or after a reset.";
+    pub const FACTORY_RESET: &str = "Factory reset…";
+    pub const RESET_SURE: &str = "Every app and file in this instance will be deleted.";
+    pub const RESET_CONFIRM: &str = "Erase everything";
+    pub const KEEP: &str = "Keep";
+    pub const SAVE_AND_RESTART: &str = "Save and restart";
+    pub const REVERT: &str = "Undo changes";
     pub const STARTING: &str = "Android is starting…";
 
     pub fn keymap_in_use(path: &Path) -> String {
@@ -548,7 +641,6 @@ pub mod gui {
     pub const DISPLAY_TABLET: &str = "Tablet";
     pub const BY: &str = "×";
     pub const USE_SIZE: &str = "Use this size";
-    pub const GRAPHICS: &str = "Graphics";
     pub const USE_GPU: &str = "Use this Mac's GPU";
     pub const SOUND: &str = "Sound";
     pub const SOUND_ON: &str = "On";
@@ -573,7 +665,6 @@ pub mod gui {
     pub const KEYMAP_FOLDER_HINT: &str =
         "A folder of <package>.toml maps; the map follows the app in front";
     pub const SETTINGS_SAVED: &str = "Saved.";
-    pub const RESTART_NOW: &str = "Restart now";
     pub const APPLIES_ON_RESTART: &str = "Settings apply when the emulator starts.";
 
     pub fn preset(label: &str, size: (u32, u32)) -> String {

@@ -42,6 +42,11 @@ wgpu.workspace = true
 [dev-dependencies]
 net.workspace = true
 
+# A native folder and file picker for the launcher and settings. Linux uses typed paths instead,
+# so it needs neither GTK nor a portal.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+rfd.workspace = true
+
 # On Linux the window reaches the screen through X11 or Wayland, whichever is running; both are
 # loaded when the program starts, so neither is needed to build it.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]

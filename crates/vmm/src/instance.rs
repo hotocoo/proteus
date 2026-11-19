@@ -199,6 +199,18 @@ fn check_args(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// Deletes a stopped instance's Android data, so it next starts as a new phone. Its options stay.
+pub fn wipe_data(root: &Path, name: &str) -> io::Result<()> {
+    let dir = folder(root, name)?;
+    if running(&dir.join(SOCKET_FILE)) {
+        return Err(io::Error::other(copy::INSTANCE_RUNNING));
+    }
+    match std::fs::remove_dir_all(dir.join(DATA_DIR)) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
+}
+
 /// The arguments that start an instance: the ones it was created with, its own data folder and
 /// socket, then `extra`.
 pub fn start_args(root: &Path, name: &str, extra: &[OsString]) -> io::Result<Vec<OsString>> {

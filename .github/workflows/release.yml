@@ -54,7 +54,8 @@ jobs:
       - name: Package
         run: |
           name="emu-${GITHUB_REF_NAME}-macos-arm64"
-          scripts/bundle-macos.sh target/release/emu gfxstream-out "$name"
+          scripts/fetch-apps.sh apps
+          scripts/bundle-macos.sh target/release/emu gfxstream-out "$name" apps
           cp README.md packaging/macos/hv.entitlements "$name/"
           cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"

@@ -204,8 +204,8 @@ struct App {
     modifiers: ModifiersState,
     /// How far the device is turned about the screen's axis, in quarter turns clockwise.
     device_turns: u8,
-    /// Set when the user asked for a restart, so the program starts the instance again after.
-    restart: bool,
+    /// What the user asked for when the window closed: a restart, maybe after a factory reset.
+    exit: crate::Exit,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
 }
@@ -283,7 +283,8 @@ impl App {
 
     /// The pointer, in points.
     fn pointer_points(&self) -> Option<egui::Pos2> {
-        let scale = self.shown.as_ref()?.window.scale_factor();
+        // egui's own scale, which is the one the picture's rectangle is in.
+        let scale = f64::from(self.shown.as_ref()?.painter.ctx.pixels_per_point());
         Some(egui::pos2(
             (self.pointer.x / scale) as f32,
             (self.pointer.y / scale) as f32,
@@ -299,6 +300,10 @@ impl App {
     fn touch(&mut self, pressed: bool) {
         match (pressed, self.pointer_pixel()) {
             (true, Some((x, y))) => {
+                log::debug!(
+                    "{}",
+                    copy::window_touch(self.pointer.x, self.pointer.y, x, y)
+                );
                 self.touching = true;
                 self.send(Command::Touch {
                     finger: MOUSE_FINGER,
@@ -437,7 +442,11 @@ impl App {
                 }
             }
             Effect::Restart => {
-                self.restart = true;
+                self.exit = crate::Exit::Restart;
+                self.controller.power.off();
+            }
+            Effect::FactoryReset => {
+                self.exit = crate::Exit::FactoryReset;
                 self.controller.power.off();
             }
             Effect::Turn(clockwise) => self.shortcut(Shortcut::Turn(clockwise)),
@@ -576,6 +585,7 @@ impl ApplicationHandler<Notice> for App {
             .and_then(|window| {
                 let window = Arc::new(window);
                 let painter = Painter::new(event_loop, &window)?;
+                crate::style::apply(&painter.ctx);
                 Ok(Shown { window, painter })
             });
         match shown {
@@ -634,6 +644,11 @@ impl ApplicationHandler<Notice> for App {
             // The machine is switched off; the window closes when it has stopped.
             WindowEvent::CloseRequested => self.controller.power.off(),
             WindowEvent::RedrawRequested => self.draw(),
+            // The picture moves when the window changes; draw now so clicks use where it is.
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.touch(false);
+                self.draw();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = position;
                 if self.touching {
@@ -724,7 +739,7 @@ impl WindowLoop {
 
     /// Shows a window for a guest display of `guest` pixels and serves it until it is told
     /// `Notice::Stopped`. Closing the window switches the machine off through `controller`.
-    /// Returns whether the user asked for the instance to start again.
+    /// Returns what the user asked for as the window closed.
     pub fn run(
         self,
         controller: Arc<Controller>,
@@ -732,7 +747,7 @@ impl WindowLoop {
         keymap: Option<PathBuf>,
         profiles: Option<PathBuf>,
         instance: Option<String>,
-    ) -> Result<bool, VmmError> {
+    ) -> Result<crate::Exit, VmmError> {
         let notify = Arc::new(self.notifier());
         let mapper = keymap
             .as_ref()
@@ -757,7 +772,7 @@ impl WindowLoop {
             failed: None,
             modifiers: ModifiersState::empty(),
             device_turns: 0,
-            restart: false,
+            exit: crate::Exit::Closed,
             panel_shown: false,
         };
         let ran = self.0.run_app(&mut app);
@@ -767,7 +782,7 @@ impl WindowLoop {
         match (app.failed, ran) {
             (Some(why), _) => Err(VmmError::Device(copy::window_failed(&why))),
             (None, Err(err)) => Err(VmmError::Device(copy::window_failed(&err))),
-            (None, Ok(())) => Ok(app.restart),
+            (None, Ok(())) => Ok(app.exit),
         }
     }
 }

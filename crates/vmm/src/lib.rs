@@ -24,6 +24,8 @@ pub mod instance;
 #[cfg(host_board)]
 mod keyedit;
 pub mod keymap;
+#[cfg(host_board)]
+mod launcher;
 pub mod location;
 mod logger;
 #[cfg(host_board)]
@@ -35,6 +37,11 @@ pub mod profiles;
 pub mod sensors;
 pub mod session;
 pub mod settings;
+#[cfg(host_board)]
+mod settings_ui;
+mod setup;
+#[cfg(host_board)]
+mod style;
 #[cfg(host_board)]
 pub mod window;
 
@@ -89,13 +96,35 @@ impl From<devices::bus::BusError> for VmmError {
 }
 
 /// Runs the machine, with a window if the configuration asks for one, until it stops for good.
-/// Returns whether the user asked for the instance to start again.
+/// How the emulator ended, as far as the user asked for something next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    Closed,
+    /// Start the instance again, with the options it has saved now.
+    Restart,
+    /// Delete the instance's Android data, then start it again.
+    FactoryReset,
+}
+
+/// Returns what the user asked for as the machine stopped.
 #[cfg(host_board)]
-fn run(config: &config::Config, started: Instant) -> Result<bool, VmmError> {
+fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
     use window::{Notice, WindowLoop};
 
     let session = session::Session::new(config)?;
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let setting_up = match &config.android {
+        Some(android) => Some(
+            setup::spawn(
+                std::sync::Arc::clone(&session.controller.adb_port),
+                std::sync::Arc::clone(&done),
+                config.logcat.is_some(),
+                Some(android.data.clone()),
+            )
+            .map_err(VmmError::Thread)?,
+        ),
+        None => None,
+    };
     let Some(display) = config.display.filter(|_| config.window) else {
         if config.keymap.is_some() || config.keymap_dir.is_some() {
             return Err(VmmError::Config(copy::KEYMAP_NEEDS_WINDOW));
@@ -103,10 +132,10 @@ fn run(config: &config::Config, started: Instant) -> Result<bool, VmmError> {
         let watching = watch_orientation(&session, &done, |_| {})?;
         let ran = boot_loop(config, &session, started);
         done.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(watching) = watching {
+        for watching in [watching, setting_up].into_iter().flatten() {
             let _ = watching.join();
         }
-        return ran.map(|()| false);
+        return ran.map(|()| Exit::Closed);
     };
     let window = WindowLoop::new()?;
     let notify = window.notifier();
@@ -151,7 +180,7 @@ fn run(config: &config::Config, started: Instant) -> Result<bool, VmmError> {
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
-        for watching in [watching, turning].into_iter().flatten() {
+        for watching in [watching, turning, setting_up].into_iter().flatten() {
             let _ = watching.join();
         }
         let ran = machine.join();
@@ -245,7 +274,7 @@ fn boot_loop(
 }
 
 #[cfg(not(host_board))]
-fn run(_config: &config::Config, _started: Instant) -> Result<bool, VmmError> {
+fn run(_config: &config::Config, _started: Instant) -> Result<Exit, VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }
 
@@ -263,19 +292,39 @@ fn gpu_check() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Points gfxstream at the Vulkan driver a release carries beside the program, unless the user
-/// chose one. Set before the check, so the check's child and the renderer see the same driver.
-fn use_bundled_vulkan_driver() {
+/// Starts the GPU renderer's check with the Vulkan driver the user chose, or else with each one a
+/// release carries beside the program, best first. The driver that passes stays set, so the
+/// renderer uses the same one.
+fn start_gpu() -> Result<(), String> {
     let chosen = config::VULKAN_DRIVER_VARIABLES
         .iter()
         .any(|name| std::env::var_os(name).is_some());
-    let bundled = std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .is_ok_and(|exe| exe.with_file_name(config::BUNDLED_VULKAN_ICD).is_file());
-    if !chosen && bundled {
-        // SAFETY: called from `main` before any thread is started.
-        unsafe { std::env::set_var(config::VULKAN_ICD_VARIABLE, config::BUNDLED_VULKAN_DRIVER) };
+    let program = std::env::current_exe().and_then(std::fs::canonicalize);
+    let bundled: Vec<&str> = config::BUNDLED_VULKAN_DRIVERS
+        .iter()
+        .filter(|(_, icd)| {
+            program
+                .as_ref()
+                .is_ok_and(|exe| exe.with_file_name(icd).is_file())
+        })
+        .map(|(driver, _)| *driver)
+        .collect();
+    if chosen || bundled.is_empty() {
+        return gpu_works();
     }
+    // The first bundled driver that starts is used; each is tried in its own child process.
+    let mut why = String::new();
+    for driver in bundled {
+        // SAFETY: called from `main` before any thread is started.
+        unsafe { std::env::set_var(config::VULKAN_ICD_VARIABLE, driver) };
+        match gpu_works() {
+            Ok(()) => return Ok(()),
+            Err(failed) => why = failed,
+        }
+    }
+    // SAFETY: as above.
+    unsafe { std::env::remove_var(config::VULKAN_ICD_VARIABLE) };
+    Err(why)
 }
 
 /// Whether the GPU renderer starts on this machine. It is tried in a child process with a time
@@ -378,6 +427,25 @@ pub fn cli_main() -> ExitCode {
             };
         }
         Ok(config::Parsed::GpuCheck) => return gpu_check(),
+        #[cfg(host_board)]
+        Ok(config::Parsed::Launcher) => {
+            return match launcher::run() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(why) => {
+                    eprintln!("{}", copy::fatal(&why));
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        #[cfg(not(host_board))]
+        Ok(config::Parsed::Launcher) => {
+            eprintln!(
+                "{}\n{}",
+                copy::fatal(&copy::MISSING_KERNEL),
+                copy::USAGE_HINT
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
         Ok(config::Parsed::Run(config)) => *config,
         Ok(config::Parsed::Instance(command)) => match instance_main(command) {
             Ok(None) => return ExitCode::SUCCESS,
@@ -395,8 +463,7 @@ pub fn cli_main() -> ExitCode {
     logger::init(config.log_level);
     let mut config = config;
     if config.gpu {
-        use_bundled_vulkan_driver();
-        match gpu_works() {
+        match start_gpu() {
             Ok(()) => eprintln!("{}", copy::GPU_ACCELERATED),
             Err(why) => {
                 eprintln!("{}", copy::gpu_unavailable(&why));
@@ -406,7 +473,14 @@ pub fn cli_main() -> ExitCode {
     }
     match run(&config, started) {
         #[cfg(host_board)]
-        Ok(true) if let Some(name) = &config.instance => {
+        Ok(exit @ (Exit::Restart | Exit::FactoryReset)) if let Some(name) = &config.instance => {
+            if exit == Exit::FactoryReset {
+                let wiped = instance::root().and_then(|root| instance::wipe_data(&root, name));
+                if let Err(err) = wiped {
+                    eprintln!("{}", copy::fatal(&err));
+                    return ExitCode::FAILURE;
+                }
+            }
             eprintln!("{}", copy::fatal(&restart_instance(name)));
             ExitCode::FAILURE
         }

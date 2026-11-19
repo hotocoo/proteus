@@ -38,6 +38,8 @@ pub struct Painter {
 impl Painter {
     pub fn new(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<Self, String> {
         let ctx = egui::Context::default();
+        // ⌘+ and ⌘− belong to the guest's keys and the window's own shortcuts, not to zooming.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let config = WgpuConfiguration {
             wgpu_setup: WgpuSetup::from_display_handle(event_loop.owned_display_handle()),
             ..WgpuConfiguration::default()

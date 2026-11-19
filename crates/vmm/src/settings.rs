@@ -2,7 +2,7 @@
 //! read into named fields and written back. Options the panel does not show (the kernel, the image,
 //! disks…) are kept as they are.
 
-use crate::config::{DEFAULT_DISPLAY, DEFAULT_RAM_MIB, DEFAULT_VCPUS};
+use crate::config::{DEFAULT_DISPLAY, DEFAULT_RAM_MIB, DEFAULT_USERDATA_GIB, DEFAULT_VCPUS};
 use net::config::ADB_PORT as DEFAULT_ADB_PORT;
 
 /// What happens to sound.
@@ -26,6 +26,11 @@ pub enum Gamepad {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    /// The Android image (ROM) folder, and the kernel; empty for the one beside the program.
+    pub android: String,
+    pub kernel: String,
+    /// Size of the data partition when it is made, in GiB.
+    pub userdata_gib: u64,
     pub ram_mib: u64,
     pub vcpus: u32,
     pub display: (u32, u32),
@@ -44,6 +49,9 @@ pub struct Settings {
     pub other: Vec<String>,
 }
 
+const ANDROID: &str = "--android";
+const KERNEL: &str = "--kernel";
+const USERDATA: &str = "--userdata-gib";
 const RAM: &str = "--ram-mib";
 const VCPUS: &str = "--vcpus";
 const DISPLAY: &str = "--display";
@@ -63,8 +71,9 @@ const KEYMAP_DIR: &str = "--keymap-dir";
 const SIZE_SEPARATOR: char = 'x';
 
 /// Options that take a value, of those the panel shows.
-const WITH_VALUE: [&str; 8] = [
-    RAM, VCPUS, DISPLAY, ADB_PORT, BLOCKLIST, ALLOWLIST, KEYMAP, KEYMAP_DIR,
+const WITH_VALUE: [&str; 11] = [
+    ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, ADB_PORT, BLOCKLIST, ALLOWLIST, KEYMAP,
+    KEYMAP_DIR,
 ];
 
 impl Settings {
@@ -72,6 +81,9 @@ impl Settings {
     /// refuse it anyway.
     pub fn from_args(args: &[String]) -> Self {
         let mut settings = Self {
+            android: String::new(),
+            kernel: String::new(),
+            userdata_gib: DEFAULT_USERDATA_GIB,
             ram_mib: DEFAULT_RAM_MIB,
             vcpus: DEFAULT_VCPUS,
             display: DEFAULT_DISPLAY,
@@ -103,6 +115,9 @@ impl Settings {
                 String::new()
             };
             match option {
+                ANDROID => settings.android = value,
+                KERNEL => settings.kernel = value,
+                USERDATA => settings.userdata_gib = value.parse().unwrap_or(settings.userdata_gib),
                 RAM => settings.ram_mib = value.parse().unwrap_or(settings.ram_mib),
                 VCPUS => settings.vcpus = value.parse().unwrap_or(settings.vcpus),
                 DISPLAY => settings.display = parse_size(&value).unwrap_or(settings.display),
@@ -132,6 +147,15 @@ impl Settings {
             args.push(option.to_owned());
             args.push(value);
         };
+        if !self.android.is_empty() {
+            value(ANDROID, self.android.clone());
+        }
+        if !self.kernel.is_empty() {
+            value(KERNEL, self.kernel.clone());
+        }
+        if self.userdata_gib != DEFAULT_USERDATA_GIB {
+            value(USERDATA, self.userdata_gib.to_string());
+        }
         if self.ram_mib != DEFAULT_RAM_MIB {
             value(RAM, self.ram_mib.to_string());
         }
@@ -219,10 +243,9 @@ mod tests {
         assert_eq!(settings.sound, Sound::Muted);
         assert_eq!(settings.gamepad, Gamepad::Never);
         assert_eq!(settings.blocklists, ["/ads.txt"]);
-        assert_eq!(
-            settings.other,
-            strings(&["--kernel", "/k", "--android", "/img dir"])
-        );
+        assert_eq!(settings.android, "/img dir");
+        assert_eq!(settings.kernel, "/k");
+        assert!(settings.other.is_empty());
         assert_eq!(Settings::from_args(&settings.to_args()), settings);
         // The emulator reads them back the way the panel meant them.
         let mut check = settings.to_args();
@@ -233,8 +256,8 @@ mod tests {
 
     #[test]
     fn defaults_are_not_written_out() {
-        let settings = Settings::from_args(&strings(&["--kernel", "/k"]));
-        assert_eq!(settings.to_args(), strings(&["--kernel", "/k"]));
+        let settings = Settings::from_args(&strings(&["--kernel", "/k", "--serial"]));
+        assert_eq!(settings.to_args(), strings(&["--serial", "--kernel", "/k"]));
     }
 
     #[test]

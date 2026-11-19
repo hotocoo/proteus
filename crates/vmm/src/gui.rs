@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use egui::{Align, Layout, RichText, Ui};
+use egui::{RichText, Ui};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, ROUTE_DEFAULT_KMH};
@@ -17,7 +17,7 @@ use crate::ctl::{Command, Controller};
 use crate::input::{
     KEY_APPSELECT, KEY_BACK, KEY_HOMEPAGE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP,
 };
-use crate::settings::{Gamepad, Settings, Sound};
+use crate::settings_ui::{Action, Form};
 use crate::window::Notice;
 use crate::{adb, instance};
 
@@ -32,6 +32,8 @@ pub enum Effect {
     CloseEditor(Option<PathBuf>),
     /// Switch the machine off and start this instance again.
     Restart,
+    /// Switch the machine off, delete its Android data and start it again as a new phone.
+    FactoryReset,
     /// Turn the device a quarter turn, clockwise when true.
     Turn(bool),
 }
@@ -75,13 +77,6 @@ const DEVICE_POSES: [[f64; 3]; 4] = [
     [0.0, 0.0, 90.0],
     [0.0, 0.0, -90.0],
     [-90.0, 0.0, 0.0],
-];
-
-/// Screen sizes offered in the settings, upright.
-const DISPLAY_PRESETS: [(&str, (u32, u32)); 3] = [
-    (text::DISPLAY_PHONE, (720, 1280)),
-    (text::DISPLAY_PHONE_HD, (1080, 1920)),
-    (text::DISPLAY_TABLET, (1200, 1920)),
 ];
 
 /// A place kept in the saved-places file.
@@ -202,15 +197,6 @@ struct Capture {
     seconds: u32,
 }
 
-struct SettingsForm {
-    settings: Option<Settings>,
-    custom_display: (u32, u32),
-    blocklists: String,
-    allowlists: String,
-    saved: bool,
-    save_as: String,
-}
-
 pub struct Gui {
     controller: Arc<Controller>,
     notify: Arc<dyn Fn(Notice) + Send + Sync>,
@@ -224,7 +210,8 @@ pub struct Gui {
     macros: Macros,
     keymap_path: String,
     capture: Capture,
-    form: SettingsForm,
+    form: Option<Form>,
+    save_as: String,
 }
 
 impl Gui {
@@ -276,14 +263,8 @@ impl Gui {
             capture: Capture {
                 seconds: config::CAPTURE_DEFAULT_SECONDS,
             },
-            form: SettingsForm {
-                settings: None,
-                custom_display: config::DEFAULT_DISPLAY,
-                blocklists: String::new(),
-                allowlists: String::new(),
-                saved: false,
-                save_as: String::new(),
-            },
+            form: None,
+            save_as: String::new(),
         }
     }
 
@@ -802,192 +783,39 @@ impl Gui {
         ui.label(text::RECORD_HINT);
     }
 
-    /// Reads the instance's saved options into the form.
-    fn load_settings(&mut self) {
-        self.form.saved = false;
-        let Some(name) = self.instance.clone() else {
-            self.form.settings = None;
-            return;
-        };
-        let args = instance::root().and_then(|root| instance::args(&root, &name));
-        match args {
-            Ok(args) => {
-                let settings = Settings::from_args(&args);
-                self.form.custom_display = settings.display;
-                self.form.blocklists = settings.blocklists.join("\n");
-                self.form.allowlists = settings.allowlists.join("\n");
-                self.form.settings = Some(settings);
-            }
-            Err(err) => {
-                self.form.settings = None;
-                self.status = err.to_string();
-            }
-        }
-    }
-
     fn settings_panel(&mut self, ui: &mut Ui, effects: &mut Vec<Effect>) {
         ui.heading(text::SETTINGS);
-        let Some(name) = self.instance.clone() else {
+        if self.instance.is_none() {
             ui.label(text::NOT_AN_INSTANCE);
             ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.form.save_as);
+                ui.text_edit_singleline(&mut self.save_as);
                 if ui.button(text::SAVE_AS_INSTANCE).clicked() {
-                    self.status = save_as_instance(self.form.save_as.trim());
+                    self.status = save_as_instance(self.save_as.trim());
                 }
             });
             return;
-        };
-        let Some(settings) = self.form.settings.as_mut() else {
+        }
+        let Some(form) = self.form.as_mut() else {
             if ui.button(text::RELOAD).clicked() {
                 self.load_settings();
             }
             return;
         };
-        ui.label(text::settings_for(&name));
-        let mut edited = false;
-        egui::Grid::new("settings").num_columns(2).show(ui, |ui| {
-            ui.label(text::MEMORY);
-            edited |= ui
-                .add(
-                    egui::DragValue::new(&mut settings.ram_mib)
-                        .range(config::RAM_MIB_RANGE)
-                        .speed(config::RAM_MIB_STEP)
-                        .suffix(text::MIB),
-                )
-                .changed();
-            ui.end_row();
-            ui.label(text::CPUS);
-            edited |= ui
-                .add(egui::DragValue::new(&mut settings.vcpus).range(config::VCPUS_RANGE))
-                .changed();
-            ui.end_row();
-            ui.label(text::SCREEN);
-            ui.vertical(|ui| {
-                for (label, size) in DISPLAY_PRESETS {
-                    edited |= ui
-                        .radio_value(&mut settings.display, size, text::preset(label, size))
-                        .changed();
-                }
-                ui.horizontal(|ui| {
-                    let custom = &mut self.form.custom_display;
-                    edited |= ui
-                        .add(egui::DragValue::new(&mut custom.0).range(config::DISPLAY_RANGE))
-                        .changed();
-                    ui.label(text::BY);
-                    edited |= ui
-                        .add(egui::DragValue::new(&mut custom.1).range(config::DISPLAY_RANGE))
-                        .changed();
-                    if ui.button(text::USE_SIZE).clicked() {
-                        settings.display = *custom;
-                        edited = true;
-                    }
-                });
-            });
-            ui.end_row();
-            ui.label(text::GRAPHICS);
-            edited |= ui.checkbox(&mut settings.gpu, text::USE_GPU).changed();
-            ui.end_row();
-            ui.label(text::SOUND);
-            ui.horizontal(|ui| {
-                edited |= ui
-                    .radio_value(&mut settings.sound, Sound::On, text::SOUND_ON)
-                    .changed();
-                edited |= ui
-                    .radio_value(&mut settings.sound, Sound::Muted, text::SOUND_MUTED)
-                    .changed();
-                edited |= ui
-                    .radio_value(&mut settings.sound, Sound::Off, text::SOUND_OFF)
-                    .changed();
-            });
-            ui.end_row();
-            ui.label(text::GAMEPAD);
-            ui.horizontal(|ui| {
-                edited |= ui
-                    .radio_value(&mut settings.gamepad, Gamepad::Auto, text::GAMEPAD_AUTO)
-                    .changed();
-                edited |= ui
-                    .radio_value(&mut settings.gamepad, Gamepad::Always, text::GAMEPAD_ALWAYS)
-                    .changed();
-                edited |= ui
-                    .radio_value(&mut settings.gamepad, Gamepad::Never, text::GAMEPAD_NEVER)
-                    .changed();
-            });
-            ui.end_row();
-            ui.label(text::NETWORK);
-            ui.vertical(|ui| {
-                edited |= ui
-                    .checkbox(&mut settings.network, text::NETWORK_ON)
-                    .changed();
-                edited |= ui
-                    .checkbox(&mut settings.allow_quic, text::ALLOW_QUIC)
-                    .changed();
-                edited |= ui
-                    .checkbox(&mut settings.host_loopback, text::HOST_LOOPBACK)
-                    .on_hover_text(text::HOST_LOOPBACK_HINT)
-                    .changed();
-                ui.horizontal(|ui| {
-                    ui.label(text::ADB_PORT);
-                    edited |= ui
-                        .add(egui::DragValue::new(&mut settings.adb_port))
-                        .changed();
-                });
-            });
-            ui.end_row();
-            ui.label(text::BLOCKLISTS);
-            edited |= ui
-                .add(
-                    egui::TextEdit::multiline(&mut self.form.blocklists)
-                        .hint_text(text::ONE_FILE_PER_LINE),
-                )
-                .changed();
-            ui.end_row();
-            ui.label(text::ALLOWLISTS);
-            edited |= ui
-                .add(
-                    egui::TextEdit::multiline(&mut self.form.allowlists)
-                        .hint_text(text::ONE_FILE_PER_LINE),
-                )
-                .changed();
-            ui.end_row();
-            ui.label(text::KEYMAP_FILE);
-            edited |= ui.text_edit_singleline(&mut settings.keymap).changed();
-            ui.end_row();
-            ui.label(text::KEYMAP_FOLDER);
-            edited |= ui
-                .text_edit_singleline(&mut settings.keymap_dir)
-                .on_hover_text(text::KEYMAP_FOLDER_HINT)
-                .changed();
-            ui.end_row();
-        });
-        if edited {
-            self.form.saved = false;
+        match form.show(ui, true) {
+            Some(Action::Restart) => effects.push(Effect::Restart),
+            Some(Action::FactoryReset) => effects.push(Effect::FactoryReset),
+            None => {}
         }
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            if ui.button(text::SAVE).clicked() {
-                let lines = |text: &str| -> Vec<String> {
-                    text.lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                };
-                settings.blocklists = lines(&self.form.blocklists);
-                settings.allowlists = lines(&self.form.allowlists);
-                let saved = instance::root()
-                    .and_then(|root| instance::set_args(&root, &name, &settings.to_args()));
-                match saved {
-                    Ok(()) => {
-                        self.form.saved = true;
-                        self.status = text::SETTINGS_SAVED.to_owned();
-                    }
-                    Err(err) => self.status = err.to_string(),
-                }
-            }
-            if self.form.saved && ui.button(text::RESTART_NOW).clicked() {
-                effects.push(Effect::Restart);
-            }
-        });
-        ui.label(RichText::new(text::APPLIES_ON_RESTART).weak());
+    }
+
+    fn load_settings(&mut self) {
+        let Some(name) = self.instance.clone() else {
+            return;
+        };
+        match Form::open(&name) {
+            Ok(form) => self.form = Some(form),
+            Err(why) => self.status = why,
+        }
     }
 }
 
