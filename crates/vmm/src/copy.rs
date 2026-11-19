@@ -78,6 +78,9 @@ Usage: emu --kernel <file> [options]
   shake                                  Shake the device
   shell <command>                        Run a command in Android's shell and print what it
                                          printed, such as `am force-stop <package>`
+  window-screenshot <file>               Save what the window shows, controls included, as a PNG
+  window-click <x> <y>                   Click the window at a point, in points from its top left
+  window-scroll <x> <y> <lines>          Turn the mouse wheel there (negative scrolls down)
   shutdown                               Shut Android down, then turn the machine off
   stop                                   Turn the machine off at once, like pulling the plug
   record <file>                          Record the touches and keys that follow as a macro
@@ -240,6 +243,10 @@ pub fn frame_rate(frames: u32, over: std::time::Duration) -> String {
     )
 }
 
+pub fn gpu_wait_failed(err: &dyn Display) -> String {
+    format!("the window's GPU work did not finish: {err}")
+}
+
 pub fn window_touch(window_x: f64, window_y: f64, x: u32, y: u32) -> String {
     format!("window pixel {window_x:.0},{window_y:.0} touches guest pixel {x},{y}")
 }
@@ -300,6 +307,9 @@ pub fn sensor_request(request: &str) -> String {
 pub const CTL_THREAD: &str = "ctl";
 /// The control socket's answer to a command that worked.
 pub const CTL_OK: &str = "ok";
+pub const CTL_NO_WINDOW: &str = "this emulator has no window";
+pub const CTL_WINDOW_SILENT: &str = "the window did not answer";
+pub const CTL_NO_PICTURE: &str = "the window has nothing to show yet";
 pub const CTL_NO_ADB: &str = "adb is not up yet (or was turned off with --adb-port 0)";
 
 pub fn ctl_shell_failed(err: &dyn Display) -> String {

@@ -33,6 +33,8 @@ pub struct Painter {
     painter: WgpuPainter,
     /// When egui asked to be drawn again, if it did.
     pub repaint_at: Option<Instant>,
+    /// Screenshots of the window to take with the next frame.
+    shots: Vec<egui::ScreenshotCallback>,
 }
 
 impl Painter {
@@ -65,12 +67,36 @@ impl Painter {
             state,
             painter,
             repaint_at: None,
+            shots: Vec::new(),
         })
     }
 
     /// The GPU device, queue and egui's renderer, once the window has a surface.
     pub fn render_state(&self) -> Option<egui_wgpu::RenderState> {
         self.painter.render_state()
+    }
+
+    /// Takes a screenshot of the window with the next frame. It is drawn to a texture of its own,
+    /// so it works while the window is covered or the screen is asleep.
+    pub fn capture(
+        &mut self,
+        done: impl FnOnce(std::sync::Arc<egui::ColorImage>) + Send + 'static,
+    ) {
+        self.shots.push(egui::ScreenshotCallback::new(done));
+    }
+
+    /// Waits for the GPU to finish what was submitted, so callbacks waiting on it (a screenshot's
+    /// readback) run now and not at some later frame.
+    pub fn finish(&self) {
+        if let Some(render) = self.painter.render_state() {
+            let wait = wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(crate::config::WINDOW_REQUEST_TIMEOUT),
+            };
+            if let Err(err) = render.device.poll(wait) {
+                log::warn!("{}", crate::copy::gpu_wait_failed(&err));
+            }
+        }
     }
 
     /// Gives a window event to egui. True if egui used it, so the guest should not get it.
@@ -105,7 +131,7 @@ impl Painter {
             CLEAR,
             &primitives,
             &mut textures,
-            Vec::new(),
+            std::mem::take(&mut self.shots),
             window,
         );
         let delay = output

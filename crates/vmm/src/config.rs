@@ -180,7 +180,7 @@ pub fn recording_path() -> PathBuf {
 const RECORDING_EXTENSION: &str = "mp4";
 /// The window's controls: the toolbar's width and button height, the space around buttons, the
 /// open panel's width and its text fields' width, in points.
-pub const TOOLBAR_WIDTH: f32 = 96.0;
+pub const TOOLBAR_WIDTH: f32 = 112.0;
 pub const TOOLBAR_MARGIN: f32 = 6.0;
 pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
 pub const PANEL_WIDTH: f32 = 340.0;
@@ -236,6 +236,11 @@ pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(5);
 pub const SHUTDOWN_ASK: Duration = Duration::from_secs(5);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SHUTDOWN_THREAD: &str = "shutdown";
+/// How long the window may take to answer a request from the control socket.
+/// Generous: a window whose display is asleep draws only about once a second.
+pub const WINDOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `window-click` holds the button down: about as long as a quick click by hand.
+pub const WINDOW_CLICK_HOLD: Duration = Duration::from_millis(80);
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
 /// Apps a release carries beside the program, installed when a data folder first boots, and the
 /// file in the data folder that notes which were.

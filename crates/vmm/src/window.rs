@@ -51,6 +51,8 @@ pub enum Notice {
     Status(String),
     /// The apps installed in the guest.
     Packages(Vec<String>),
+    /// A request from the control socket that only the window can carry out.
+    Request(crate::ctl::WindowRequest),
 }
 
 /// The largest rectangle of the picture's shape that fits in `space`, centred, in points.
@@ -98,6 +100,23 @@ pub(crate) fn color_image(frame: &Frame<'_>, turns: u8) -> Option<egui::ColorIma
         [width as usize, height as usize],
         rgba,
     ))
+}
+
+/// Saves a screenshot of the window as a PNG.
+fn save_shot(image: &egui::ColorImage, path: &std::path::Path) -> Result<(), String> {
+    let pixels: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_array())
+        .collect();
+    let frame = Frame {
+        width: image.size[0] as u32,
+        height: image.size[1] as u32,
+        format: crate::frames::FORMATS_RGBX[0],
+        pixels: &pixels,
+    };
+    let png = crate::frames::png(&frame).ok_or(copy::CTL_NO_PICTURE)?;
+    std::fs::write(path, png).map_err(|err| copy::file(path, &err))
 }
 
 /// What a shortcut does: one of Android's buttons, a turn of the device, or a screenshot.
@@ -155,6 +174,23 @@ fn linux_key(key: KeyCode) -> Option<u16> {
 /// The window system's name for a key, which key maps use too.
 pub fn key_name(key: KeyCode) -> String {
     format!("{key:?}")
+}
+
+/// The window's size after the picture turns to `picture` pixels: the same scale as before, made
+/// smaller if needed to fit a share of the monitor, with `chrome` points of controls beside it.
+fn turned_size(
+    picture: (u32, u32),
+    scale: f64,
+    chrome: f64,
+    monitor: Option<(f64, f64)>,
+) -> (f64, f64) {
+    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
+    let fits = monitor.map_or(scale, |(monitor_w, monitor_h)| {
+        let share = crate::config::WINDOW_SCREEN_SHARE;
+        ((monitor_w * share - chrome) / width).min(monitor_h * share / height)
+    });
+    let scale = scale.min(fits);
+    (width * scale + chrome, height * scale)
 }
 
 /// The window's first size, in logical pixels: the guest's picture, made smaller if needed so it
@@ -476,6 +512,102 @@ impl App {
         self.sync_pointer();
     }
 
+    /// Carries out a request from the control socket.
+    fn request(&mut self, event_loop: &ActiveEventLoop, request: crate::ctl::WindowRequest) {
+        use crate::ctl::WindowRequest;
+        match request {
+            WindowRequest::Shot(path, reply) => match self.shown.as_mut() {
+                Some(shown) => {
+                    shown.painter.capture(move |image| {
+                        let _ = reply.send(save_shot(&image, &path));
+                    });
+                    // Drawn now: macOS sends no redraw to a covered window, and a capture is
+                    // drawn to a texture of its own, so it needs none.
+                    self.frame_waiting = true;
+                    self.draw();
+                    if let Some(shown) = &self.shown {
+                        shown.painter.finish();
+                    }
+                }
+                None => {
+                    let _ = reply.send(Err(copy::CTL_NO_PICTURE.to_owned()));
+                }
+            },
+            WindowRequest::Click { x, y, reply } => {
+                let _ = reply.send(self.click(event_loop, x, y));
+            }
+            WindowRequest::Scroll { x, y, lines, reply } => {
+                let _ = reply.send(self.scroll(event_loop, x, y, lines));
+            }
+        }
+    }
+
+    /// Clicks the window at `(x, y)` points through the same path the mouse takes: egui sees
+    /// it first, and the guest gets it if it lands on the picture.
+    fn click(&mut self, event_loop: &ActiveEventLoop, x: f64, y: f64) -> Result<(), String> {
+        let Some(shown) = &self.shown else {
+            return Err(copy::CTL_NO_PICTURE.to_owned());
+        };
+        let id = shown.window.id();
+        let scale = shown.window.scale_factor();
+        let device_id = DeviceId::dummy();
+        let position = PhysicalPosition::new(x * scale, y * scale);
+        let events = [
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            },
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        ];
+        for event in events {
+            self.window_event(event_loop, id, event);
+        }
+        // A frame between press and release, and a hand's hold, so egui and Android see a click.
+        self.draw();
+        std::thread::sleep(crate::config::WINDOW_CLICK_HOLD);
+        let release = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        self.window_event(event_loop, id, release);
+        self.draw();
+        Ok(())
+    }
+
+    /// Turns the mouse wheel over `(x, y)` points, through the same path the mouse takes.
+    fn scroll(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        x: f64,
+        y: f64,
+        lines: f64,
+    ) -> Result<(), String> {
+        let Some(shown) = &self.shown else {
+            return Err(copy::CTL_NO_PICTURE.to_owned());
+        };
+        let id = shown.window.id();
+        let scale = shown.window.scale_factor();
+        let device_id = DeviceId::dummy();
+        let moved = WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(x * scale, y * scale),
+        };
+        self.window_event(event_loop, id, moved);
+        let wheel = WindowEvent::MouseWheel {
+            device_id,
+            delta: MouseScrollDelta::LineDelta(0.0, lines as f32),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        self.window_event(event_loop, id, wheel);
+        self.draw();
+        Ok(())
+    }
+
     /// Shuts Android down on a thread of its own, so the window keeps drawing meanwhile.
     fn shut_down(&mut self) {
         if self.shutting_down {
@@ -512,20 +644,22 @@ impl App {
     fn rotated(&mut self, turns: u8) {
         self.touch(false);
         self.frame_waiting = true;
-        let (Some(shown), Some(picture)) = (&self.shown, self.picture) else {
+        let (Some(shown), Some((rect, drawn))) = (&self.shown, self.picture) else {
             return;
         };
-        let old = self.upright();
+        // The size the picture was drawn at, not the guest's turn, which has already changed.
+        let scale = f64::from(rect.width()) / f64::from(drawn.0.max(1));
         let new = orientation::upright_size(self.guest, turns);
-        let scale = f64::from(picture.0.width()) / f64::from(old.0.max(1));
-        let size = shown
-            .window
-            .inner_size()
-            .to_logical::<f64>(shown.window.scale_factor());
-        let chrome = size.width - f64::from(picture.0.width());
-        let wanted = LogicalSize::new(f64::from(new.0) * scale + chrome, f64::from(new.1) * scale);
-        let _ = shown.window.request_inner_size(wanted);
-        shown.window.request_redraw();
+        let window = &shown.window;
+        let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+        let chrome = size.width - f64::from(rect.width());
+        let monitor = window.current_monitor().map(|monitor| {
+            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            (size.width, size.height)
+        });
+        let (width, height) = turned_size(new, scale, chrome, monitor);
+        let _ = window.request_inner_size(LogicalSize::new(width, height));
+        window.request_redraw();
     }
 
     /// Changes to the key map for `package`, lifting the old map's fingers first.
@@ -626,6 +760,7 @@ impl ApplicationHandler<Notice> for App {
             Notice::Foreground(package) => self.follow(&package),
             Notice::Rotated(turns) => self.rotated(turns),
             notice @ (Notice::Status(_) | Notice::Packages(_)) => self.gui.notice(notice),
+            Notice::Request(request) => self.request(event_loop, request),
         }
         if let Some(shown) = &self.shown {
             shown.window.request_redraw();
@@ -774,6 +909,12 @@ impl WindowLoop {
         instance: Option<String>,
     ) -> Result<crate::Exit, VmmError> {
         let notify = Arc::new(self.notifier());
+        let link = self.notifier();
+        *controller
+            .window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Box::new(move |request| link(Notice::Request(request))));
         let mapper = keymap
             .as_ref()
             .map(|path| keymap::load(path, orientation::any_way_up(guest)))
@@ -811,6 +952,10 @@ impl WindowLoop {
             .and_then(|shown| shown.painter.render_state());
         app.picture_texture.release(render.as_ref());
         app.shown = None;
+        *app.controller
+            .window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         match (app.failed, ran) {
             (Some(why), _) => Err(VmmError::Device(copy::window_failed(&why))),
             (None, Err(err)) => Err(VmmError::Device(copy::window_failed(&err))),
@@ -913,6 +1058,19 @@ mod tests {
             initial_size((720, 1280), Some((4000.0, 4000.0))),
             (720.0 + toolbar, 1280.0)
         );
+    }
+
+    #[test]
+    fn a_turned_picture_keeps_its_scale_unless_the_monitor_is_too_small() {
+        let toolbar = f64::from(TOOLBAR_WIDTH);
+        // A 1080x1920 phone drawn at 0.6375 turns landscape: same scale, wide window.
+        let (width, height) = turned_size((1920, 1080), 0.6375, toolbar, Some((2560.0, 1440.0)));
+        assert!((width - (1920.0 * 0.6375 + toolbar)).abs() < 1e-6);
+        assert!((height - 1080.0 * 0.6375).abs() < 1e-6);
+        // On a small monitor it shrinks to fit.
+        let share = crate::config::WINDOW_SCREEN_SHARE;
+        let (width, _) = turned_size((1920, 1080), 0.6375, toolbar, Some((1280.0, 800.0)));
+        assert!(width <= 1280.0 * share + 1e-6);
     }
 
     #[test]

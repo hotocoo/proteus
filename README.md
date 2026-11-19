@@ -134,6 +134,9 @@ emu ctl /tmp/emu.sock rotate -90 0 0           # degrees about x, y, z; this lay
 emu ctl /tmp/emu.sock shake
 emu ctl /tmp/emu.sock shell am force-stop com.example.game   # any command in Android's shell
 emu ctl /tmp/emu.sock pad a down               # gamepad: buttons, sticks lx ly rx ry, triggers lt rt
+emu ctl /tmp/emu.sock window-screenshot win.png    # the window, toolbar and panels included
+emu ctl /tmp/emu.sock window-click 745 584         # click the window, as the mouse would
+emu ctl /tmp/emu.sock window-scroll 860 700 -10    # turn the mouse wheel there
 emu ctl /tmp/emu.sock shutdown                     # shut Android down, then switch off
 emu ctl /tmp/emu.sock stop                         # switch off at once, like pulling the plug
 ```

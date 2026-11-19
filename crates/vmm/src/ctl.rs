@@ -88,6 +88,9 @@ const WORD_RECORD: &str = "record";
 const WORD_RECORD_STOP: &str = "record-stop";
 const WORD_CANCEL: &str = "cancel";
 const WORD_SHELL: &str = "shell";
+const WORD_WINDOW_SHOT: &str = "window-screenshot";
+const WORD_WINDOW_CLICK: &str = "window-click";
+const WORD_WINDOW_SCROLL: &str = "window-scroll";
 /// Starts each line of what a `shell` command printed, so the answer line after them stands out.
 pub const SHELL_LINE: &str = "| ";
 const MACRO_COMMENT: char = '#';
@@ -153,6 +156,19 @@ pub enum Command {
     Shake,
     /// Run a command in the guest's shell, through adb.
     Shell(String),
+    /// Save what the window shows, controls included, as a PNG.
+    WindowShot(PathBuf),
+    /// Click the window at a point, in window points from its top left, as the mouse would.
+    WindowClick {
+        x: f64,
+        y: f64,
+    },
+    /// Turn the mouse wheel over a point of the window by this many lines (positive is up).
+    WindowScroll {
+        x: f64,
+        y: f64,
+        lines: f64,
+    },
     /// Turn the machine off without asking the guest.
     Stop,
     /// Shut Android down, then turn the machine off.
@@ -232,6 +248,9 @@ impl std::fmt::Display for Command {
             Self::Rotate([x, y, z]) => write!(f, "{WORD_ROTATE} {x} {y} {z}"),
             Self::Shake => f.write_str(WORD_SHAKE),
             Self::Shell(command) => write!(f, "{WORD_SHELL} {command}"),
+            Self::WindowShot(path) => write!(f, "{WORD_WINDOW_SHOT} {}", path.display()),
+            Self::WindowClick { x, y } => write!(f, "{WORD_WINDOW_CLICK} {x} {y}"),
+            Self::WindowScroll { x, y, lines } => write!(f, "{WORD_WINDOW_SCROLL} {x} {y} {lines}"),
             Self::Stop => f.write_str(WORD_STOP),
             Self::Shutdown => f.write_str(WORD_SHUTDOWN),
             Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
@@ -269,6 +288,14 @@ pub fn parse(line: &str) -> Option<Command> {
             });
         }
         (WORD_ROTATE, Some(&[x, y, z])) => return Some(Command::Rotate([x, y, z])),
+        (WORD_WINDOW_CLICK, Some(&[x, y])) if x.is_finite() && y.is_finite() => {
+            return Some(Command::WindowClick { x, y });
+        }
+        (WORD_WINDOW_SCROLL, Some(&[x, y, lines]))
+            if x.is_finite() && y.is_finite() && lines.is_finite() =>
+        {
+            return Some(Command::WindowScroll { x, y, lines });
+        }
         (WORD_WALK, Some(&[bearing, speed])) if bearing.is_finite() && speed.is_finite() => {
             return Some(Command::Walk(Some((bearing, speed))));
         }
@@ -361,6 +388,7 @@ pub fn parse(line: &str) -> Option<Command> {
             })
         }
         (WORD_INSTALL, _) if !rest.is_empty() => Some(Command::Install(rest.into())),
+        (WORD_WINDOW_SHOT, _) if !rest.is_empty() => Some(Command::WindowShot(rest.into())),
         _ => None,
     }
 }
@@ -476,6 +504,26 @@ fn follow(target: &Path, lines: &mpsc::Receiver<String>) {
     }
 }
 
+/// Something only the window can do, and where to say how it went.
+#[derive(Clone, Debug)]
+pub enum WindowRequest {
+    Shot(PathBuf, mpsc::Sender<Result<(), String>>),
+    Click {
+        x: f64,
+        y: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Scroll {
+        x: f64,
+        y: f64,
+        lines: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+}
+
+/// Hands a request to the window's thread.
+pub type WindowLink = Box<dyn Fn(WindowRequest) + Send + Sync>;
+
 /// The parts of a running machine that commands act on.
 #[derive(Default)]
 pub struct Controller {
@@ -497,6 +545,8 @@ pub struct Controller {
     pub followers: Followers,
     /// Held for the length of a tap or swipe, so that two of them do not share the gesture finger.
     pub gesture: Mutex<()>,
+    /// Where requests for the window go, while there is one.
+    pub window: Mutex<Option<WindowLink>>,
 }
 
 impl Controller {
@@ -547,6 +597,22 @@ impl Controller {
         }
         // Off for good, also if Android restarted instead.
         self.power.off();
+    }
+
+    /// Asks the window to do something, and waits for it to say how it went.
+    fn ask_window(
+        &self,
+        request: impl FnOnce(mpsc::Sender<Result<(), String>>) -> WindowRequest,
+    ) -> Result<(), String> {
+        let (reply, answer) = mpsc::channel();
+        {
+            let window = self.window.lock().unwrap_or_else(PoisonError::into_inner);
+            let send = window.as_ref().ok_or(copy::CTL_NO_WINDOW)?;
+            send(request(reply));
+        }
+        answer
+            .recv_timeout(crate::config::WINDOW_REQUEST_TIMEOUT)
+            .map_err(|_| copy::CTL_WINDOW_SILENT.to_owned())?
     }
 
     /// Runs `command` in the guest's shell and gives back what it printed.
@@ -659,6 +725,15 @@ impl Controller {
                 send(gamepad, &input::pad_event(control, value))
             }
             Command::Shell(ref command) => self.shell(command).map(drop),
+            Command::WindowShot(ref path) => {
+                self.ask_window(|reply| WindowRequest::Shot(path.clone(), reply))
+            }
+            Command::WindowClick { x, y } => {
+                self.ask_window(|reply| WindowRequest::Click { x, y, reply })
+            }
+            Command::WindowScroll { x, y, lines } => {
+                self.ask_window(|reply| WindowRequest::Scroll { x, y, lines, reply })
+            }
             Command::Install(ref path) => {
                 let port = self.adb_port.load(Ordering::SeqCst);
                 crate::install::install(port, path).map_err(|err| copy::install_failed(path, &err))
@@ -1060,6 +1135,14 @@ mod tests {
         assert_eq!(parse("shake"), Some(Command::Shake));
         assert_eq!(parse("shutdown"), Some(Command::Shutdown));
         assert_eq!(
+            parse("window-click 12.5 40"),
+            Some(Command::WindowClick { x: 12.5, y: 40.0 })
+        );
+        assert_eq!(
+            parse("window-screenshot my shot.png"),
+            Some(Command::WindowShot("my shot.png".into()))
+        );
+        assert_eq!(
             parse("shell am force-stop com.example.game"),
             Some(Command::Shell("am force-stop com.example.game".into()))
         );
@@ -1147,6 +1230,13 @@ mod tests {
             Command::Shell("dumpsys window | grep -i rotation".into()),
             Command::Stop,
             Command::Shutdown,
+            Command::WindowShot("w.png".into()),
+            Command::WindowClick { x: 1.5, y: 2.0 },
+            Command::WindowScroll {
+                x: 1.0,
+                y: 2.0,
+                lines: -3.0,
+            },
             Command::Wait(Duration::from_millis(1500)),
             Command::Run {
                 path: "my macro.txt".into(),
