@@ -46,7 +46,8 @@ pub fn userdata_bytes(gb: u64) -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 /// Where an Android instance keeps what the guest writes, inside the images directory, unless told otherwise.
-pub const DEFAULT_DATA_DIR: &str = "emu-data";
+pub const DEFAULT_DATA_DIR: &str = "proteus-data";
+const OLD_DATA_DIR: &str = "emu-data";
 pub const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::Warn;
 /// What Android's first-stage init prints when it starts; the end point of the cold-boot measurement.
 pub const DEFAULT_BOOT_MARKER: &str = "init first stage started";
@@ -109,7 +110,7 @@ pub const ROUTE_DEFAULT_KMH: f64 = 5.0;
 pub const MAX_KMH: f64 = 1000.0;
 pub const INSTANCE_SUBCOMMAND: &str = "instance";
 pub const INSTANCE_START: &str = "start";
-/// Hidden: what `emu` runs itself as to find out whether the GPU renderer starts.
+/// Hidden: what `proteus` runs itself as to find out whether the GPU renderer starts.
 pub const GPU_CHECK_ARG: &str = "--gpu-check";
 /// How long the renderer may take to start before it is judged not to work.
 pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -130,14 +131,14 @@ pub const VULKAN_LAUNCHER_DIR_VARIABLE: &str = "ANDROID_EMULATOR_LAUNCHER_DIR";
 pub const VULKAN_DRIVER_VARIABLES: [&str; 3] =
     [VULKAN_ICD_VARIABLE, "VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
 /// Environment variable naming the emulator's home folder, where instances live.
-pub const EMU_HOME_VARIABLE: &str = "EMU_HOME";
+pub const PROTEUS_HOME_VARIABLE: &str = "PROTEUS_HOME";
 pub const INSTANCES_DIR: &str = "instances";
 pub const INSTANCE_NAME_MAX: usize = 32;
 /// Longest Unix socket path the system takes (macOS: 104 bytes with the terminating zero).
 pub const SOCKET_PATH_MAX: usize = 103;
 
 /// Where a release keeps what comes with the program: beside it, or in the app's Resources
-/// folder when it is inside Emu.app.
+/// folder when it is inside Proteus.app.
 pub fn bundle_dirs() -> Vec<PathBuf> {
     let program = std::env::current_exe().and_then(std::fs::canonicalize);
     let Some(dir) = program.ok().and_then(|p| p.parent().map(Path::to_path_buf)) else {
@@ -168,26 +169,37 @@ pub const BUNDLED_KERNEL: &str = if cfg!(target_arch = "x86_64") {
 } else {
     "kernel-arm64"
 };
-/// The GitHub repository `emu update` installs releases from.
-pub const UPSTREAM: &str = "hotocoo/emulator";
+/// The GitHub repository `proteus update` installs releases from.
+pub const UPSTREAM: &str = "hotocoo/proteus";
 pub const APP_RESOURCES: &str = "../Resources";
 
-/// The emulator's home folder when `EMU_HOME` is not set: the platform's place for app data.
+/// The emulator's home folder when `PROTEUS_HOME` is not set: the platform's place for app data.
 pub fn home_default() -> Option<PathBuf> {
     const MACOS_APP_DATA: &str = "Library/Application Support";
     const XDG_DATA_HOME: &str = "XDG_DATA_HOME";
     const XDG_DATA_DEFAULT: &str = ".local/share";
-    const APP_FOLDER: &str = "emu";
-    if cfg!(windows) {
-        return std::env::var_os("LOCALAPPDATA").map(|data| PathBuf::from(data).join(APP_FOLDER));
+    const APP_FOLDER: &str = "proteus";
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if cfg!(target_os = "macos") {
+            home.map(|home| home.join(MACOS_APP_DATA))
+        } else {
+            let data = std::env::var_os(XDG_DATA_HOME).map(PathBuf::from);
+            data.or_else(|| home.map(|home| home.join(XDG_DATA_DEFAULT)))
+        }
+    }?;
+    Some(renamed(base.join(APP_FOLDER), base.join(OLD_NAME)))
+}
+/// The name the program had before it was Proteus; its folders are moved over on first use.
+const OLD_NAME: &str = "emu";
+/// `new`, after moving `old` there if only `old` exists, so data kept under the old name stays.
+pub fn renamed(new: PathBuf, old: PathBuf) -> PathBuf {
+    if !new.exists() && old.is_dir() {
+        let _ = std::fs::rename(&old, &new);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "macos") {
-        return home.map(|home| home.join(MACOS_APP_DATA).join(APP_FOLDER));
-    }
-    let data = std::env::var_os(XDG_DATA_HOME).map(PathBuf::from);
-    data.or_else(|| home.map(|home| home.join(XDG_DATA_DEFAULT)))
-        .map(|data| data.join(APP_FOLDER))
+    new
 }
 /// How often the app in front is checked, for key maps that follow it.
 pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
@@ -196,7 +208,7 @@ pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
 /// Where ⌘S saves screenshots: the Desktop, named by the time, so they never overwrite each other.
 pub fn screenshot_path() -> PathBuf {
     const DESKTOP: &str = "Desktop";
-    const PREFIX: &str = "emu-";
+    const PREFIX: &str = "proteus-";
     const EXTENSION: &str = "png";
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
@@ -310,7 +322,7 @@ pub const SHUTDOWN_THREAD: &str = "shutdown";
 pub const SYNC_QUEUE: usize = 256;
 /// How long a follower's control socket may stall a read or write before it is dropped.
 pub const SYNC_IO_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long `emu ctl` waits for a line of an answer. Longer than the shutdown wait and a
+/// How long `proteus ctl` waits for a line of an answer. Longer than the shutdown wait and a
 /// screen recording, so that neither is cut short; a macro that is silent longer still runs on.
 pub const CTL_REPLY_TIMEOUT: Duration = Duration::from_secs(900);
 /// How long the control socket's accept loop rests after a failed accept (out of descriptors, say).
@@ -354,7 +366,7 @@ pub const GUEST_SHARED_STORAGE: &str = "/sdcard";
 /// Largest compressed archive entry inflated while installing.
 pub const ZIP_MAX_INFLATED: u64 = 1 << 30;
 /// Where the guest writes a screen recording before it is copied out.
-pub const GUEST_RECORDING: &str = "/data/local/tmp/emu-screenrecord.mp4";
+pub const GUEST_RECORDING: &str = "/data/local/tmp/proteus-screenrecord.mp4";
 /// Longest recording the guest's `screenrecord` makes, and the default length.
 pub const SCREENRECORD_MAX: Duration = Duration::from_secs(180);
 /// How often the serial input pump checks whether its machine has stopped.
@@ -500,7 +512,7 @@ pub enum GamepadMode {
     Never,
 }
 
-/// What `emu instance ...` asks for.
+/// What `proteus instance ...` asks for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstanceCommand {
     Create { name: String, args: Vec<String> },
@@ -732,7 +744,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             }
             let userdata_bytes = userdata_bytes(userdata_gib)
                 .ok_or_else(|| ConfigError(copy::bad_number("userdata-gib")))?;
-            let data = data_dir.unwrap_or_else(|| images.join(DEFAULT_DATA_DIR));
+            let data = data_dir.unwrap_or_else(|| {
+                renamed(images.join(DEFAULT_DATA_DIR), images.join(OLD_DATA_DIR))
+            });
             Some(AndroidOptions {
                 images,
                 data,
@@ -757,6 +771,23 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_moves_the_old_folder_once() {
+        let dir = std::env::temp_dir().join(format!("proteus-renamed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("old")).unwrap();
+        std::fs::write(dir.join("old").join("kept"), "x").unwrap();
+        let new = renamed(dir.join("new"), dir.join("old"));
+        assert!(new.join("kept").exists() && !dir.join("old").exists());
+        std::fs::create_dir_all(dir.join("old")).unwrap();
+        renamed(dir.join("new"), dir.join("old"));
+        assert!(
+            dir.join("old").exists(),
+            "an existing new folder is never replaced"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn parse_str(args: &[&str]) -> Result<Parsed, ConfigError> {
         parse(args.iter().map(OsString::from))
@@ -916,14 +947,14 @@ mod tests {
     #[test]
     fn ctl_takes_a_socket_and_joins_the_rest_into_one_command() {
         assert_eq!(
-            parse_str(&["ctl", "/tmp/emu.sock", "tap", "10", "20"]).unwrap(),
+            parse_str(&["ctl", "/tmp/proteus.sock", "tap", "10", "20"]).unwrap(),
             Parsed::Ctl {
-                socket: PathBuf::from("/tmp/emu.sock"),
+                socket: PathBuf::from("/tmp/proteus.sock"),
                 command: "tap 10 20".to_owned(),
             }
         );
         assert!(parse_str(&["ctl"]).is_err());
-        assert!(parse_str(&["ctl", "/tmp/emu.sock"]).is_err());
+        assert!(parse_str(&["ctl", "/tmp/proteus.sock"]).is_err());
         assert_eq!(
             run(&["--kernel", "k", "--ctl", "s"]).ctl,
             Some(PathBuf::from("s"))

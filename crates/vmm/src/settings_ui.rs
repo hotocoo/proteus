@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn settings_are_saved_as_options_the_emulator_reads() {
-        let root = std::env::temp_dir().join(format!("emu-form-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("proteus-form-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let args = ["--android", "/images", "--kernel", "/k"].map(str::to_owned);
         instance::create(&root, "phone", &args, std::path::Path::new("/")).unwrap();

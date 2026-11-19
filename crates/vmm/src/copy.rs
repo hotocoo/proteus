@@ -1,4 +1,4 @@
-//! Every message the `emu` binary can show. Code refers to these by name.
+//! Every message the `proteus` binary can show. Code refers to these by name.
 // On a host that has no hypervisor backend yet, the machine is not built and its messages go unused.
 #![cfg_attr(not(host_board), allow(dead_code))]
 
@@ -7,20 +7,20 @@ use std::path::Path;
 use std::time::Duration;
 
 pub const HELP: &str = "\
-emu: lightweight Android emulator
+proteus: lightweight Android emulator
 
-Usage: emu --kernel <file> [options]
-       emu ctl <socket or instance> <command>
-       emu instance create <name> <options>   Make a named instance that starts with these options
-       emu instance start <name> [<options>]  Start it, with its own data, socket and adb port
-       emu instance list                      Name each instance, and say which are running
-       emu instance rm <name> [--yes]         Delete an instance and its Android data, for good
+Usage: proteus --kernel <file> [options]
+       proteus ctl <socket or instance> <command>
+       proteus instance create <name> <options>   Make a named instance that starts with these options
+       proteus instance start <name> [<options>]  Start it, with its own data, socket and adb port
+       proteus instance list                      Name each instance, and say which are running
+       proteus instance rm <name> [--yes]         Delete an instance and its Android data, for good
 
   --kernel <file>         Uncompressed kernel image (required)
   --initrd <file>         Ramdisk (uncompressed or kernel-supported cpio)
   --android <dir>         Boot Android from a directory of AOSP virtual-device images
                           (init_boot.img, vendor_boot.img, super.img, vbmeta*.img)
-  --data-dir <dir>        Where this Android instance keeps its data (default: <dir>/emu-data)
+  --data-dir <dir>        Where this Android instance keeps its data (default: <dir>/proteus-data)
   --userdata-gib <n>      Storage, in GB as Android shows it, when the data is first made
   --cmdline <text>        Kernel command line
   --ram-mib <n>           Guest RAM in MiB
@@ -36,7 +36,7 @@ Usage: emu --kernel <file> [options]
   --keymap <file>         Keys and mouse movements that stand for touches (see the README)
   --keymap-dir <dir>      Key maps named <package>.toml (and default.toml) for the app in front
   --frame-dump <file>     Keep a PNG of the guest display in this file, refreshed about once a second
-  --ctl <socket>          Listen on this local socket for `emu ctl` commands
+  --ctl <socket>          Listen on this local socket for `proteus ctl` commands
   --logcat <file>         Write Android's system log to this file
   --no-sound              Give the guest no sound card
   --mute                  Keep the sound card but play nothing on this machine
@@ -57,7 +57,7 @@ Usage: emu --kernel <file> [options]
   --log-level <level>     off, error, warn, info, debug or trace
   --help                  Show this text
 
-`emu ctl <socket> <command>` drives a running instance that was started with --ctl:
+`proteus ctl <socket> <command>` drives a running instance that was started with --ctl:
   tap <x> <y>                            Touch the screen briefly at a pixel
   swipe <x1> <y1> <x2> <y2> [<ms>]       Drag a finger from one pixel to another
   touch <finger> <x> <y>                 Put a finger down, or move it (fingers 0 to 9)
@@ -91,17 +91,17 @@ Usage: emu --kernel <file> [options]
                                          with `wait <ms>` for pauses and `#` for comments
   cancel                                 Stop the macro that is playing";
 
-pub const USAGE_HINT: &str = "run `emu --help` for usage";
+pub const USAGE_HINT: &str = "run `proteus --help` for usage";
 
 pub fn fatal(err: &dyn Display) -> String {
-    format!("emu: {err}")
+    format!("proteus: {err}")
 }
 
 pub fn boot_time(elapsed: Duration) -> String {
-    format!("emu: boot marker seen after {} ms", elapsed.as_millis())
+    format!("proteus: boot marker seen after {} ms", elapsed.as_millis())
 }
 
-pub const BOOT_MARKER_NOT_SEEN: &str = "emu: boot marker was never seen on the console";
+pub const BOOT_MARKER_NOT_SEEN: &str = "proteus: boot marker was never seen on the console";
 
 pub fn bad_argument(err: &dyn Display) -> String {
     format!("command line: {err}")
@@ -116,7 +116,7 @@ pub fn bad_number(option: &str) -> String {
 }
 
 pub const MISSING_KERNEL: &str =
-    "--kernel is required (with --android it can be left out when kernel-arm64 is beside emu)";
+    "--kernel is required (with --android it can be left out when kernel-arm64 is beside proteus)";
 pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
 pub const ANDROID_WITH_INITRD: &str =
     "--android brings its own ramdisk; do not pass --initrd with it";
@@ -216,7 +216,7 @@ pub fn setup_failed(err: &dyn Display) -> String {
 }
 
 pub fn bundled_installed(name: &str) -> String {
-    format!("emu: installed {name}")
+    format!("proteus: installed {name}")
 }
 
 pub fn keymap_switched(package: &str, path: Option<&Path>) -> String {
@@ -237,7 +237,7 @@ pub const AUDIO_OPENED: &str = "sound output opened: the guest has started playi
 pub fn audio_failed(err: &dyn Display) -> String {
     format!("sound output: {err}; the guest's sound will not be heard")
 }
-pub const WINDOW_TITLE: &str = "emu";
+pub const WINDOW_TITLE: &str = "proteus";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
 
@@ -255,7 +255,7 @@ pub fn gpu_wait_failed(err: &dyn Display) -> String {
 pub fn window_touch(window_x: f64, window_y: f64, x: u32, y: u32) -> String {
     format!("window pixel {window_x:.0},{window_y:.0} touches guest pixel {x},{y}")
 }
-pub const LAUNCHER_TITLE: &str = "emu";
+pub const LAUNCHER_TITLE: &str = "proteus";
 pub const LAUNCHER_HEADER_ID: &str = "launcher header";
 pub const TOOLBAR_ID: &str = "toolbar";
 pub const PANEL_ID: &str = "panel";
@@ -273,27 +273,27 @@ pub fn window_input_dropped(why: &dyn Display) -> String {
     format!("input from the window was dropped: {why}")
 }
 pub const CONSOLE_INPUT_THREAD: &str = "console-in";
-pub const REBOOTING: &str = "emu: guest asked to restart; booting again";
+pub const REBOOTING: &str = "proteus: guest asked to restart; booting again";
 pub const RESET_LOOP: &str = "the guest keeps resetting right after it starts; giving up";
 /// Prefix of the serial number each disk reports to the guest, followed by its slot.
 pub const DISK_ID_PREFIX: &str = "emu-disk-";
 /// Serial number the Android system disk reports to the guest.
-pub const ANDROID_DISK_ID: &str = "emu-android";
+pub const ANDROID_DISK_ID: &str = "proteus-android";
 /// Extension of the temporary file a frame dump is written to before it replaces the real one.
 pub const FRAME_DUMP_PARTIAL_EXTENSION: &str = "partial";
 pub const FRAME_DUMP_THREAD: &str = "frame-dump";
 
 /// Names the guest sees for its input devices.
 pub const TOUCHSCREEN_NAME: &str = "emu touchscreen";
-pub const KEYBOARD_NAME: &str = "emu keyboard";
-pub const GAMEPAD_NAME: &str = "emu gamepad";
+pub const KEYBOARD_NAME: &str = "proteus keyboard";
+pub const GAMEPAD_NAME: &str = "proteus gamepad";
 pub const GPU_NOT_BUILT: &str =
-    "this build of emu has no GPU acceleration; the guest draws in software";
-pub const GPU_ACCELERATED: &str = "emu: the guest draws with this machine's GPU";
+    "this build of proteus has no GPU acceleration; the guest draws in software";
+pub const GPU_ACCELERATED: &str = "proteus: the guest draws with this machine's GPU";
 pub const GPU_CHECK_HUNG: &str = "it did not start in time";
 
 pub fn gpu_unavailable(why: &dyn Display) -> String {
-    format!("emu: the GPU renderer does not work here ({why}); the guest draws in software")
+    format!("proteus: the GPU renderer does not work here ({why}); the guest draws in software")
 }
 
 pub const GAMEPAD_THREAD: &str = "gamepads";
@@ -334,7 +334,7 @@ pub fn ctl_accept_failed(err: &dyn Display) -> String {
 pub const VIRTIO_MMIO_DEVICE_ARG: &str = "virtio_mmio.device=";
 
 pub const CTL_USAGE: &str =
-    "unknown command; see `emu --help` for the commands and their arguments";
+    "unknown command; see `proteus --help` for the commands and their arguments";
 pub const CTL_NO_TOUCHSCREEN: &str = "this instance has no touchscreen";
 pub const CTL_NO_KEYBOARD: &str = "this instance has no keyboard";
 pub const ADB_TOO_LARGE: &str = "adb message too large";
@@ -377,7 +377,7 @@ pub const CTL_ALREADY_RECORDING: &str =
     "a macro is already being recorded; end it with record-stop";
 pub const CTL_NOT_RECORDING: &str = "no macro is being recorded";
 /// First line of a recorded macro file.
-pub const MACRO_HEADER: &str = "# Recorded by emu. One command per line; see `emu --help`.";
+pub const MACRO_HEADER: &str = "# Recorded by proteus. One command per line; see `proteus --help`.";
 
 pub fn ctl_bad_macro_line(path: &Path, line: usize) -> String {
     format!(
@@ -403,16 +403,16 @@ pub const CTL_SOCKET_IN_USE: &str = "another instance is already listening on th
 pub const CTL_NOT_A_SOCKET: &str = "the control socket path names a file that is not a socket";
 pub const CTL_NO_REPLY: &str = "the instance closed the connection without answering";
 pub const CTL_NEEDS_ARGUMENTS: &str =
-    "`emu ctl` needs a socket path or instance name, and a command";
+    "`proteus ctl` needs a socket path or instance name, and a command";
 pub const INSTANCE_USAGE: &str =
-    "use `emu instance create <name> <options>`, `start <name>`, `list` or `rm <name>`";
-pub const INSTANCE_NO_HOME: &str = "no home folder for instances; set EMU_HOME";
+    "use `proteus instance create <name> <options>`, `start <name>`, `list` or `rm <name>`";
+pub const INSTANCE_NO_HOME: &str = "no home folder for instances; set PROTEUS_HOME";
 pub const INSTANCE_BAD_NAME: &str = "an instance name is 1 to 32 letters, digits, '-' or '_'";
 pub const INSTANCE_OWN_OPTIONS: &str =
     "an instance has its own --data-dir and --ctl; leave them out";
 pub const INSTANCE_BAD_ARGUMENT: &str = "an option of an instance cannot contain a line break";
 pub const INSTANCE_PATH_TOO_LONG: &str =
-    "the instance's control socket path would be too long; use a shorter name or EMU_HOME";
+    "the instance's control socket path would be too long; use a shorter name or PROTEUS_HOME";
 pub const INSTANCE_EXISTS: &str = "there is already an instance with that name";
 pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
 pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
@@ -431,11 +431,11 @@ pub fn update_gh_failed(why: &str) -> String {
 }
 
 pub fn up_to_date(tag: &str) -> String {
-    format!("emu is up to date ({tag})")
+    format!("proteus is up to date ({tag})")
 }
 
 pub fn updated(tag: &str) -> String {
-    format!("updated to {tag}; restart emu to use it")
+    format!("updated to {tag}; restart proteus to use it")
 }
 pub const INSTANCE_RUNNING_MARK: &str = "running";
 
@@ -492,7 +492,7 @@ pub mod gui {
     pub const CHOOSE: &str = "Choose…";
 
     pub const LAUNCHER_TITLE: &str = "Android emulator";
-    pub const UPDATE: &str = "Update emu";
+    pub const UPDATE: &str = "Update proteus";
     pub const UPDATE_HINT: &str = "Install the newest release from GitHub, through the GitHub CLI";
     pub const UPDATING: &str = "Updating…";
     pub const LAUNCHER_SUBTITLE: &str =
@@ -537,7 +537,7 @@ pub mod gui {
 
     pub const ROM: &str = "Android image (ROM)";
     pub const ROM_HINT: &str = "The folder of Google's virtual-device image, and the kernel that \
-        boots it. Leave the kernel empty to use the one that comes with emu.";
+        boots it. Leave the kernel empty to use the one that comes with proteus.";
     pub const IMAGE_FOLDER: &str = "Image folder";
     pub const IMAGE_FOLDER_HINT: &str = "/path/to/aosp_cf_arm64_only_phone-img";
     pub const KERNEL: &str = "Kernel";
@@ -687,7 +687,7 @@ pub mod gui {
 
     pub fn macros_hint(dir: &Path) -> String {
         format!(
-            "Macros are kept in {}. One command per line, as for `emu ctl`; `wait <ms>` pauses.",
+            "Macros are kept in {}. One command per line, as for `proteus ctl`; `wait <ms>` pauses.",
             dir.display()
         )
     }
@@ -792,6 +792,6 @@ pub mod gui {
     }
 
     pub fn instance_made(name: &str) -> String {
-        format!("Instance \"{name}\" made. Start it with: emu instance start {name}")
+        format!("Instance \"{name}\" made. Start it with: proteus instance start {name}")
     }
 }

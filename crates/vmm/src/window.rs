@@ -947,6 +947,7 @@ impl ApplicationHandler<Notice> for App {
         let (width, height) = initial_size(self.upright(), monitor);
         let attributes = Window::default_attributes()
             .with_title(copy::WINDOW_TITLE)
+            .with_window_icon(crate::app_icon())
             .with_inner_size(LogicalSize::new(width, height));
         let shown = event_loop
             .create_window(attributes)

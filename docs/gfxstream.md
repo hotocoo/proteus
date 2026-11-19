@@ -12,7 +12,7 @@ note records what was checked before any of it is wired in.
   stopped at 2025-03-26 and is not the live source. It also builds, with `aemu`, `flatbuffers`,
   `gfxstream-protocols` and the ANGLE and libdrm headers beside it and one deprecation warning
   allowed, but is not used.
-- The library is `libgfxstream_backend.dylib`: 8.6 MB as built, 6.6 MB stripped. With `emu` at
+- The library is `libgfxstream_backend.dylib`: 8.6 MB as built, 6.6 MB stripped. With `proteus` at
   1.7 MB that is about 8.5 MB together, inside the 30 MB budget.
 - It exports every one of the 29 `stream_renderer_*` functions `rutabaga_gfx` 0.1.85 declares
   (compared by name: `nm` against the crate's `extern` block), and links only system frameworks
@@ -66,7 +66,7 @@ If their handshake fails, the host revision moves toward the image's build date.
 ## How the renderer behaves around failure
 
 - When no Vulkan driver works, `stream_renderer_init` logs "Failed to initialize renderer" and
-  then never returns. `emu` cannot call it on its own thread and fall back; it has to find out in a
+  then never returns. `proteus` cannot call it on its own thread and fall back; it has to find out in a
   separate process with a time limit first.
 - `stream_renderer_teardown` followed by `stream_renderer_init` in the same process works (checked
   with KosmicKrisp), so a guest reboot can get a fresh renderer.
@@ -99,14 +99,14 @@ How each is selected matters for packaging:
   (`libvulkan.dylib`) as well.
 - The 16 KiB blob alignment matches the host page size, as blueprint section 7.1 wants.
 
-With `emu --gpu` (built with `--features gpu`), Google's Cuttlefish image draws its lock and home
+With `proteus --gpu` (built with `--features gpu`), Google's Cuttlefish image draws its lock and home
 screens through gfxstream with either driver, and the screens read back correctly. The comparison
 the blueprint asks for (a Vulkan and a GLES test app, benchmarks against Google's emulator, input
 and frame latency) has not been run.
 
 ## Running it
 
-A release carries two Vulkan drivers, in the layout gfxstream reads by itself, and `emu --gpu` tries
+A release carries two Vulkan drivers, in the layout gfxstream reads by itself, and `proteus --gpu` tries
 them best first, each in a child process with a time limit:
 
 ```text
@@ -119,7 +119,7 @@ licenses/                                       gfxstream and its third-party co
                                                 libraries above, MoltenVK, Vulkan-Loader
 ```
 
-`lib64` sits beside `emu`, or in `Contents/Resources` inside Emu.app; `emu` points gfxstream there
+`lib64` sits beside `proteus`, or in `Contents/Resources` inside Proteus.app; `proteus` points gfxstream there
 through `ANDROID_EMULATOR_LAUNCHER_DIR` and picks the driver with `ANDROID_EMU_VK_ICD`
 (`kosmickrisp`, then `moltenvk`), unless the user set `ANDROID_EMU_VK_ICD`, `VK_DRIVER_FILES` or
 `VK_ICD_FILENAMES`. `scripts/build-gfxstream.sh <work> <out>`, `scripts/bundle-macos.sh` (which uses

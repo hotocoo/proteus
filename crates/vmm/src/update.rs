@@ -10,11 +10,11 @@ use crate::config::UPSTREAM;
 use crate::copy;
 
 /// Beside the program: the release tag it came from, so an up-to-date install is left alone.
-pub const RELEASE_FILE: &str = "emu.release";
+pub const RELEASE_FILE: &str = "proteus.release";
 /// Where the running program is moved when it is replaced; removed at the next start.
 const OLD_EXTENSION: &str = "old";
 /// Scratch folder beside the program for the download.
-const WORK_DIR: &str = ".emu-update";
+const WORK_DIR: &str = ".proteus-update";
 
 /// The end of this host's release archive name.
 #[cfg(windows)]
@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("emu-update-test-{name}"));
+        let dir = std::env::temp_dir().join(format!("proteus-update-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -175,10 +175,10 @@ mod tests {
     fn install_replaces_files_and_moves_the_program_aside() {
         let from = scratch("from");
         let to = scratch("to");
-        std::fs::write(from.join("emu.exe"), "new program").unwrap();
+        std::fs::write(from.join("proteus.exe"), "new program").unwrap();
         std::fs::write(from.join("kernel-x86_64"), "new kernel").unwrap();
         std::fs::create_dir(from.join("skipped")).unwrap();
-        let program = to.join("emu.exe");
+        let program = to.join("proteus.exe");
         std::fs::write(&program, "old program").unwrap();
         std::fs::write(to.join("kernel-x86_64"), "old kernel").unwrap();
         std::fs::write(to.join("mine.txt"), "kept").unwrap();

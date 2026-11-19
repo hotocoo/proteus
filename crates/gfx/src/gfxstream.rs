@@ -80,7 +80,7 @@ impl Gfxstream {
     }
 }
 
-/// Starts and stops the renderer once: what `emu --gpu-check` does in its own process.
+/// Starts and stops the renderer once: what `proteus --gpu-check` does in its own process.
 pub fn check() -> Result<(), String> {
     let renderer = Gfxstream::start(Box::new(|_| {}))?;
     renderer

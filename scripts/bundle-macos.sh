@@ -1,10 +1,10 @@
 #!/bin/sh
-# Lays out a macOS folder that draws with the GPU and needs no setup: emu, gfxstream's renderer
+# Lays out a macOS folder that draws with the GPU and needs no setup: proteus, gfxstream's renderer
 # beside it, and the Vulkan loader and MoltenVK in lib64/vulkan, where gfxstream looks for them
-# (emu --gpu then picks MoltenVK by itself). Keep the folder together; a symbolic link to emu
+# (proteus --gpu then picks MoltenVK by itself). Keep the folder together; a symbolic link to proteus
 # elsewhere works.
 #
-# usage: scripts/bundle-macos.sh <emu built with --features gpu> <gfxstream out folder> <out folder>
+# usage: scripts/bundle-macos.sh <proteus built with --features gpu> <gfxstream out folder> <out folder>
 #                                [<apps folder>]
 #
 # <apps folder> (scripts/fetch-apps.sh) holds APKs installed when a data folder first boots.
@@ -13,7 +13,7 @@
 # MoltenVK come from Homebrew: brew install vulkan-loader molten-vk.
 set -eu
 
-emu=$1
+proteus=$1
 gfx=$2
 out=$3
 apps=${4:-}
@@ -21,7 +21,7 @@ brew=$(brew --prefix)
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
 mkdir -p "$out/lib64/vulkan" "$out/licenses"
-cp "$emu" "$gfx/libgfxstream_backend.dylib" "$out/"
+cp "$proteus" "$gfx/libgfxstream_backend.dylib" "$out/"
 cp -R "$gfx/licenses/." "$out/licenses/"
 # The loader: one built for older Macs when VULKAN_LOADER names it, else Homebrew's.
 loader=${VULKAN_LOADER:-$brew/opt/vulkan-loader/lib/libvulkan.dylib}
@@ -52,7 +52,7 @@ Source code: https://gitlab.com/AuroraOSS/AuroraStore (the APK is F-Droid's buil
 https://f-droid.org/packages/com.aurora.store/, where the matching source tarball is kept).
 NOTE
 fi
-# emu finds the renderer beside itself; signing comes last, as changing the file breaks it.
-otool -l "$out/emu" | grep -q @executable_path || install_name_tool -add_rpath @executable_path "$out/emu"
-codesign --sign - --force --entitlements "$repo/packaging/macos/hv.entitlements" "$out/emu"
+# proteus finds the renderer beside itself; signing comes last, as changing the file breaks it.
+otool -l "$out/proteus" | grep -q @executable_path || install_name_tool -add_rpath @executable_path "$out/proteus"
+codesign --sign - --force --entitlements "$repo/packaging/macos/hv.entitlements" "$out/proteus"
 ls -l "$out" "$out/lib64/vulkan"

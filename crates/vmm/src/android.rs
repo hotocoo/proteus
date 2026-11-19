@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn a_data_folder_is_locked_by_one_emulator_at_a_time() {
-        let dir = std::env::temp_dir().join(format!("emu-lock-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let other = dir.join("other");
         std::fs::create_dir_all(&other).unwrap();

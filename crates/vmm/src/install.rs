@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn an_archive_installs_its_apks_and_copies_its_obb_files() {
-        let dir = std::env::temp_dir().join(format!("emu-install-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-install-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let xapk = dir.join("game.xapk");
         let bytes = zip(&[

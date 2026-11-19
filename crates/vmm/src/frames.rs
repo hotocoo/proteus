@@ -257,7 +257,8 @@ mod tests {
     #[test]
     fn screen_saves_whichever_frame_came_last() {
         let screen = Screen::default();
-        let path = std::env::temp_dir().join(format!("emu-screen-test-{}.png", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("proteus-screen-test-{}.png", std::process::id()));
         assert!(!screen.save(&path).unwrap());
         assert!(!path.exists());
 

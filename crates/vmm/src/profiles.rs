@@ -93,7 +93,8 @@ mod tests {
 
     #[test]
     fn an_app_gets_its_own_map_else_the_default_else_none() {
-        let dir = std::env::temp_dir().join(format!("emu-profiles-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("proteus-profiles-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(map_for(&dir, "com.game"), None);
         std::fs::write(dir.join("default.toml"), "").unwrap();

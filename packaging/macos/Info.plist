@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Emu</string>
+    <string>Proteus</string>
     <key>CFBundleDisplayName</key>
-    <string>Emu</string>
+    <string>Proteus</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.hotocoo.emu</string>
+    <string>io.github.hotocoo.proteus</string>
     <key>CFBundleExecutable</key>
-    <string>emu</string>
+    <string>proteus</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

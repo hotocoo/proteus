@@ -1,7 +1,7 @@
-# An example key map for a 1280x720 guest display. Start with: emu ... --keymap assets/keymaps/example.toml
+# An example key map for a 1280x720 guest display. Start with: proteus ... --keymap assets/keymaps/example.toml
 #
 # Positions are pixels of the guest's display. Find them with a screenshot:
-#   emu ctl <socket> screenshot shot.png
+#   proteus ctl <socket> screenshot shot.png
 # Keys are named by their position on a US keyboard: KeyA..KeyZ, Digit0..Digit9, Space, Enter, Tab,
 # Escape, ShiftLeft, ControlLeft, AltLeft, ArrowUp, F1..F12, and so on. The mouse buttons are
 # MouseLeft, MouseRight and MouseMiddle.

@@ -1,6 +1,6 @@
 //! The control socket: a local socket that takes one command per line and answers each with one line.
 //!
-//! This is how anything outside the emulator (the `emu ctl` command, a script, later the GUI) drives
+//! This is how anything outside the emulator (the `proteus ctl` command, a script, later the GUI) drives
 //! a running instance. A command is plain words separated by spaces:
 //!
 //! ```text
@@ -1401,7 +1401,7 @@ mod tests {
     fn a_recording_plays_back_as_the_same_inputs_with_their_pauses() {
         let controller = controller(None);
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("emu-macro-test-{}.txt", std::process::id()));
+        let path = dir.join(format!("proteus-macro-test-{}.txt", std::process::id()));
         let record = format!("record {}\n", path.display());
         let ok = copy::CTL_OK.to_owned();
         let error = |why: &str| copy::ctl_error(&why);
@@ -1444,7 +1444,7 @@ mod tests {
     fn macros_that_cannot_be_played_are_refused_and_a_playing_one_can_be_cancelled() {
         let controller = controller(None);
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("emu-macro-bad-{}.txt", std::process::id()));
+        let path = dir.join(format!("proteus-macro-bad-{}.txt", std::process::id()));
         std::fs::write(&path, "tap 1 2  # fine\n\nrun other.txt\n").unwrap();
         assert_eq!(
             read_macro(&path).err().unwrap(),
@@ -1495,7 +1495,8 @@ mod tests {
 
     #[test]
     fn a_macro_holds_only_inputs_and_waits() {
-        let path = std::env::temp_dir().join(format!("emu-macro-kinds-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("proteus-macro-kinds-{}.txt", std::process::id()));
         std::fs::write(&path, "tap 1 2\nwait 5\nscreenshot x.png\n").unwrap();
         assert_eq!(
             read_macro(&path).err().unwrap(),
@@ -1520,7 +1521,8 @@ mod tests {
     fn screenshot_saves_the_newest_frame_once_there_is_one() {
         let screen = Arc::new(Screen::default());
         let controller = controller(Some(Arc::clone(&screen)));
-        let path = std::env::temp_dir().join(format!("emu-ctl-test-{}.png", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("proteus-ctl-test-{}.png", std::process::id()));
         let command = format!("screenshot {}\n", path.display());
         assert_eq!(
             replies(&controller, &command),

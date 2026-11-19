@@ -235,7 +235,7 @@ mod tests {
 
         config.display = Some((64, 48));
         assert!(Session::new(&config).unwrap().controller.screen.is_none());
-        config.frame_dump = Some(std::env::temp_dir().join("emu-session-test.png"));
+        config.frame_dump = Some(std::env::temp_dir().join("proteus-session-test.png"));
         let shown = Session::new(&config).unwrap();
         assert!(shown.controller.touch.is_some() && shown.controller.keyboard.is_some());
         assert!(shown.controller.screen.is_some());

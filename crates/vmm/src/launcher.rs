@@ -1,4 +1,4 @@
-//! The window `emu` opens with no arguments (and when the app is opened from the Finder): the
+//! The window `proteus` opens with no arguments (and when the app is opened from the Finder): the
 //! instances, each with Start, Stop, Settings and Delete, and a form to make a new one from an
 //! Android image folder.
 
@@ -372,6 +372,7 @@ impl ApplicationHandler for Launcher {
         }
         let attributes = Window::default_attributes()
             .with_title(copy::LAUNCHER_TITLE)
+            .with_window_icon(crate::app_icon())
             .with_inner_size(LogicalSize::new(
                 config::LAUNCHER_SIZE.0,
                 config::LAUNCHER_SIZE.1,

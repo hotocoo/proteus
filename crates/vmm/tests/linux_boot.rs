@@ -2,11 +2,11 @@
 //! SMP bring-up, virtio-blk read, write and identify, and power off.
 //!
 //! Needs kernels and a ramdisk the repository does not ship. Without them each test reports itself skipped.
-//! - `EMU_TEST_INITRD`: a ramdisk whose init mounts `/proc` and `/sys` and ends in a BusyBox shell on
+//! - `PROTEUS_TEST_INITRD`: a ramdisk whose init mounts `/proc` and `/sys` and ends in a BusyBox shell on
 //!   the console.
-//! - `EMU_TEST_KERNEL`: on ARM64 an uncompressed `Image` with virtio-mmio, 8250 and PL031 built in;
+//! - `PROTEUS_TEST_KERNEL`: on ARM64 an uncompressed `Image` with virtio-mmio, 8250 and PL031 built in;
 //!   on x86_64 a `vmlinux` or bzImage with virtio-mmio command-line devices and 8250 built in.
-//! - `EMU_TEST_BOOTCONFIG_KERNEL`: an uncompressed ARM64 `Image` built with `CONFIG_BOOT_CONFIG`,
+//! - `PROTEUS_TEST_BOOTCONFIG_KERNEL`: an uncompressed ARM64 `Image` built with `CONFIG_BOOT_CONFIG`,
 //!   such as a stock Android GKI kernel. It needs no virtio support.
 #![cfg(host_board)]
 
@@ -28,10 +28,10 @@ use vmm::console::{Console, ConsoleInput};
 use vmm::ctl::Controller;
 use vmm::machine::{self, Outcome, Stop};
 
-const KERNEL_ENV: &str = "EMU_TEST_KERNEL";
+const KERNEL_ENV: &str = "PROTEUS_TEST_KERNEL";
 #[cfg(target_arch = "aarch64")]
-const BOOTCONFIG_KERNEL_ENV: &str = "EMU_TEST_BOOTCONFIG_KERNEL";
-const INITRD_ENV: &str = "EMU_TEST_INITRD";
+const BOOTCONFIG_KERNEL_ENV: &str = "PROTEUS_TEST_BOOTCONFIG_KERNEL";
+const INITRD_ENV: &str = "PROTEUS_TEST_INITRD";
 
 /// The hypervisor allows one VM per process, and the test harness runs tests on parallel threads.
 static ONE_VM: Mutex<()> = Mutex::new(());
@@ -61,7 +61,7 @@ impl log::Log for StderrLog {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!("emu {}: {}", record.level(), record.args());
+            eprintln!("proteus {}: {}", record.level(), record.args());
         }
     }
 
@@ -165,7 +165,7 @@ fn sector_fill(sector: usize) -> u8 {
 impl ScratchDisk {
     fn new() -> Self {
         let name = format!(
-            "emu-linux-boot-{}-{}.img",
+            "proteus-linux-boot-{}-{}.img",
             std::process::id(),
             NEXT_DISK.fetch_add(1, Ordering::SeqCst)
         );
@@ -501,7 +501,8 @@ fn guest_network_gets_dhcp_dns_tcp_adb_and_respects_the_sinkhole() {
     let server = PongServer::start();
     let resolver = Arc::new(FixedResolver::default());
     let adb_port = free_loopback_port();
-    let blocklist = std::env::temp_dir().join(format!("emu-blocklist-{}.txt", std::process::id()));
+    let blocklist =
+        std::env::temp_dir().join(format!("proteus-blocklist-{}.txt", std::process::id()));
     std::fs::write(&blocklist, "# test list\n0.0.0.0 tracker.test\n").unwrap();
 
     let mut config = Config::new(kernel);

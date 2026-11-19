@@ -11,7 +11,7 @@ impl Log for Stderr {
 
     fn log(&self, record: &Record<'_>) {
         eprintln!(
-            "emu {}: {}",
+            "proteus {}: {}",
             record.level().as_str().to_lowercase(),
             record.args()
         );

@@ -1,4 +1,4 @@
-//! The `emu` virtual machine monitor: configuration, board wiring and the vCPU run loop.
+//! The `proteus` virtual machine monitor: configuration, board wiring and the vCPU run loop.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -294,7 +294,7 @@ fn run(_config: &config::Config, _started: Instant) -> Result<Exit, VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }
 
-/// `emu --gpu-check`: starts and stops the GPU renderer once. Exits with success if it worked.
+/// `proteus --gpu-check`: starts and stops the GPU renderer once. Exits with success if it worked.
 fn gpu_check() -> ExitCode {
     #[cfg(feature = "gpu")]
     return match gfx::check() {
@@ -372,7 +372,7 @@ fn gpu_works() -> Result<(), String> {
     }
 }
 
-/// Carries out `emu instance ...`. Starting one gives back its configuration, to run.
+/// Carries out `proteus instance ...`. Starting one gives back its configuration, to run.
 fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Config>, String> {
     use config::InstanceCommand;
 
@@ -432,7 +432,15 @@ pub(crate) fn no_console_window(command: &mut std::process::Command) -> &mut std
     command
 }
 
-/// Entry point of the `emu` binary.
+/// The coin logo as a window icon: 64x64 RGBA, made from `assets/logo.svg`.
+#[cfg(host_board)]
+pub(crate) fn app_icon() -> Option<winit::window::Icon> {
+    const SIDE: u32 = 64;
+    let rgba = include_bytes!("../../../assets/icon-64.rgba").to_vec();
+    winit::window::Icon::from_rgba(rgba, SIDE, SIDE).ok()
+}
+
+/// Entry point of the `proteus` binary.
 pub fn cli_main() -> ExitCode {
     let started = Instant::now();
     #[cfg(host_board)]
@@ -464,10 +472,18 @@ pub fn cli_main() -> ExitCode {
             #[cfg(windows)]
             // SAFETY: plain calls on this process's console; a too-small buffer only gets a count.
             unsafe {
-                use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+                use windows_sys::Win32::System::Console::{
+                    FreeConsole, GetConsoleProcessList, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+                    STD_OUTPUT_HANDLE, SetStdHandle,
+                };
                 let mut processes = [0u32; 2];
                 if GetConsoleProcessList(processes.as_mut_ptr(), 2) == 1 {
                     FreeConsole();
+                    // The old console handles are now dead; a child that inherited them would
+                    // fail to start ("The handle is invalid" / "The request is not supported").
+                    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                        SetStdHandle(which, std::ptr::null_mut());
+                    }
                 }
             }
             return match launcher::run() {

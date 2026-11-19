@@ -12,7 +12,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  EMU_SKIP_HV_TESTS: "1"
+  PROTEUS_SKIP_HV_TESTS: "1"
 
 jobs:
   macos:
@@ -53,11 +53,11 @@ jobs:
           ls -l kernel
       - name: Package
         run: |
-          name="emu-${GITHUB_REF_NAME}-macos-arm64"
+          name="proteus-${GITHUB_REF_NAME}-macos-arm64"
           scripts/fetch-apps.sh apps
           # A loader for macOS 15 and later, so older Macs keep the GPU through MoltenVK.
           export VULKAN_LOADER=$(scripts/build-vulkan-loader.sh "$RUNNER_TEMP/vulkan-loader")
-          scripts/bundle-macos.sh target/release/emu gfxstream-out "$name" apps
+          scripts/bundle-macos.sh target/release/proteus gfxstream-out "$name" apps
           cp README.md packaging/macos/hv.entitlements "$name/"
           cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"
@@ -66,14 +66,14 @@ jobs:
           # The same, as an app that opens the launcher when double-clicked.
           version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
           scripts/make-app.sh "$name" "$version" .
-          ditto -c -k --keepParent Emu.app "emu-${GITHUB_REF_NAME}-macos-arm64-app.zip"
-          shasum -a 256 "emu-${GITHUB_REF_NAME}-macos-arm64-app.zip" > "emu-${GITHUB_REF_NAME}-macos-arm64-app.zip.sha256"
+          ditto -c -k --keepParent Proteus.app "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip"
+          shasum -a 256 "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip" > "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
           path: |
-            emu-*.tar.gz*
-            emu-*-app.zip*
+            proteus-*.tar.gz*
+            proteus-*-app.zip*
 
   linux:
     name: Linux x86_64
@@ -99,11 +99,11 @@ jobs:
           ls -l kernel
       - name: Package
         run: |
-          name="emu-${GITHUB_REF_NAME}-linux-x86_64"
+          name="proteus-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir "$name"
-          cp target/release/emu README.md "$name/"
+          cp target/release/proteus README.md "$name/"
           # The launcher's Update button compares this with the newest release.
-          echo "$GITHUB_REF_NAME" > "$name/emu.release"
+          echo "$GITHUB_REF_NAME" > "$name/proteus.release"
           cp kernel/kernel-x86_64 kernel/kernel-x86_64.config kernel/kernel-x86_64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux
-          path: emu-*.tar.gz*
+          path: proteus-*.tar.gz*
 
   windows:
     name: Windows x86_64
@@ -136,20 +136,20 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $name = "emu-$env:GITHUB_REF_NAME-windows-x86_64"
+          $name = "proteus-$env:GITHUB_REF_NAME-windows-x86_64"
           New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target/release/emu.exe, README.md $name
+          Copy-Item target/release/proteus.exe, README.md $name
           Copy-Item kernel/kernel-x86_64, kernel/kernel-x86_64.config, kernel/kernel-x86_64.source.txt $name
           Copy-Item guest/kernel/README.md "$name/KERNEL.md"
           # The launcher's Update button compares this with the newest release.
-          Set-Content -NoNewline -Encoding ascii "$name/emu.release" $env:GITHUB_REF_NAME
+          Set-Content -NoNewline -Encoding ascii "$name/proteus.release" $env:GITHUB_REF_NAME
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash -Algorithm SHA256 "$name.zip").Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: emu-*-windows-x86_64.zip*
+          path: proteus-*-windows-x86_64.zip*
 
   publish:
     name: Publish
@@ -172,5 +172,5 @@ jobs:
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag $prerelease \
-            --title "emu ${GITHUB_REF_NAME#v}" emu-*.tar.gz emu-*.tar.gz.sha256 emu-*-app.zip \
-            emu-*-app.zip.sha256 emu-*-windows-x86_64.zip emu-*-windows-x86_64.zip.sha256
+            --title "proteus ${GITHUB_REF_NAME#v}" proteus-*.tar.gz proteus-*.tar.gz.sha256 proteus-*-app.zip \
+            proteus-*-app.zip.sha256 proteus-*-windows-x86_64.zip proteus-*-windows-x86_64.zip.sha256

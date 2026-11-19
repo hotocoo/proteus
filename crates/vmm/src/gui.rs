@@ -1,6 +1,6 @@
 //! The controls around the guest's picture: a toolbar with Android's buttons, and panels for apps,
 //! location, sensors, macros, key maps, capture and settings. Every control is a front end to the
-//! control socket's commands (`ctl::Command`), so each can also be done with `emu ctl`.
+//! control socket's commands (`ctl::Command`), so each can also be done with `proteus ctl`.
 //!
 //! Work that takes a while (installing, the guest's shell, recording) runs on its own thread and
 //! reports back with a `Notice`, so the window keeps drawing.
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn toolbar_buttons_press_androids_buttons() {
-        let dir = std::env::temp_dir().join(format!("emu-gui-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-gui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let recorded = dir.join("toolbar.txt");
         let controller = recording_controller(&recorded);
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn a_macro_is_made_saved_and_played_from_its_panel() {
-        let dir = std::env::temp_dir().join(format!("emu-gui-macro-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-gui-macro-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let recorded = dir.join("played.txt");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn saved_places_come_back() {
-        let dir = std::env::temp_dir().join(format!("emu-places-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-places-{}", std::process::id()));
         let path = dir.join("places.toml");
         let places = [Place {
             name: "Home".into(),

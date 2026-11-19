@@ -10,4 +10,11 @@ fn main() {
     ) {
         println!("cargo::rustc-cfg=host_board");
     }
+    // The coin logo as the program's icon in Explorer, the Start menu and shortcuts.
+    if os == "windows" {
+        println!("cargo::rerun-if-changed=../../assets/proteus.ico");
+        embed_resource::compile("proteus.rc", embed_resource::NONE)
+            .manifest_optional()
+            .expect("the icon resource compiles");
+    }
 }

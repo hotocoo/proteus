@@ -19,7 +19,7 @@ owner may want to revisit.
   here: the guest's frames are read back and uploaded to a texture (one copy per frame), so there is
   no swapchain to keep untouched, and one window is simpler. The overlay design comes back with the
   blueprint's zero-copy present path, which is not built.
-- **The launcher** (`emu` with no arguments, or Emu.app) is the instance manager the blueprint puts in
+- **The launcher** (`proteus` with no arguments, or Proteus.app) is the instance manager the blueprint puts in
   the overlay. Settings are a form over an instance's flags, applied on restart.
 - **Macros are the control socket's commands, one per line** (with `wait`), not TOML. Repeating is
   `run <file> <times>`.
@@ -50,9 +50,9 @@ owner may want to revisit.
   both.
 - **bzImage loading** is there besides the blueprint's ELF `vmlinux`, but has only been checked
   against a synthetic header, not a real bzImage.
-- **The guest cannot switch the machine off.** Without ACPI, `poweroff` halts the CPUs and `emu`
-  keeps running; `reboot` reaches the keyboard controller's reset and `emu` boots again. Mapping
-  Android's power-off onto something `emu` sees is the blueprint's open milestone-2 item.
+- **The guest cannot switch the machine off.** Without ACPI, `poweroff` halts the CPUs and `proteus`
+  keeps running; `reboot` reaches the keyboard controller's reset and `proteus` boots again. Mapping
+  Android's power-off onto something `proteus` sees is the blueprint's open milestone-2 item.
 - **The kernel is entered through the 64-bit boot protocol with `boot_params`**, as planned; the MP
   table also fills in the BIOS data area words (0x40e, 0x413), which is where Linux looks first.
 

@@ -15,9 +15,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Hosted runners are virtual machines without nested virtualization.
-  EMU_SKIP_HV_TESTS: "1"
-  # Size budget of the emu executable (blueprint: under 30 MB).
-  EMU_MAX_BYTES: "31457280"
+  PROTEUS_SKIP_HV_TESTS: "1"
+  # Size budget of the proteus executable (blueprint: under 30 MB).
+  PROTEUS_MAX_BYTES: "31457280"
 
 jobs:
   check:
@@ -54,12 +54,12 @@ jobs:
         run: |
           cargo clippy -p vmm --features gpu --all-targets --locked -- -D warnings
           cargo build --release --locked -p vmm --features gpu
-      # The budget counts what a release ships to run: emu and gfxstream's renderer.
+      # The budget counts what a release ships to run: proteus and gfxstream's renderer.
       - name: Size budget
         run: |
-          size=$(( $(stat -f %z target/release/emu) + $(stat -f %z gfxstream-out/libgfxstream_backend.dylib) ))
-          echo "emu and its renderer are $size bytes (budget $EMU_MAX_BYTES)"
-          test "$size" -lt "$EMU_MAX_BYTES"
+          size=$(( $(stat -f %z target/release/proteus) + $(stat -f %z gfxstream-out/libgfxstream_backend.dylib) ))
+          echo "proteus and its renderer are $size bytes (budget $PROTEUS_MAX_BYTES)"
+          test "$size" -lt "$PROTEUS_MAX_BYTES"
 
   portable:
     # No hypervisor backend exists for Linux yet. Everything that does not need one (devices,
@@ -82,7 +82,7 @@ jobs:
     name: Guests on KVM (Linux x86_64)
     runs-on: ubuntu-24.04
     env:
-      EMU_SKIP_HV_TESTS: ""
+      PROTEUS_SKIP_HV_TESTS: ""
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain and the sound and device libraries
@@ -103,14 +103,14 @@ jobs:
           curl -sSfL --retry 3 -o "$RUNNER_TEMP/initramfs.cpio" "$base/v1.10/x86_64/initramfs.cpio"
       - name: Boot Linux on KVM
         env:
-          EMU_TEST_KERNEL: ${{ runner.temp }}/vmlinux
-          EMU_TEST_INITRD: ${{ runner.temp }}/initramfs.cpio
+          PROTEUS_TEST_KERNEL: ${{ runner.temp }}/vmlinux
+          PROTEUS_TEST_INITRD: ${{ runner.temp }}/initramfs.cpio
         run: cargo test --locked -p vmm --test linux_boot -- --nocapture
-      - name: No connections of emu's own (blueprint section 9)
+      - name: No connections of proteus's own (blueprint section 9)
         run: |
           sudo apt-get install -y -qq strace >/dev/null
           cargo build --release --locked -p vmm
-          scripts/no-connect.sh target/release/emu 20 \
+          scripts/no-connect.sh target/release/proteus 20 \
             --kernel "$RUNNER_TEMP/vmlinux" --initrd "$RUNNER_TEMP/initramfs.cpio" --serial --headless
 
   android:
@@ -131,7 +131,7 @@ jobs:
           sudo apt-get install -y -qq android-tools-adb libasound2-dev libudev-dev >/dev/null
       - name: Open /dev/kvm to this user
         run: sudo chmod 666 /dev/kvm
-      - name: Build emu
+      - name: Build proteus
         run: cargo build --release --locked -p vmm
       - name: Fetch the guest kernel
         env:
@@ -145,22 +145,22 @@ jobs:
         run: scripts/fetch-cuttlefish.sh aosp_cf_x86_64_only_phone-userdebug "$RUNNER_TEMP/image" 16644040
       - name: Boot Android
         run: |
-          target/release/emu --kernel "$RUNNER_TEMP/kernel/kernel-x86_64" \
+          target/release/proteus --kernel "$RUNNER_TEMP/kernel/kernel-x86_64" \
             --android "$RUNNER_TEMP/image" --data-dir "$RUNNER_TEMP/data" --headless \
-            --serial --logcat "$RUNNER_TEMP/logcat.txt" --ctl "$RUNNER_TEMP/emu.sock" \
+            --serial --logcat "$RUNNER_TEMP/logcat.txt" --ctl "$RUNNER_TEMP/proteus.sock" \
             </dev/null >"$RUNNER_TEMP/console.txt" 2>&1 &
-          emu=$!
+          proteus=$!
           deadline=$(( $(date +%s) + 1800 ))
           until [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
             if [ "$(date +%s)" -gt "$deadline" ]; then echo "Android did not finish booting"; exit 1; fi
-            if ! kill -0 "$emu" 2>/dev/null; then echo "emu stopped"; tail -20 "$RUNNER_TEMP/console.txt"; exit 1; fi
+            if ! kill -0 "$proteus" 2>/dev/null; then echo "proteus stopped"; tail -20 "$RUNNER_TEMP/console.txt"; exit 1; fi
             adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
             sleep 10
           done
           echo "booted in $(( $(date +%s) - deadline + 1800 )) s"
           adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abi
-          target/release/emu ctl "$RUNNER_TEMP/emu.sock" screenshot "$RUNNER_TEMP/screen.png"
-          target/release/emu ctl "$RUNNER_TEMP/emu.sock" stop
+          target/release/proteus ctl "$RUNNER_TEMP/proteus.sock" screenshot "$RUNNER_TEMP/screen.png"
+          target/release/proteus ctl "$RUNNER_TEMP/proteus.sock" stop
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4

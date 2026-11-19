@@ -11,7 +11,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    EMU_HOME_VARIABLE, INSTANCE_NAME_MAX, INSTANCES_DIR, SOCKET_PATH_MAX, home_default,
+    INSTANCE_NAME_MAX, INSTANCES_DIR, PROTEUS_HOME_VARIABLE, SOCKET_PATH_MAX, home_default,
 };
 use crate::copy;
 
@@ -104,7 +104,7 @@ fn absolute(args: &[String], cwd: &Path) -> Vec<String> {
 
 /// The folder all instances live in.
 pub fn root() -> io::Result<PathBuf> {
-    let home = std::env::var_os(EMU_HOME_VARIABLE).map(PathBuf::from);
+    let home = std::env::var_os(PROTEUS_HOME_VARIABLE).map(PathBuf::from);
     let home = home.or_else(home_default);
     let home =
         home.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, copy::INSTANCE_NO_HOME))?;
@@ -135,7 +135,7 @@ pub fn socket(root: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(folder(root, name)?.join(SOCKET_FILE))
 }
 
-/// What `emu ctl <target>` means: the socket of an instance with that name, if there is one and
+/// What `proteus ctl <target>` means: the socket of an instance with that name, if there is one and
 /// `target` is not a path itself; otherwise `target` as a socket path.
 pub fn resolve(target: &Path) -> PathBuf {
     let name = target.to_str().filter(|name| valid_name(name));
@@ -336,7 +336,7 @@ mod tests {
     use super::*;
 
     fn scratch(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("emu-{test}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("proteus-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

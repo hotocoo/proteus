@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "emu"
+name = "proteus"
 path = "src/main.rs"
 
 [features]
@@ -58,3 +58,6 @@ windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_Sys
 # loaded when the program starts, so neither is needed to build it.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 winit = { workspace = true, features = ["x11", "wayland", "wayland-dlopen"] }
+
+[build-dependencies]
+embed-resource = "3"

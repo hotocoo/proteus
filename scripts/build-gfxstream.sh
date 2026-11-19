@@ -9,8 +9,8 @@
 # of the third-party code it carries, under licenses/gfxstream.
 #
 # On Windows, run it from Git Bash with Visual Studio 2022 and its "C++ Clang tools" installed: it
-# builds with clang-cl inside the Visual Studio environment. Link emu against it with
-# GFXSTREAM_PATH=<work folder>/build/host, and put gfxstream_backend.dll beside emu.exe.
+# builds with clang-cl inside the Visual Studio environment. Link proteus against it with
+# GFXSTREAM_PATH=<work folder>/build/host, and put gfxstream_backend.dll beside proteus.exe.
 set -eu
 
 work=$1
