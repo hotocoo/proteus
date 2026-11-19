@@ -16,6 +16,8 @@ mod copy;
 pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod kvm;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub mod whp;
 /// Plain register types, built on every host so x86_64 boot code can be tested anywhere.
 pub mod x86_64;
 
@@ -29,6 +31,8 @@ pub use x86_64::{Regs, SystemRegs};
 pub type Host = hvf::Hvf;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub type Host = kvm::Kvm;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub type Host = whp::Whp;
 
 /// Guest physical address.
 pub type Gpa = u64;

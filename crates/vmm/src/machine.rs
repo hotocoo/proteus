@@ -514,8 +514,8 @@ fn check_gic(chip: &HostIrqchip, highest_spi: u32) -> Result<(), VmmError> {
     }
 }
 
-fn open(path: &Path) -> Result<File, VmmError> {
-    File::open(path).map_err(|source| VmmError::File {
+fn open(path: &Path) -> Result<arch::BootFile, VmmError> {
+    arch::BootFile::open(path).map_err(|source| VmmError::File {
         path: path.to_owned(),
         source,
     })
@@ -911,7 +911,7 @@ pub fn run_in(
         (None, Some(path)) => Some(open(path)?),
         _ => None,
     };
-    let mut parts: Vec<RamdiskPart<'_, File>> = Vec::new();
+    let mut parts: Vec<RamdiskPart<'_, arch::BootFile>> = Vec::new();
     if let Some(image) = android_boot.as_mut() {
         bootconfig = std::mem::take(&mut image.bootconfig);
         // A key given twice is an error to the kernel, so the machine's values replace the image's.

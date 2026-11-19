@@ -111,9 +111,45 @@ jobs:
           name: release-linux
           path: emu-*.tar.gz*
 
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Build
+        run: cargo build --release --locked -p vmm
+      - name: Fetch the guest kernel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow "Guest kernel" --branch main --status success --limit 1             --json databaseId --jq '.[0].databaseId')
+          test -n "$run"
+          gh run download "$run" --name kernel-x86_64 --dir kernel
+          ls -l kernel
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "emu-$env:GITHUB_REF_NAME-windows-x86_64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target/release/emu.exe, README.md $name
+          Copy-Item kernel/kernel-x86_64, kernel/kernel-x86_64.config, kernel/kernel-x86_64.source.txt $name
+          Copy-Item guest/kernel/README.md "$name/KERNEL.md"
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "$name.zip").Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: emu-*-windows-x86_64.zip*
+
   publish:
     name: Publish
-    needs: [macos, linux]
+    needs: [macos, linux, windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
@@ -133,4 +169,4 @@ jobs:
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag $prerelease \
             --title "emu ${GITHUB_REF_NAME#v}" emu-*.tar.gz emu-*.tar.gz.sha256 emu-*-app.zip \
-            emu-*-app.zip.sha256
+            emu-*-app.zip.sha256 emu-*-windows-x86_64.zip emu-*-windows-x86_64.zip.sha256

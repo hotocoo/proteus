@@ -58,8 +58,12 @@ owner may want to revisit.
 
 ## Not started, and why
 
-- **Windows (WHPX).** No Windows machine, and `virtio-queue` enables a `vm-memory` feature that does
-  not compile for Windows, so the device crates do not build there yet.
+- **Windows (WHPX) is built but has not booted a guest.** The backend shows the guest Hyper-V's
+  enlightenments (reference TSC, frequency MSRs) where KVM gives kvmclock, and emulates the IOAPIC
+  in the VMM, edge-triggered only. `third_party/virtio-queue` is a copy of the crate with
+  vm-memory's default `rawfd` feature dropped, which does not build for Windows; Unix hosts turn it
+  back on. On Windows, disk and kernel reads go through a buffer instead of straight into guest
+  memory.
 - **The stripped image, both sign-in flavours, and ARM translation on x86_64 hosts.** All need AOSP
   builds, so a Linux build machine.
 - **The zero-copy present path** (gfxstream drawing straight to the window's swapchain), and the

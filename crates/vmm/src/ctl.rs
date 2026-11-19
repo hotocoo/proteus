@@ -45,13 +45,19 @@
 //! followed by the reason. Unix sockets only; a Windows host will need a named pipe here.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+
+// Windows has AF_UNIX sockets too (since 10 1803), but the standard library does not wrap them.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 
 use devices::virtio::input::{InputEvent, InputHandle};
 
@@ -107,6 +113,7 @@ const WORD_UP: &str = "up";
 /// The finger `tap` and `swipe` use: the last one, so that they stay clear of `touch 0`, `touch 1`…
 const GESTURE_FINGER: u32 = TOUCH_SLOTS - 1;
 /// The socket file is created for its owner alone: anyone who can connect controls the guest.
+#[cfg(unix)]
 const SOCKET_UMASK: libc::mode_t = 0o177;
 
 #[derive(Debug, PartialEq)]
@@ -966,7 +973,7 @@ fn bind(path: &Path) -> std::io::Result<UnixListener> {
     match std::fs::symlink_metadata(path) {
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => return Err(err),
-        Ok(found) if !found.file_type().is_socket() => {
+        Ok(found) if !is_socket(&found) => {
             return Err(std::io::Error::new(
                 ErrorKind::AlreadyExists,
                 copy::CTL_NOT_A_SOCKET,
@@ -981,12 +988,32 @@ fn bind(path: &Path) -> std::io::Result<UnixListener> {
         // A socket nobody answers on was left behind by an instance that did not shut down cleanly.
         Ok(_) => std::fs::remove_file(path)?,
     }
-    // SAFETY: `umask` only swaps the process's file-creation mask; it touches no memory and cannot fail.
-    let previous = unsafe { libc::umask(SOCKET_UMASK) };
-    let listener = UnixListener::bind(path);
-    // SAFETY: as above; this puts the caller's mask back.
-    unsafe { libc::umask(previous) };
-    listener
+    #[cfg(unix)]
+    {
+        // SAFETY: `umask` only swaps the process's file-creation mask; it touches no memory and cannot fail.
+        let previous = unsafe { libc::umask(SOCKET_UMASK) };
+        let listener = UnixListener::bind(path);
+        // SAFETY: as above; this puts the caller's mask back.
+        unsafe { libc::umask(previous) };
+        listener
+    }
+    // Windows has no umask: the socket file takes its folder's access list, and instance folders
+    // live in the user's own profile.
+    #[cfg(windows)]
+    UnixListener::bind(path)
+}
+
+#[cfg(unix)]
+fn is_socket(found: &std::fs::Metadata) -> bool {
+    found.file_type().is_socket()
+}
+
+/// Windows marks an AF_UNIX socket file as a reparse point; ordinary files are not.
+#[cfg(windows)]
+fn is_socket(found: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    found.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// A listening control socket. Dropping it stops listening and removes the socket file.

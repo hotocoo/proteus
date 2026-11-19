@@ -382,6 +382,21 @@ fn host_cpus() -> usize {
 }
 
 /// This machine's memory, in MiB; zero if it cannot be read.
+#[cfg(windows)]
+fn host_memory_mib() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: a zeroed MEMORYSTATUSEX with its length set is what the call expects.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: as above; the call only writes `status`.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return 0;
+    }
+    status.ullTotalPhys >> 20
+}
+
+/// This machine's memory, in MiB; zero if it cannot be read.
+#[cfg(unix)]
 fn host_memory_mib() -> u64 {
     const MIB: u64 = 1 << 20;
     // SAFETY: sysconf only reads system values.

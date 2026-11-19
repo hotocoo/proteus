@@ -131,10 +131,10 @@ pub fn path(ui: &mut Ui, name: &str, value: &mut String, pick: Pick, hint_text: 
 }
 
 fn chooser_available() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(any(target_os = "macos", windows))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn choose(pick: Pick) -> Option<std::path::PathBuf> {
     let dialog = rfd::FileDialog::new();
     match pick {
@@ -143,7 +143,7 @@ fn choose(pick: Pick) -> Option<std::path::PathBuf> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn choose(_pick: Pick) -> Option<std::path::PathBuf> {
     None
 }

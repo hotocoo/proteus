@@ -152,7 +152,11 @@ pub fn resolve(target: &Path) -> PathBuf {
 
 /// Whether an instance is running: something answers on its socket.
 pub fn running(socket: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    use uds_windows::UnixStream;
+    UnixStream::connect(socket).is_ok()
 }
 
 /// Makes a new instance that starts with `args`, whose relative paths are relative to `cwd`.
@@ -388,6 +392,8 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    // Its fixtures are Unix paths; `/abs` is not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn relative_paths_are_made_absolute_and_nothing_else_is_touched() {
         let words = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();

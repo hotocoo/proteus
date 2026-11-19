@@ -11,5 +11,8 @@ virtio-queue.workspace = true
 vm-memory.workspace = true
 vm-superio.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+vm-memory = { workspace = true, features = ["rawfd"] }
+
 [dev-dependencies]
 virtio-queue = { workspace = true, features = ["test-utils"] }
