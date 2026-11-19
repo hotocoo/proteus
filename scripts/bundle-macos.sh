@@ -23,8 +23,10 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$out/lib64/vulkan" "$out/licenses"
 cp "$emu" "$gfx/libgfxstream_backend.dylib" "$out/"
 cp -R "$gfx/licenses/." "$out/licenses/"
-cp -L "$brew/opt/vulkan-loader/lib/libvulkan.dylib" "$brew/opt/molten-vk/lib/libMoltenVK.dylib" \
-    "$out/lib64/vulkan/"
+# The loader: one built for older Macs when VULKAN_LOADER names it, else Homebrew's.
+loader=${VULKAN_LOADER:-$brew/opt/vulkan-loader/lib/libvulkan.dylib}
+cp -L "$loader" "$out/lib64/vulkan/libvulkan.dylib"
+cp -L "$brew/opt/molten-vk/lib/libMoltenVK.dylib" "$out/lib64/vulkan/"
 chmod u+w "$out/lib64/vulkan/"*.dylib
 cp "$repo/packaging/macos/MoltenVK_icd.json" "$out/lib64/vulkan/"
 # KosmicKrisp (Mesa), the preferred driver, with the Homebrew libraries it links, when this Mac's

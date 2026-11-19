@@ -43,9 +43,10 @@ What works today, on Apple Silicon Macs (macOS 15 or later):
 - **Android boots to its home screen**, from Google's prebuilt AOSP virtual-device image and a kernel
   built by this repository, in about 20 seconds.
 - **GPU acceleration**: Android draws with this Mac's GPU through gfxstream and KosmicKrisp (Mesa's
-  Vulkan driver for Apple GPUs), with MoltenVK as the fallback, all shipped in the release. The
-  release's Vulkan libraries are built for **macOS 26**; on macOS 15 the emulator runs but the guest's
-  CPU draws (it says so at start): slow, fine for looking around but not for games.
+  Vulkan driver for Apple GPUs), with MoltenVK as the fallback, all shipped in the release.
+  KosmicKrisp needs macOS 26; on macOS 15 the release falls back to MoltenVK (from release 0.3.1 on,
+  whose Vulkan loader is built for macOS 15). Where neither starts, the guest's CPU draws: slow, fine
+  for looking around but not for games.
 - The launcher and the window's controls described above.
 - Networking without any host driver or admin rights: DHCP, DNS through the host's resolver, TCP and UDP.
 - A sinkhole that blocks domains you list (trackers, ads) at the DNS and TLS server-name level.
