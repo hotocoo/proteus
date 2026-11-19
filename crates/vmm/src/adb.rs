@@ -224,8 +224,11 @@ pub fn quote(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::net::UnixStream;
     use std::thread;
+    #[cfg(windows)]
+    use uds_windows::UnixStream;
 
     use super::*;
 

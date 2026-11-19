@@ -29,7 +29,7 @@ toml.workspace = true
 vm-memory.workspace = true
 
 # The window, the sound output and host gamepads. Only hosts that have a hypervisor backend build them.
-[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(any(target_os = "linux", target_os = "windows"), target_arch = "x86_64")))'.dependencies]
 cpal.workspace = true
 gilrs.workspace = true
 rtrb.workspace = true
@@ -46,8 +46,13 @@ egui_kittest = { version = "0.37", default-features = false }
 
 # A native folder and file picker for the launcher and settings. Linux uses typed paths instead,
 # so it needs neither GTK nor a portal.
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_arch = "x86_64")))'.dependencies]
 rfd.workspace = true
+
+# AF_UNIX control sockets (std wraps them only on Unix), and the process and memory figures.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.1"
+windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # On Linux the window reaches the screen through X11 or Wayland, whichever is running; both are
 # loaded when the program starts, so neither is needed to build it.

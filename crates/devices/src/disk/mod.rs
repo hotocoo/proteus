@@ -151,8 +151,17 @@ impl Disk {
                 (Source::File { file, offset, .. }, Direction::DiskToGuest) => {
                     let mut file: &File = file;
                     file.seek(SeekFrom::Start(*offset + within))?;
+                    #[cfg(unix)]
                     mem.read_exact_volatile_from(guest, &mut file, count)
                         .map_err(io::Error::other)?;
+                    // shortcut: vm-memory reads files straight into guest memory only on Unix, so
+                    // Windows bounces through a buffer; read into the slice directly if disks are slow.
+                    #[cfg(not(unix))]
+                    {
+                        let mut bounce = vec![0; count];
+                        io::Read::read_exact(&mut file, &mut bounce)?;
+                        mem.write_slice(&bounce, guest).map_err(io::Error::other)?;
+                    }
                 }
                 (
                     Source::File {
@@ -164,8 +173,16 @@ impl Disk {
                 ) => {
                     let mut file: &File = file;
                     file.seek(SeekFrom::Start(*offset + within))?;
+                    #[cfg(unix)]
                     mem.write_all_volatile_to(guest, &mut file, count)
                         .map_err(io::Error::other)?;
+                    #[cfg(not(unix))]
+                    {
+                        let mut bounce = vec![0; count];
+                        mem.read_slice(&mut bounce, guest)
+                            .map_err(io::Error::other)?;
+                        io::Write::write_all(&mut file, &bounce)?;
+                    }
                 }
                 (Source::Memory(bytes), Direction::DiskToGuest) => {
                     let from = within as usize;

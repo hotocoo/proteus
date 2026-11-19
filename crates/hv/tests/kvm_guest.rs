@@ -1,6 +1,9 @@
-//! Runs tiny real-mode guests on KVM to pin down what the backend must get right: port I/O in both
-//! directions, MMIO to unmapped memory, and kicks.
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+//! Runs tiny real-mode guests on KVM or WHP to pin down what the backend must get right: port I/O
+//! in both directions, MMIO to unmapped memory, and kicks.
+#![cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    target_arch = "x86_64"
+))]
 
 mod common;
 

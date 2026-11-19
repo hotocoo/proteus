@@ -12,6 +12,61 @@ pub mod slots;
 /// Built on every host: it is plain data layout, so its tests run anywhere.
 pub mod x86_64;
 
+/// A kernel or ramdisk file, as the loaders read it. On Unix that is the file itself; vm-memory
+/// cannot read a Windows file straight into guest memory, so there it goes through a buffer.
+#[cfg(unix)]
+pub type BootFile = std::fs::File;
+#[cfg(not(unix))]
+pub use bounce::BootFile;
+
+#[cfg(not(unix))]
+mod bounce {
+    use std::io::{Read, Seek, SeekFrom};
+    use vm_memory::volatile_memory::{Error as VolatileMemoryError, VolatileSlice};
+    use vm_memory::{ReadVolatile, bitmap::BitmapSlice};
+
+    pub struct BootFile(std::fs::File);
+
+    impl BootFile {
+        pub fn open(path: &std::path::Path) -> std::io::Result<Self> {
+            std::fs::File::open(path).map(Self)
+        }
+    }
+
+    impl From<std::fs::File> for BootFile {
+        fn from(file: std::fs::File) -> Self {
+            Self(file)
+        }
+    }
+
+    impl Read for BootFile {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl Seek for BootFile {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(pos)
+        }
+    }
+
+    impl ReadVolatile for BootFile {
+        fn read_volatile<B: BitmapSlice>(
+            &mut self,
+            buf: &mut VolatileSlice<B>,
+        ) -> Result<usize, VolatileMemoryError> {
+            let mut bounce = vec![0; buf.len()];
+            let read = self
+                .0
+                .read(&mut bounce)
+                .map_err(VolatileMemoryError::IOError)?;
+            buf.copy_from(&bounce[..read]);
+            Ok(read)
+        }
+    }
+}
+
 /// `COMMAND_LINE_SIZE` in Linux on arm64 and x86, terminator included: longer lines are cut silently.
 pub const KERNEL_CMDLINE_SIZE: usize = 2048;
 

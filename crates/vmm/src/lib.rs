@@ -199,15 +199,21 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
 /// Starts the instance `name` again in place of this program, with the options it has saved now.
 #[cfg(host_board)]
 fn restart_instance(name: &str) -> VmmError {
-    use std::os::unix::process::CommandExt;
     let program = match std::env::current_exe() {
         Ok(program) => program,
         Err(err) => return VmmError::Thread(err),
     };
+    let mut command = std::process::Command::new(program);
+    command.args([config::INSTANCE_SUBCOMMAND, config::INSTANCE_START, name]);
     // Only comes back if the program could not be started.
-    let err = std::process::Command::new(program)
-        .args([config::INSTANCE_SUBCOMMAND, config::INSTANCE_START, name])
-        .exec();
+    #[cfg(unix)]
+    let err = std::os::unix::process::CommandExt::exec(&mut command);
+    // Windows cannot replace a running program: start the new one and leave.
+    #[cfg(windows)]
+    let err = match command.spawn() {
+        Ok(_) => std::process::exit(0),
+        Err(err) => err,
+    };
     VmmError::Thread(err)
 }
 

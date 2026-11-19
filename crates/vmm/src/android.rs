@@ -8,7 +8,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -237,7 +236,7 @@ const MODULE_LOAD_LIST: &str = "lib/modules/modules.load";
 /// What the images contribute to the boot, besides the disk.
 pub struct AndroidBoot {
     /// Ramdisk archives, in the order the kernel must unpack them.
-    pub ramdisks: Vec<(File, Range<u64>)>,
+    pub ramdisks: Vec<(arch::BootFile, Range<u64>)>,
     pub overlay: Vec<u8>,
     pub bootconfig: Vec<(String, String)>,
     pub cmdline: String,
@@ -334,8 +333,7 @@ fn lock_data(data: &Path) -> Result<(), VmmError> {
         .truncate(false)
         .open(&path)
         .map_err(file_error(&path))?;
-    // SAFETY: `flock` only takes the descriptor of a file that is open here; it touches no memory.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    if file.try_lock().is_err() {
         return Err(VmmError::Config(copy::DATA_DIR_LOCKED));
     }
     DATA_LOCKS
@@ -409,7 +407,12 @@ pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), Vm
     overlay.file(MODULE_LOAD_LIST, b"");
 
     let boot = AndroidBoot {
-        ramdisks: vec![(init_boot, generic), (vendor_boot, vendor.ramdisk)],
+        // `BootFile` is `File` itself on Unix, so the conversion only does something on Windows.
+        #[allow(clippy::useless_conversion)]
+        ramdisks: vec![
+            (init_boot.into(), generic),
+            (vendor_boot.into(), vendor.ramdisk),
+        ],
         // The image ramdisks before it are LZ4 legacy archives, so this one has to be as well.
         overlay: lz4::stored(&overlay.finish()),
         bootconfig,

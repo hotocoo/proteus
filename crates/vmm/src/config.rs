@@ -172,6 +172,9 @@ pub fn home_default() -> Option<PathBuf> {
     const XDG_DATA_HOME: &str = "XDG_DATA_HOME";
     const XDG_DATA_DEFAULT: &str = ".local/share";
     const APP_FOLDER: &str = "emu";
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA").map(|data| PathBuf::from(data).join(APP_FOLDER));
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
         return home.map(|home| home.join(MACOS_APP_DATA).join(APP_FOLDER));
@@ -189,7 +192,7 @@ pub fn screenshot_path() -> PathBuf {
     const DESKTOP: &str = "Desktop";
     const PREFIX: &str = "emu-";
     const EXTENSION: &str = "png";
-    let home = std::env::var_os("HOME")
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .unwrap_or_default();
     let stamp = std::time::SystemTime::now()

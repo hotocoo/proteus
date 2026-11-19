@@ -5,6 +5,12 @@ pub const DENIED: &str = "this user may not open /dev/kvm; add it to the kvm gro
 #[cfg(target_os = "macos")]
 pub const DENIED: &str = "the hypervisor refused this process; the binary must be signed with the \
 com.apple.security.hypervisor entitlement (packaging/macos/hv.entitlements)";
+#[cfg(target_os = "windows")]
+pub const NO_WHP: &str = "Windows Hypervisor Platform (turn on the HypervisorPlatform feature in \"Turn Windows features on or off\", enable virtualization in the firmware, and restart)";
+#[cfg(target_os = "windows")]
+pub const NOT_MAPPED: &str = "no mapping at that address with that length";
+#[cfg(target_os = "windows")]
+pub const IRQ_OUT_OF_RANGE: &str = "interrupt line is outside the IOAPIC's pins";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub const DENIED: &str = "the hypervisor refused this process";
 pub const VM_BUSY: &str = "this process already runs a virtual machine";

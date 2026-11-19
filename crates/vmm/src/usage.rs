@@ -29,6 +29,48 @@ pub fn cpu_percent(earlier: &Reading, later: &Reading) -> Option<f64> {
     (wall > 0.0).then(|| used / wall * 100.0)
 }
 
+#[cfg(windows)]
+fn cpu_time() -> Duration {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: GetProcessTimes only writes the four FILETIMEs it is given, which live for the call.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok == 0 {
+        return Duration::ZERO;
+    }
+    // FILETIME counts 100 ns ticks.
+    let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
+
+#[cfg(windows)]
+fn memory() -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: zeroed counters are valid; the call writes at most `cb` bytes into them.
+    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: as above; the handle is this process's own pseudo-handle.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    (ok != 0).then_some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(unix)]
 fn cpu_time() -> Duration {
     // SAFETY: `getrusage` only writes the `rusage` it is given, which lives for the call.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -57,7 +99,7 @@ fn memory() -> Option<u64> {
     (done == 0).then_some(info.ri_phys_footprint)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn memory() -> Option<u64> {
     // `/proc/self/statm`: sizes in pages; the second is what is resident.
     let statm = std::fs::read_to_string("/proc/self/statm").ok()?;

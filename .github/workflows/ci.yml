@@ -64,8 +64,6 @@ jobs:
   portable:
     # No hypervisor backend exists for Linux yet. Everything that does not need one (devices,
     # networking, boot image handling) is built and tested there so that it stays portable.
-    # Windows is absent on purpose: the virtio-queue crate enables a vm-memory feature that refuses
-    # to compile for Windows, so the device crates cannot build there until that is replaced.
     name: Build and test (Linux x86_64)
     runs-on: ubuntu-24.04
     steps:
@@ -182,3 +180,16 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans sources
+
+  windows:
+    # Hosted runners have no Windows Hypervisor Platform, so guests are not run here.
+    name: Lint and test (Windows x86_64)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
