@@ -358,7 +358,9 @@ impl ApplicationHandler for Launcher {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The list is read again now and then, so instances started or stopped elsewhere show.
-        let next = Instant::now() + config::LAUNCHER_REFRESH;
+        let next = self
+            .listed_at
+            .map_or_else(Instant::now, |at| at + config::LAUNCHER_REFRESH);
         let at = self
             .window
             .as_ref()
