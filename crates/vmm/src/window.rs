@@ -53,8 +53,12 @@ pub enum Notice {
     Packages(Vec<String>),
     /// A request from the control socket that only the window can carry out.
     Request(crate::ctl::WindowRequest),
-    /// Android took this logical display size (natural orientation), or none.
-    Filled(Option<(u32, u32)>),
+    /// Android was asked for the logical display size `wanted` (natural orientation, or none) and
+    /// has `got` (`None` if it did not answer).
+    Filled {
+        wanted: Option<(u32, u32)>,
+        got: Option<Option<(u32, u32)>>,
+    },
 }
 
 /// The largest rectangle of the picture's shape that fits in `space`, centred, in points.
@@ -230,8 +234,12 @@ struct App {
     shown_part: Option<egui::Rect>,
     /// The space the picture had to fit in, in points.
     space: Option<egui::Rect>,
-    /// The logical display size Android was given (natural orientation), if any.
+    /// The logical display size Android has (natural orientation), if any, as it last said.
     logical: Option<(u32, u32)>,
+    /// Whether `logical` was read from Android since the window opened, and whether a request
+    /// is on its way.
+    synced: bool,
+    asking: bool,
     /// When the window last changed size, until Android has been given its new shape.
     resized: Option<Instant>,
     /// Passes news to the window from other threads.
@@ -358,39 +366,55 @@ impl App {
     /// Gives Android the shape of the space the picture has, once the window has stopped
     /// changing size, so the picture fills it.
     fn fill(&mut self) {
+        let retry = Instant::now() + crate::config::FILL_RETRY;
         let (Some(space), Some(part), Some(full)) =
             (self.space, self.shown_part, self.picture_texture.upright())
         else {
+            // Nothing shown yet: Android is still starting.
+            self.resized = Some(retry);
             return;
         };
-        if space.height() <= 0.0 || part.height() <= 0.0 {
+        if space.height() <= 0.0 || part.height() <= 0.0 || self.asking {
+            self.resized = Some(retry);
             return;
         }
         let aspect = space.width() / space.height();
         let tolerance = crate::config::FILL_TOLERANCE;
-        if (aspect / (part.width() / part.height()) - 1.0).abs() <= tolerance {
+        if self.synced && (aspect / (part.width() / part.height()) - 1.0).abs() <= tolerance {
             return;
         }
         let turns = self.picture_texture.turns();
         let range = crate::config::FILL_ASPECT_RANGE;
         let wanted = crate::fill::logical_for(full, aspect, range, tolerance)
             .map(|upright| orientation::upright_size(upright, turns));
-        if wanted == self.logical {
+        if self.synced && wanted == self.logical {
             return;
         }
-        let command = match wanted {
-            Some((width, height)) => format!("{} {width}x{height}", crate::fill::WM_SIZE),
-            None => crate::fill::WM_SIZE_RESET.to_owned(),
+        use crate::fill::{WHEN_BOOTED, WM_SIZE, WM_SIZE_RESET};
+        let set = match wanted {
+            Some((width, height)) => format!("{WM_SIZE} {width}x{height}"),
+            None => WM_SIZE_RESET.to_owned(),
         };
+        // Set once booted, then read back what Android has, which is what the window shows.
+        let command = format!("{WHEN_BOOTED} {set}; {WM_SIZE}");
         let controller = Arc::clone(&self.controller);
         let notify = Arc::clone(&self.notify);
+        self.asking = true;
         let asked = std::thread::Builder::new()
             .name(copy::GUI_FILL_THREAD.into())
-            .spawn(move || match controller.shell(&command) {
-                Ok(_) => notify(Notice::Filled(wanted)),
-                Err(why) => log::debug!("{why}"),
+            .spawn(move || {
+                let got = match controller.shell(&command) {
+                    Ok(printed) => crate::fill::parse_wm_size(&printed),
+                    Err(why) => {
+                        log::debug!("{why}");
+                        None
+                    }
+                };
+                notify(Notice::Filled { wanted, got });
             });
         if let Err(err) = asked {
+            self.asking = false;
+            self.resized = Some(retry);
             log::error!("{}", copy::thread(&err));
         }
     }
@@ -862,9 +886,16 @@ impl ApplicationHandler<Notice> for App {
             Notice::Rotated(turns) => self.rotated(turns),
             notice @ (Notice::Status(_) | Notice::Packages(_)) => self.gui.notice(notice),
             Notice::Request(request) => self.request(event_loop, request),
-            Notice::Filled(logical) => {
-                self.logical = logical;
-                self.frame_waiting = true;
+            Notice::Filled { wanted, got } => {
+                self.asking = false;
+                if let Some(got) = got {
+                    self.logical = got;
+                    self.synced = true;
+                    self.frame_waiting = true;
+                }
+                if got != Some(wanted) {
+                    self.resized = Some(Instant::now() + crate::config::FILL_RETRY);
+                }
             }
         }
         if let Some(shown) = &self.shown {
@@ -1048,7 +1079,11 @@ impl WindowLoop {
             shown_part: None,
             space: None,
             logical: None,
-            resized: None,
+            synced: false,
+            asking: false,
+            // Android may still have a shape from an earlier run; the window finds out once it
+            // shows something, and gives Android its own.
+            resized: Some(Instant::now()),
             notify: fill_notify,
             pointer: PhysicalPosition::default(),
             touching: false,

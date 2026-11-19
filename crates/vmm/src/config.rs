@@ -306,6 +306,8 @@ pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
 /// How long the window's size must stay still before Android is given its shape: a drag sends
 /// many sizes, and each new logical size makes apps lay themselves out again.
 pub const FILL_SETTLE: Duration = Duration::from_millis(400);
+/// How long the window waits to ask again when Android could not take its shape yet (booting).
+pub const FILL_RETRY: Duration = Duration::from_secs(2);
 /// Shapes closer than this share (2%) count as the same, so rounding never asks Android again.
 pub const FILL_TOLERANCE: f32 = 0.02;
 /// Widths per unit of height Android's picture may take: from a third to three times as wide as

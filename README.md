@@ -24,20 +24,26 @@ to what the Mac can spare), **Balanced** or **Low-end Mac**.
 ## Gaming
 
 - **Frame rate up to 144 Hz.** Android runs at the rate you pick in Settings (60, 90, 120 or 144 Hz;
-  `--refresh-hz` on the command line), not the 60 Hz it used to be stuck at. The display tells
-  Android its rate the way a real panel does (an EDID), so games that offer 90/120 fps modes see
-  them. Measured on an M4 Max: 110 frames per second scrolling at 120 Hz, against at most 60 before.
-  A game's own frame cap and your Mac's screen (60 Hz on most non-ProMotion displays) still apply.
-- **Lower input lag.** The window shows each frame as soon as Android draws it, with no frame queued
-  ahead; at 120 Hz Android itself also answers a touch in half the time.
+  `--refresh-hz` on the command line), not the 60 Hz it used to be stuck at: the display tells
+  Android its rate the way a real panel does (an EDID). Measured on an M4 Max: Android's Settings
+  scrolled at about 110 frames per second at 120 Hz, against at most 60 before. Not yet measured in
+  a game: a game's own frame cap, its 90/120 fps options, and your Mac's screen (60 Hz on most
+  displays without ProMotion) still decide what you see. Existing instances keep 60 Hz until you
+  pick a rate (or Quick setup, Gaming) and restart them.
+- **Lower input lag, by design (not yet measured):** the window shows each frame as soon as Android
+  draws it, with no frame queued ahead, and at 120 Hz Android's own frame pipeline is half as long.
 - **FPS counter** at the top of the toolbar: frames Android showed in the last second.
 - **Any window shape, no black bars.** Drag the window to any size or shape: once you let go, Android
   is told the new shape and lays itself out to fill it, at the screen's full sharpness. Portrait
   stays portrait (at most square) and landscape stays landscape, so a game turning the screen keeps
-  a sensible shape.
+  a sensible shape. A running game is told its screen changed size, and some games restart for
+  that. Limits: screenshots, recordings and `--frame-dump` still show the whole panel, bars
+  included; key maps and macros hold screen positions, so a key map made for one shape misses after
+  the window changes shape.
 - **Render scale (upscaler)** per game, in **Apps**: draw a game at 85%, 70% or 50% of the screen and
   let Android scale it up (Android's own game mode), which lightens a busy GPU. 100% turns it off.
-  Only for apps that say they are games; the game is restarted so it takes effect.
+  Only for apps that say they are games (others are refused, with Android's reason shown); the game
+  is restarted so it takes effect. Not yet tried on a real game.
 - **Trimmed Android.** Every boot turns off what a game machine has no use for: Android's ad
   services and the on-device ad and learning services behind them, remote key provisioning (which
   calls Google's servers), device-lock financing, printing, screensavers, satellite messaging and
@@ -72,7 +78,7 @@ What works today, on Apple Silicon Macs (macOS 15 or later):
   built by this repository, in about 20 seconds.
 - **GPU acceleration**: Android draws with this Mac's GPU through gfxstream and KosmicKrisp (Mesa's
   Vulkan driver for Apple GPUs), with MoltenVK as the fallback, all shipped in the release.
-  KosmicKrisp needs macOS 26; on macOS 15 the release falls back to MoltenVK (from release 0.3.1 on,
+  KosmicKrisp needs macOS 26; on macOS 15 the release falls back to MoltenVK (from release 0.4.0 on,
   whose Vulkan loader is built for macOS 15). Where neither starts, the guest's CPU draws: slow, fine
   for looking around but not for games.
 - The launcher and the window's controls described above.
@@ -302,7 +308,8 @@ Honest list, most important first:
   Installing Google's apps into the running image is not done: a first try found no system
   partition the image would remount.
 - **GPU acceleration is new.** It has not been measured against Google's emulator yet, and frames
-  are read back once on their way to the window (about 1.5 ms each for a 1080x2400 frame). Under MoltenVK an app's drawing could stall (Aurora
+  are read back once on their way to the window (about 1.5 ms each for a 1080x2400 frame, measured
+  in Android's own apps, not under a game's load). Under MoltenVK an app's drawing could stall (Aurora
   Store froze on its first tap), which is why KosmicKrisp is tried first; on Macs where KosmicKrisp
   does not load (older than macOS 26), MoltenVK is what runs.
 - **No Bluetooth or phone network.** The board has neither, so Bluetooth is switched off at boot.

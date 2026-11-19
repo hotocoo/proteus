@@ -1,10 +1,10 @@
 //! What the emulator does to Android once it has booted: stops the image's own log streaming when
 //! nobody reads it (it costs about one guest CPU), switches Bluetooth off (the board has no
 //! Bluetooth controller, so the stack crashes and restarts every few seconds), switches UWB off
-//! (its failure files bug reports with screenshots), gives the window back the panel's own shape,
-//! turns off what a game machine does not need (ad services, printing, screensavers), and
-//! installs the apps a release carries beside the program (`apps/`, such as an app store) the
-//! first time a data folder boots.
+//! (its failure files bug reports with screenshots), turns off what a game machine does not need
+//! (ad services, printing, screensavers), gives Android back the panel's own shape when there is
+//! no window to give it one, and installs the apps a release carries beside the program (`apps/`,
+//! such as an app store) the first time a data folder boots.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -85,6 +85,7 @@ pub fn spawn(
     adb_port: Arc<AtomicU16>,
     done: Arc<AtomicBool>,
     keep_log_stream: bool,
+    reset_shape: bool,
     data: Option<PathBuf>,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
@@ -103,14 +104,12 @@ pub fn spawn(
                 }
                 std::thread::sleep(SETUP_POLL);
             };
-            // The window starts in the panel's own shape; a logical size from an earlier run would
-            // leave bars it does not know about.
-            let mut steps = vec![
-                BLUETOOTH_OFF,
-                UWB_OFF,
-                crate::fill::WM_SIZE_RESET,
-                GAMING_TRIM,
-            ];
+            let mut steps = vec![BLUETOOTH_OFF, UWB_OFF, GAMING_TRIM];
+            // Without a window to give Android its shape, a logical size from an earlier run would
+            // leave bars in every frame; a window sets (and reads back) the shape itself.
+            if reset_shape {
+                steps.push(crate::fill::WM_SIZE_RESET);
+            }
             if !keep_log_stream {
                 steps.push(STOP_LOG_STREAM);
             }

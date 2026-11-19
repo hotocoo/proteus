@@ -122,6 +122,7 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
                 std::sync::Arc::clone(&session.controller.adb_port),
                 std::sync::Arc::clone(&done),
                 config.logcat.is_some(),
+                !config.window,
                 Some(android.data.clone()),
             )
             .map_err(VmmError::Thread)?,

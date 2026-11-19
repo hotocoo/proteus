@@ -5,6 +5,22 @@
 /// Asks Android for a logical display size (followed by `WxH`), or to drop the one it was given.
 pub const WM_SIZE: &str = "wm size";
 pub const WM_SIZE_RESET: &str = "wm size reset";
+/// Runs what follows only once Android has finished booting: a size set earlier would be undone.
+pub const WHEN_BOOTED: &str = "[ \"$(getprop sys.boot_completed)\" = 1 ] &&";
+const PHYSICAL: &str = "Physical size:";
+const OVERRIDE: &str = "Override size:";
+
+/// What `wm size` printed: `Some(None)` for no logical size, `Some(Some(size))` for one, `None`
+/// if it did not answer (Android's window manager not up yet, or an error).
+pub fn parse_wm_size(printed: &str) -> Option<Option<(u32, u32)>> {
+    if !printed.contains(PHYSICAL) {
+        return None;
+    }
+    Some(printed.lines().find_map(|line| {
+        let size = line.trim().strip_prefix(OVERRIDE)?.trim();
+        crate::settings::parse_size(size)
+    }))
+}
 
 /// The part of an upright panel of `physical` pixels that Android draws a logical display of
 /// `logical` pixels (also upright) into: x, y, width, height. Android's own rule
@@ -97,6 +113,14 @@ mod tests {
             logical_for((2400, 1080), 0.5, RANGE, 0.01),
             Some((1080, 1080))
         );
+    }
+
+    #[test]
+    fn what_wm_size_prints_is_read_back() {
+        let set = "Physical size: 1080x2400\nOverride size: 1080x1976\n";
+        assert_eq!(parse_wm_size(set), Some(Some((1080, 1976))));
+        assert_eq!(parse_wm_size("Physical size: 1080x2400\n"), Some(None));
+        assert_eq!(parse_wm_size("Error: Can't find service: window\n"), None);
     }
 
     #[test]
