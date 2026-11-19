@@ -28,6 +28,20 @@ its build script. A scratch crate with `rutabaga_gfx` 0.1.85 (`default-features 
 Vulkan capset 3, version 0, 116 bytes. Its 34-crate dependency tree passes this repository's
 `cargo deny check bans sources`.
 
+## Driver memory in the guest (zero copy)
+
+The blueprint's blob path maps memory the Vulkan driver allocated straight into the guest. A
+scratch program checked that on this Mac with each driver: it allocated 64 KiB of
+`HOST_VISIBLE | HOST_COHERENT` memory, mapped it with `vkMapMemory`, passed the pointer to
+`hv`'s `Vm::map` at the SHM window's address after the vCPU existed, ran a guest that stored a
+value there, and read it back on the host.
+
+| | MoltenVK | KosmicKrisp |
+|---|---|---|
+| Mapped pointer 16 KiB aligned | yes | yes |
+| `Vm::map` (HVF) accepts it | yes | yes |
+| Guest's store seen by the host | yes | yes |
+
 ## How the renderer behaves around failure
 
 - When no Vulkan driver works, `stream_renderer_init` logs "Failed to initialize renderer" and
