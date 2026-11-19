@@ -291,7 +291,7 @@ pub const TOUCHSCREEN_NAME: &str = "emu touchscreen";
 pub const KEYBOARD_NAME: &str = "proteus keyboard";
 pub const GAMEPAD_NAME: &str = "proteus gamepad";
 pub const GPU_NOT_BUILT: &str =
-    "this build of proteus has no GPU acceleration; the guest draws in software";
+    "this build of Proteus has no GPU acceleration; the guest draws in software";
 pub const GPU_ACCELERATED: &str = "proteus: the guest draws with this machine's GPU";
 pub const GPU_CHECK_HUNG: &str = "it did not start in time";
 
@@ -434,11 +434,11 @@ pub fn update_gh_failed(why: &str) -> String {
 }
 
 pub fn up_to_date(tag: &str) -> String {
-    format!("proteus is up to date ({tag})")
+    format!("Proteus is up to date ({tag})")
 }
 
 pub fn updated(tag: &str) -> String {
-    format!("updated to {tag}; restart proteus to use it")
+    format!("updated to {tag}; restart Proteus to use it")
 }
 pub const INSTANCE_RUNNING_MARK: &str = "running";
 
@@ -495,7 +495,7 @@ pub mod gui {
     pub const CHOOSE: &str = "Choose…";
 
     pub const LAUNCHER_TITLE: &str = "Android emulator";
-    pub const UPDATE: &str = "Update proteus";
+    pub const UPDATE: &str = "Update Proteus";
     pub const UPDATE_HINT: &str = "Install the newest release from GitHub, through the GitHub CLI";
     pub const UPDATING: &str = "Updating…";
     pub const LAUNCHER_SUBTITLE: &str =
