@@ -22,9 +22,19 @@ note records what was checked before any of it is wired in.
 
 `rutabaga_gfx` (crates.io, BSD-3-Clause) with its `gfxstream` feature links `gfxstream_backend`
 from `GFXSTREAM_PATH`, or through pkg-config, and links libc++ on macOS. Nothing else is built by
-its build script. Its dependencies (`cfg-if`, `libc`, `log`, `magma-gpu`, `remain`, `serde`,
-`serde_json`, `thiserror`, `zerocopy`, optional `vulkano`) include nothing `deny.toml` bans; the
-full tree has not been run through `cargo deny` yet.
+its build script. A scratch crate with `rutabaga_gfx` 0.1.85 (`default-features = false`,
+`features = ["gfxstream"]`) builds on macOS with `GFXSTREAM_PATH` set, links
+`@rpath/libgfxstream_backend.dylib`, and from Rust gives the same result as the C probe below:
+Vulkan capset 3, version 0, 116 bytes. Its 34-crate dependency tree passes this repository's
+`cargo deny check bans sources`.
+
+## How the renderer behaves around failure
+
+- When no Vulkan driver works, `stream_renderer_init` logs "Failed to initialize renderer" and
+  then never returns. `emu` cannot call it on its own thread and fall back; it has to find out in a
+  separate process with a time limit first.
+- `stream_renderer_teardown` followed by `stream_renderer_init` in the same process works (checked
+  with KosmicKrisp), so a guest reboot can get a fresh renderer.
 
 ## The two Vulkan drivers (2026-11-19, Apple M4 Max, macOS 26.5)
 
