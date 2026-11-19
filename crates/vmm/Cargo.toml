@@ -41,6 +41,8 @@ wgpu.workspace = true
 
 [dev-dependencies]
 net.workspace = true
+# Clicks the window's controls by their labels in tests, without a screen.
+egui_kittest = { version = "0.37", default-features = false }
 
 # A native folder and file picker for the launcher and settings. Linux uses typed paths instead,
 # so it needs neither GTK nor a portal.

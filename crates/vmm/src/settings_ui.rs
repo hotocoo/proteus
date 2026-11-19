@@ -97,12 +97,19 @@ impl Form {
             style::label(ui, text::IMAGE_FOLDER);
             edited |= style::path(
                 ui,
+                text::IMAGE_FOLDER,
                 &mut settings.android,
                 Pick::Folder,
                 text::IMAGE_FOLDER_HINT,
             );
             style::label(ui, text::KERNEL);
-            edited |= style::path(ui, &mut settings.kernel, Pick::File, text::KERNEL_HINT);
+            edited |= style::path(
+                ui,
+                text::KERNEL,
+                &mut settings.kernel,
+                Pick::File,
+                text::KERNEL_HINT,
+            );
         });
 
         style::section(ui, text::PERFORMANCE, |ui| {
@@ -132,9 +139,11 @@ impl Form {
             ui.horizontal(|ui| {
                 let custom = &mut self.custom_display;
                 ui.label(text::CUSTOM);
-                ui.add(egui::DragValue::new(&mut custom.0).range(config::DISPLAY_RANGE));
+                ui.add(egui::DragValue::new(&mut custom.0).range(config::DISPLAY_RANGE))
+                    .accessible_name(text::CUSTOM_WIDTH);
                 ui.label(text::BY);
-                ui.add(egui::DragValue::new(&mut custom.1).range(config::DISPLAY_RANGE));
+                ui.add(egui::DragValue::new(&mut custom.1).range(config::DISPLAY_RANGE))
+                    .accessible_name(text::CUSTOM_HEIGHT);
                 if ui.button(text::USE_SIZE).clicked() {
                     settings.display = *custom;
                     edited = true;
@@ -170,10 +179,17 @@ impl Form {
                 }
             });
             style::label(ui, text::KEYMAP_FILE);
-            edited |= style::path(ui, &mut settings.keymap, Pick::File, text::KEYMAP_PATH_HINT);
+            edited |= style::path(
+                ui,
+                text::KEYMAP_FILE,
+                &mut settings.keymap,
+                Pick::File,
+                text::KEYMAP_PATH_HINT,
+            );
             style::label(ui, text::KEYMAP_FOLDER);
             edited |= style::path(
                 ui,
+                text::KEYMAP_FOLDER,
                 &mut settings.keymap_dir,
                 Pick::Folder,
                 text::KEYMAP_FOLDER_HINT,
@@ -194,6 +210,7 @@ impl Form {
             style::row(ui, text::ADB_PORT, |ui| {
                 edited |= ui
                     .add(egui::DragValue::new(&mut settings.adb_port))
+                    .accessible_name(text::ADB_PORT)
                     .changed();
             });
             style::label(ui, text::BLOCKLISTS);
@@ -204,6 +221,7 @@ impl Form {
                         .desired_rows(config::LIST_ROWS)
                         .desired_width(f32::INFINITY),
                 )
+                .accessible_name(text::BLOCKLISTS)
                 .changed();
             style::label(ui, text::ALLOWLISTS);
             edited |= ui
@@ -213,6 +231,7 @@ impl Form {
                         .desired_rows(config::LIST_ROWS)
                         .desired_width(f32::INFINITY),
                 )
+                .accessible_name(text::ALLOWLISTS)
                 .changed();
         });
 

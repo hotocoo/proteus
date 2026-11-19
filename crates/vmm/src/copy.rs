@@ -561,6 +561,14 @@ pub mod gui {
     pub const INSTALL_HINT: &str =
         "Drop APK, split-APK folder, .apks or .xapk files on the window, or give a path here.";
     pub const INSTALL_PATH_HINT: &str = "/path/to/game.xapk";
+    pub const INSTALL_PATH_NAME: &str = "App file to install";
+    pub const MAP_LINK_NAME: &str = "Map link";
+    pub const PLACE_NAME: &str = "Name for this place";
+    pub const MACRO_NAME: &str = "New macro's name";
+    pub const MACRO_TEXT_NAME: &str = "Macro commands";
+    pub const TIMES: &str = "Times to play";
+    pub const CUSTOM_WIDTH: &str = "Custom width";
+    pub const CUSTOM_HEIGHT: &str = "Custom height";
     pub const INSTALL: &str = "Install";
     pub const INSTALLED: &str = "Installed.";
     pub const LIST_APPS: &str = "List installed apps";

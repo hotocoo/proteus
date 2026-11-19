@@ -231,17 +231,25 @@ impl Launcher {
     fn create(&mut self, ui: &mut Ui) {
         style::section(ui, text::NEW_INSTANCE, |ui| {
             style::row(ui, text::NAME, |ui| {
-                ui.text_edit_singleline(&mut self.new.name);
+                ui.text_edit_singleline(&mut self.new.name)
+                    .accessible_name(text::NAME);
             });
             style::label(ui, text::IMAGE_FOLDER);
             style::path(
                 ui,
+                text::IMAGE_FOLDER,
                 &mut self.new.image,
                 Pick::Folder,
                 text::IMAGE_FOLDER_HINT,
             );
             style::label(ui, text::KERNEL);
-            style::path(ui, &mut self.new.kernel, Pick::File, text::KERNEL_HINT);
+            style::path(
+                ui,
+                text::KERNEL,
+                &mut self.new.kernel,
+                Pick::File,
+                text::KERNEL_HINT,
+            );
             ui.checkbox(&mut self.new.gpu, text::USE_GPU);
             if style::primary(ui, text::CREATE_AND_START) {
                 self.status = self.make();

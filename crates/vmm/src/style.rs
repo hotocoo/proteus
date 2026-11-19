@@ -106,7 +106,7 @@ pub enum Pick {
 
 /// A path field with a button that opens the system's chooser where there is one. True if the
 /// path changed.
-pub fn path(ui: &mut Ui, value: &mut String, pick: Pick, hint_text: &str) -> bool {
+pub fn path(ui: &mut Ui, name: &str, value: &mut String, pick: Pick, hint_text: &str) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         let button_width = tune::CHOOSE_WIDTH;
@@ -117,6 +117,7 @@ pub fn path(ui: &mut Ui, value: &mut String, pick: Pick, hint_text: &str) -> boo
                     .hint_text(hint_text)
                     .desired_width(field_width),
             )
+            .accessible_name(name)
             .changed();
         if chooser_available()
             && ui.button(crate::copy::gui::CHOOSE).clicked()

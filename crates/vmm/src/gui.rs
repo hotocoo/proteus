@@ -427,7 +427,8 @@ impl Gui {
                 egui::TextEdit::singleline(&mut self.apps.install_path)
                     .hint_text(text::INSTALL_PATH_HINT)
                     .desired_width(config::PANEL_FIELD_WIDTH),
-            );
+            )
+            .accessible_name(text::INSTALL_PATH_NAME);
         });
         if ui.button(text::INSTALL).clicked() {
             let path = PathBuf::from(self.apps.install_path.trim());
@@ -503,10 +504,12 @@ impl Gui {
             .num_columns(2)
             .show(ui, |ui| {
                 ui.label(text::LATITUDE);
-                ui.text_edit_singleline(&mut location.latitude);
+                ui.text_edit_singleline(&mut location.latitude)
+                    .accessible_name(text::LATITUDE);
                 ui.end_row();
                 ui.label(text::LONGITUDE);
-                ui.text_edit_singleline(&mut location.longitude);
+                ui.text_edit_singleline(&mut location.longitude)
+                    .accessible_name(text::LONGITUDE);
                 ui.end_row();
             });
         if ui.button(text::SET_LOCATION).clicked() {
@@ -522,7 +525,8 @@ impl Gui {
             egui::TextEdit::singleline(&mut location.link)
                 .hint_text(text::MAP_LINK_HINT)
                 .desired_width(config::PANEL_FIELD_WIDTH),
-        );
+        )
+        .accessible_name(text::MAP_LINK_NAME);
         if ui.button(text::SET_FROM_LINK).clicked() {
             let line = format!("{} {}", crate::ctl::WORD_LOCATION, location.link.trim());
             command = Some(crate::ctl::parse(&line).ok_or(text::BAD_LINK));
@@ -550,7 +554,8 @@ impl Gui {
             changed = true;
         }
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut location.place_name);
+            ui.text_edit_singleline(&mut location.place_name)
+                .accessible_name(text::PLACE_NAME);
             let coordinates = (
                 location.latitude.trim().parse::<f64>(),
                 location.longitude.trim().parse::<f64>(),
@@ -580,7 +585,8 @@ impl Gui {
             egui::TextEdit::singleline(&mut location.gpx)
                 .hint_text(text::GPX_HINT)
                 .desired_width(config::PANEL_FIELD_WIDTH),
-        );
+        )
+        .accessible_name(text::ROUTE);
         ui.add(egui::Slider::new(&mut location.route_kmh, config::KMH_RANGE).text(text::KMH));
         if ui.button(text::FOLLOW_ROUTE).clicked() {
             command = Some(Ok(Command::Route {
@@ -661,7 +667,8 @@ impl Gui {
             self.macros.selected = Some(name);
         }
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.macros.new_name);
+            ui.text_edit_singleline(&mut self.macros.new_name)
+                .accessible_name(text::MACRO_NAME);
             if ui.button(text::NEW_MACRO).clicked() {
                 match file_name(&self.macros.new_name, config::MACRO_EXTENSION) {
                     Some(name) => {
@@ -684,7 +691,8 @@ impl Gui {
                 .code_editor()
                 .desired_rows(config::MACRO_EDITOR_ROWS)
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .accessible_name(text::MACRO_TEXT_NAME);
         ui.horizontal_wrapped(|ui| {
             if ui.button(text::SAVE).clicked() {
                 let saved = std::fs::create_dir_all(&self.macros.dir)
@@ -695,7 +703,8 @@ impl Gui {
                 };
                 self.macros.files = macro_files(&self.macros.dir);
             }
-            ui.add(egui::DragValue::new(&mut self.macros.times).range(config::MACRO_TIMES_RANGE));
+            ui.add(egui::DragValue::new(&mut self.macros.times).range(config::MACRO_TIMES_RANGE))
+                .accessible_name(text::TIMES);
             if ui.button(text::PLAY).clicked() {
                 let command = Command::Run {
                     path: path.clone(),
@@ -735,7 +744,8 @@ impl Gui {
             egui::TextEdit::singleline(&mut self.keymap_path)
                 .hint_text(text::KEYMAP_PATH_HINT)
                 .desired_width(config::PANEL_FIELD_WIDTH),
-        );
+        )
+        .accessible_name(text::KEYMAP_FILE);
         ui.horizontal_wrapped(|ui| {
             if ui.button(text::USE_KEYMAP).clicked() {
                 let path = self.keymap_path.trim();
@@ -788,7 +798,8 @@ impl Gui {
         if self.instance.is_none() {
             ui.label(text::NOT_AN_INSTANCE);
             ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.save_as);
+                ui.text_edit_singleline(&mut self.save_as)
+                    .accessible_name(text::NAME);
                 if ui.button(text::SAVE_AS_INSTANCE).clicked() {
                     self.status = save_as_instance(self.save_as.trim());
                 }
@@ -849,7 +860,176 @@ fn save_as_instance(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
+
+    /// A controller with a keyboard and touchscreen, recording the input it is given into `macro_file`.
+    fn recording_controller(macro_file: &Path) -> Arc<Controller> {
+        use devices::virtio::input::Input;
+        let (_keyboard, keys) = Input::new(crate::input::keyboard());
+        let controller = Controller {
+            keyboard: Some(keys),
+            ..Controller::default()
+        };
+        controller
+            .execute(&Command::Record(macro_file.to_owned()))
+            .unwrap();
+        Arc::new(controller)
+    }
+
+    #[test]
+    fn toolbar_buttons_press_androids_buttons() {
+        let dir = std::env::temp_dir().join(format!("emu-gui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let recorded = dir.join("toolbar.txt");
+        let controller = recording_controller(&recorded);
+        let notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(|_| {});
+        let gui = Gui::new(Arc::clone(&controller), notify, None, None);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(200.0, 800.0))
+            .build_ui_state(
+                |ui, gui: &mut Gui| {
+                    let mut effects = Vec::new();
+                    gui.toolbar(ui, &mut effects);
+                },
+                gui,
+            );
+        for label in [
+            text::BACK,
+            text::HOME,
+            text::RECENTS,
+            text::POWER,
+            text::VOLUME_UP,
+        ] {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        controller.execute(&Command::RecordStop).unwrap();
+        let lines: Vec<String> = std::fs::read_to_string(&recorded)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("key"))
+            .map(str::to_owned)
+            .collect();
+        let expected: Vec<String> = [
+            KEY_BACK,
+            KEY_HOMEPAGE,
+            KEY_APPSELECT,
+            KEY_POWER,
+            KEY_VOLUMEUP,
+        ]
+        .iter()
+        .map(|code| format!("key {code}"))
+        .collect();
+        assert_eq!(lines, expected);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn panels_open_from_the_toolbar_and_report_what_went_wrong() {
+        let notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(|_| {});
+        let gui = Gui::new(Arc::new(Controller::default()), notify, None, None);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(600.0, 900.0))
+            .build_ui_state(
+                |ui, gui: &mut Gui| {
+                    let mut effects = Vec::new();
+                    gui.toolbar(ui, &mut effects);
+                    gui.panel(ui, &mut effects);
+                },
+                gui,
+            );
+        harness.get_by_label(text::SENSORS).click();
+        harness.run();
+        assert_eq!(harness.state().open, Some(Panel::Sensors));
+        harness.get_by_label(text::SHAKE).click();
+        harness.run();
+        // No motion sensors in this controller: the panel says so instead of failing quietly.
+        assert!(!harness.state().status().is_empty());
+        harness.get_by_label(text::LOCATION).click();
+        harness.run();
+        assert_eq!(harness.state().open, Some(Panel::Location));
+        harness.get_by_label(text::SET_LOCATION).click();
+        harness.run();
+        assert_eq!(harness.state().status(), text::BAD_COORDINATES);
+    }
+
+    fn harness(gui: Gui) -> egui_kittest::Harness<'static, Gui> {
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(700.0, 1000.0))
+            .build_ui_state(
+                |ui, gui: &mut Gui| {
+                    let mut effects = Vec::new();
+                    gui.toolbar(ui, &mut effects);
+                    gui.panel(ui, &mut effects);
+                },
+                gui,
+            )
+    }
+
+    #[test]
+    fn a_macro_is_made_saved_and_played_from_its_panel() {
+        let dir = std::env::temp_dir().join(format!("emu-gui-macro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let recorded = dir.join("played.txt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let controller = recording_controller(&recorded);
+        let notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(|_| {});
+        let mut gui = Gui::new(Arc::clone(&controller), notify, None, None);
+        gui.macros.dir = dir.join("macros");
+        let mut harness = harness(gui);
+        harness.get_by_label(text::MACROS).click();
+        harness.run();
+        harness.state_mut().macros.new_name = "back twice".to_owned();
+        harness.run();
+        harness.get_by_label(text::NEW_MACRO).click();
+        harness.run();
+        harness.state_mut().macros.text = format!("key {KEY_BACK}\nwait 1\nkey {KEY_BACK}\n");
+        harness.get_by_label(text::SAVE).click();
+        harness.run();
+        let saved = dir.join("macros").join("back twice.txt");
+        assert!(saved.is_file(), "{}", harness.state().status());
+        assert_eq!(harness.state().macros.files, ["back twice.txt"]);
+        // Played on its own thread; wait for the keys to arrive.
+        harness.get_by_label(text::PLAY).click();
+        harness.run();
+        let keys = || {
+            std::fs::read_to_string(&recorded)
+                .map(|text| text.matches(&format!("key {KEY_BACK}")).count())
+                .unwrap_or(0)
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        controller.execute(&Command::RecordStop).unwrap();
+        assert_eq!(keys(), 2, "{}", harness.state().status());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_other_panels_open_and_answer() {
+        let notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(|_| {});
+        let gui = Gui::new(Arc::new(Controller::default()), notify, None, None);
+        let mut harness = harness(gui);
+        for (panel, label) in PANELS {
+            harness.get_by_label(label).click();
+            harness.run();
+            assert_eq!(harness.state().open, Some(panel), "{label}");
+        }
+        // Settings of an emulator started without an instance offer to make one.
+        assert!(harness.query_by_label(text::SAVE_AS_INSTANCE).is_some());
+        harness.get_by_label(text::KEYS).click();
+        harness.run();
+        harness.get_by_label(text::EDIT_KEYMAP).click();
+        harness.run();
+        harness.get_by_label(text::CAPTURE).click();
+        harness.run();
+        harness.get_by_label(text::RECORD_SCREEN).click();
+        harness.run();
+        harness.get_by_label(text::APPS).click();
+        harness.run();
+        harness.get_by_label(text::INSTALL).click();
+        harness.run();
+    }
 
     #[test]
     fn package_names_are_read_from_the_package_manager() {
