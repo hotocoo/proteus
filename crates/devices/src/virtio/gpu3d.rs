@@ -56,6 +56,8 @@ const MAX_SUBMIT: u32 = 16 << 20;
 const MAX_IN_FENCES: u32 = 64;
 const DEBUG_NAME_LEN: usize = 64;
 const SCANOUTS: u32 = 1;
+/// Largest scanout side the device accepts, as in the 2D path.
+const MAX_DIMENSION: u32 = 8192;
 /// Bytes per pixel of every format a scanout can have.
 const BYTES_PER_PIXEL: u32 = 4;
 
@@ -612,6 +614,11 @@ impl Gpu3d {
     }
 
     fn map_blob(&mut self, resource: u32, offset: u64) -> Result<Answer, u32> {
+        // A blob already in the window stays where it is; asking the renderer again, and undoing
+        // that, would take its memory out from under the guest's mapping.
+        if self.mapped.contains_key(&resource) {
+            return Err(RESP_ERR_INVALID_PARAMETER);
+        }
         let mapping = self
             .renderer
             .map_blob(resource)
@@ -623,7 +630,7 @@ impl Gpu3d {
         let aligned = offset.is_multiple_of(self.page)
             && mapping.len.is_multiple_of(self.page)
             && (mapping.host.as_ptr() as u64).is_multiple_of(self.page);
-        if !fits || !aligned || self.mapped.contains_key(&resource) {
+        if !fits || !aligned {
             log::warn!(
                 "{}",
                 copy::gpu_blob_misaligned(resource, offset, mapping.len)
@@ -652,6 +659,11 @@ impl Gpu3d {
     ) -> Result<Answer, u32> {
         if scanout >= SCANOUTS {
             return Err(RESP_ERR_INVALID_SCANOUT_ID);
+        }
+        // The rectangle sizes the read-back buffer of every flush, so it is held to what a display can be.
+        let sane = (1..=MAX_DIMENSION).contains(&width) && (1..=MAX_DIMENSION).contains(&height);
+        if resource != 0 && !sane {
+            return Err(RESP_ERR_INVALID_PARAMETER);
         }
         self.scanout = (resource != 0).then_some(Scanout {
             resource,
@@ -960,6 +972,8 @@ mod tests {
             run(&mut gpu, CMD_MAP_BLOB, 7, &map),
             Err(RESP_ERR_INVALID_PARAMETER)
         );
+        // ...and leaves the renderer's mapping, which the guest still uses, alone.
+        assert!(!log.0.lock().unwrap().contains(&"unmapped 11".to_owned()));
         assert_eq!(
             run(&mut gpu, CMD_UNMAP_BLOB, 7, &words(&[11, 0])),
             Ok(Answer::NoData)
@@ -1022,6 +1036,20 @@ mod tests {
             run(&mut gpu, CMD_SET_SCANOUT, 0, &words(&[0, 0, 1, 1, 1, 5])),
             Err(RESP_ERR_INVALID_SCANOUT_ID)
         );
+        // A rectangle no display has is refused, so a flush never sizes a buffer from it.
+        let huge = words(&[0, 0, u32::MAX, u32::MAX, 0, 5]);
+        assert_eq!(
+            run(&mut gpu, CMD_SET_SCANOUT, 0, &huge),
+            Err(RESP_ERR_INVALID_PARAMETER)
+        );
+        let empty = words(&[0, 0, 0, 32, 0, 5]);
+        assert_eq!(
+            run(&mut gpu, CMD_SET_SCANOUT, 0, &empty),
+            Err(RESP_ERR_INVALID_PARAMETER)
+        );
+        // Resource zero still turns the scanout off, whatever the rectangle.
+        let off = words(&[0, 0, 0, 0, 0, 0]);
+        assert_eq!(run(&mut gpu, CMD_SET_SCANOUT, 0, &off), Ok(Answer::NoData));
     }
 
     #[test]
