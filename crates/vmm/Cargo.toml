@@ -52,7 +52,7 @@ rfd.workspace = true
 # AF_UNIX control sockets (std wraps them only on Unix), and the process and memory figures.
 [target.'cfg(windows)'.dependencies]
 uds_windows = "1.1"
-windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # On Linux the window reaches the screen through X11 or Wayland, whichever is running; both are
 # loaded when the program starts, so neither is needed to build it.

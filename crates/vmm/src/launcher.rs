@@ -78,7 +78,7 @@ pub fn new_args(image: &str, kernel: &str, gpu: bool) -> Vec<String> {
 /// Starts the instance `name` as its own program, so it keeps running if the launcher closes.
 fn start(name: &str) -> Result<(), String> {
     let program = std::env::current_exe().map_err(|err| err.to_string())?;
-    std::process::Command::new(program)
+    crate::no_console_window(&mut std::process::Command::new(program))
         .args([config::INSTANCE_SUBCOMMAND, config::INSTANCE_START, name])
         .stdin(std::process::Stdio::null())
         .spawn()

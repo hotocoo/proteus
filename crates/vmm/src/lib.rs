@@ -206,6 +206,7 @@ fn restart_instance(name: &str) -> VmmError {
         Err(err) => return VmmError::Thread(err),
     };
     let mut command = std::process::Command::new(program);
+    no_console_window(&mut command);
     command.args([config::INSTANCE_SUBCOMMAND, config::INSTANCE_START, name]);
     // Only comes back if the program could not be started.
     #[cfg(unix)]
@@ -349,7 +350,7 @@ fn gpu_works() -> Result<(), String> {
         return Err(copy::GPU_NOT_BUILT.to_owned());
     }
     let program = std::env::current_exe().map_err(|err| err.to_string())?;
-    let mut child = std::process::Command::new(program)
+    let mut child = no_console_window(&mut std::process::Command::new(program))
         .arg(config::GPU_CHECK_ARG)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -419,6 +420,18 @@ fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Conf
     Ok(None)
 }
 
+/// Keeps a program this one starts from opening a console window of its own when this one has
+/// none (started from the launcher or a shortcut); from a terminal, it shares that terminal.
+pub(crate) fn no_console_window(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    // SAFETY: takes no arguments and only reads this process's console state.
+    if unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null() {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::os::windows::process::CommandExt::creation_flags(command, CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// Entry point of the `emu` binary.
 pub fn cli_main() -> ExitCode {
     let started = Instant::now();
@@ -446,6 +459,17 @@ pub fn cli_main() -> ExitCode {
         Ok(config::Parsed::GpuCheck) => return gpu_check(),
         #[cfg(host_board)]
         Ok(config::Parsed::Launcher) => {
+            // Opened by a double click or shortcut, Windows gave this console program a console
+            // window of its own, which would sit there empty: close it. A terminal's stays.
+            #[cfg(windows)]
+            // SAFETY: plain calls on this process's console; a too-small buffer only gets a count.
+            unsafe {
+                use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+                let mut processes = [0u32; 2];
+                if GetConsoleProcessList(processes.as_mut_ptr(), 2) == 1 {
+                    FreeConsole();
+                }
+            }
             return match launcher::run() {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(why) => {

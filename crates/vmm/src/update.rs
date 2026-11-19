@@ -75,7 +75,7 @@ fn download_and_install(
         .find(|path| path.to_string_lossy().ends_with(suffix))
         .ok_or(copy::UPDATE_NO_ASSET)?;
     // `tar` ships with Windows 10 and later and reads zip archives too.
-    let unpacked = Command::new("tar")
+    let unpacked = crate::no_console_window(&mut Command::new("tar"))
         .arg("-xf")
         .arg(&archive)
         .arg("-C")
@@ -143,13 +143,16 @@ pub fn remove_leftovers() {
 }
 
 fn gh(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh").args(args).output().map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            copy::UPDATE_NEEDS_GH.to_owned()
-        } else {
-            err.to_string()
-        }
-    })?;
+    let output = crate::no_console_window(&mut Command::new("gh"))
+        .args(args)
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                copy::UPDATE_NEEDS_GH.to_owned()
+            } else {
+                err.to_string()
+            }
+        })?;
     if !output.status.success() {
         let why = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(copy::update_gh_failed(&why));
