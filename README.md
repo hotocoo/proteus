@@ -16,14 +16,14 @@ No QEMU, PCI, UEFI or ACPI: the guest sees a virtio-mmio board and is booted dir
    <https://ci.android.com/builds/branches/aosp-android-latest-release/grid>, pick a green build of
    `aosp_cf_arm64_only_phone-userdebug`, download `aosp_cf_arm64_only_phone-img-<build>.zip` from its
    artifacts (about 1.1 GB) and unzip it into a folder.
-3. Open Proteus. Under **New instance**, choose that folder as the image, keep "Use this Mac's GPU" on,
+3. Open Proteus. Under **New instance**, choose that folder as the image, keep "Use this computer's GPU" on,
    and press **Create and start**. Android boots in about 20 seconds; swipe up to unlock.
 
 Each instance is a phone of its own. The launcher starts, stops and deletes them, and **Settings**
 changes everything about one: the Android image (ROM) and kernel, memory, CPUs, screen size, frame
 rate, GPU, sound, gamepad, key maps, network, storage size, and a factory reset. **Quick setup**
 fills memory, CPUs, frame rate and GPU in one click: **Gaming** (8 CPUs, 8 GB, 120 Hz, GPU, capped
-to what the Mac can spare), **Balanced** or **Low-end Mac**.
+to what the Mac can spare), **Balanced** or **Low-end**.
 
 ## Gaming
 

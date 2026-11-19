@@ -115,8 +115,11 @@ pub fn bad_number(option: &str) -> String {
     format!("--{option} needs a positive whole number")
 }
 
-pub const MISSING_KERNEL: &str =
-    "--kernel is required (with --android it can be left out when kernel-arm64 is beside proteus)";
+pub const MISSING_KERNEL: &str = if cfg!(target_arch = "x86_64") {
+    "--kernel is required (with --android it can be left out when kernel-x86_64 is beside proteus)"
+} else {
+    "--kernel is required (with --android it can be left out when kernel-arm64 is beside proteus)"
+};
 pub const BAD_BOOTCONFIG: &str = "--bootconfig needs the form key=value";
 pub const ANDROID_WITH_INITRD: &str =
     "--android brings its own ramdisk; do not pass --initrd with it";
@@ -237,7 +240,7 @@ pub const AUDIO_OPENED: &str = "sound output opened: the guest has started playi
 pub fn audio_failed(err: &dyn Display) -> String {
     format!("sound output: {err}; the guest's sound will not be heard")
 }
-pub const WINDOW_TITLE: &str = "proteus";
+pub const WINDOW_TITLE: &str = "Proteus";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
 
@@ -255,7 +258,7 @@ pub fn gpu_wait_failed(err: &dyn Display) -> String {
 pub fn window_touch(window_x: f64, window_y: f64, x: u32, y: u32) -> String {
     format!("window pixel {window_x:.0},{window_y:.0} touches guest pixel {x},{y}")
 }
-pub const LAUNCHER_TITLE: &str = "proteus";
+pub const LAUNCHER_TITLE: &str = "Proteus";
 pub const LAUNCHER_HEADER_ID: &str = "launcher header";
 pub const TOOLBAR_ID: &str = "toolbar";
 pub const PANEL_ID: &str = "panel";
@@ -511,9 +514,15 @@ pub mod gui {
     pub const NEEDS_IMAGE: &str = "Choose the Android image folder first.";
     pub const BACK_TO_LIST: &str = "← Instances";
     pub const GET_ANDROID: &str = "Getting an Android image";
-    pub const GET_ANDROID_HINT: &str = "Open this page, pick a green build of \
-        aosp_cf_arm64_only_phone-userdebug, download aosp_cf_arm64_only_phone-img-<build>.zip \
-        (about 1.1 GB) and unzip it into a folder. Choose that folder above.";
+    pub const GET_ANDROID_HINT: &str = if cfg!(target_arch = "x86_64") {
+        "Open this page, pick a green build of aosp_cf_x86_64_only_phone-userdebug, download \
+        aosp_cf_x86_64_only_phone-img-<build>.zip (about 1.1 GB) and unzip it into a folder. \
+        Choose that folder above."
+    } else {
+        "Open this page, pick a green build of aosp_cf_arm64_only_phone-userdebug, download \
+        aosp_cf_arm64_only_phone-img-<build>.zip (about 1.1 GB) and unzip it into a folder. \
+        Choose that folder above."
+    };
     pub const COPY: &str = "Copy";
     pub const RESTART_FROM_WINDOW: &str =
         "Saved. Stop and start the instance, or use Restart in its window, to apply.";
@@ -539,14 +548,20 @@ pub mod gui {
     pub const ROM_HINT: &str = "The folder of Google's virtual-device image, and the kernel that \
         boots it. Leave the kernel empty to use the one that comes with proteus.";
     pub const IMAGE_FOLDER: &str = "Image folder";
-    pub const IMAGE_FOLDER_HINT: &str = "/path/to/aosp_cf_arm64_only_phone-img";
+    pub const IMAGE_FOLDER_HINT: &str = if cfg!(windows) {
+        r"C:\path\to\aosp_cf_x86_64_only_phone-img"
+    } else if cfg!(target_arch = "x86_64") {
+        "/path/to/aosp_cf_x86_64_only_phone-img"
+    } else {
+        "/path/to/aosp_cf_arm64_only_phone-img"
+    };
     pub const KERNEL: &str = "Kernel";
     pub const KERNEL_HINT: &str = "Built in";
     pub const PERFORMANCE: &str = "Performance";
 
     pub fn host_has(cpus: usize, memory_mib: u64) -> String {
         format!(
-            "This Mac has {cpus} CPUs and {} GB of memory.",
+            "This computer has {cpus} CPUs and {} GB of memory.",
             memory_mib / 1024
         )
     }
@@ -556,7 +571,7 @@ pub mod gui {
     pub const SCREEN_HINT: &str =
         "Sizes are upright; the window turns when an app turns the screen.";
     pub const GRAPHICS_AND_SOUND: &str = "Graphics and sound";
-    pub const GPU_HINT: &str = "Draws with this Mac's GPU. Without it Android draws with the CPU, \
+    pub const GPU_HINT: &str = "Draws with this computer's GPU. Without it Android draws with the CPU, \
         which is slow for games.";
     pub const CONTROLS: &str = "Controls";
     pub const DATA: &str = "Data";
@@ -731,19 +746,19 @@ pub mod gui {
     pub fn cpu(percent: f64) -> String {
         format!("CPU {percent:.0}%")
     }
-    pub const MEMORY_HINT: &str = "Memory this emulator holds on the Mac, as Activity Monitor \
+    pub const MEMORY_HINT: &str = "Memory this emulator holds on this computer, as the system \
         counts it: the RAM Android has used plus the GPU memory its apps use.";
     pub fn memory(bytes: u64) -> String {
         format!("RAM {:.1} GB", bytes as f64 / 1e9)
     }
     pub const PRESET_GAMING: &str = "Gaming";
     pub const PRESET_BALANCED: &str = "Balanced";
-    pub const PRESET_LOW_END: &str = "Low-end Mac";
+    pub const PRESET_LOW_END: &str = "Low-end";
     pub const PRESETS_HINT: &str =
         "Sets memory, CPUs, frame rate and GPU in one click; change any of them after.";
     pub const FRAME_RATE: &str = "Frame rate";
     pub const FRAME_RATE_HINT: &str = "Android and games run up to this many frames per second. \
-        Higher feels smoother and responds faster to touches, and uses more of the Mac.";
+        Higher feels smoother and responds faster to touches, and uses more of the computer.";
     pub fn hz(rate: u32) -> String {
         format!("{rate} Hz")
     }
@@ -753,7 +768,7 @@ pub mod gui {
     pub const DISPLAY_TABLET: &str = "Tablet";
     pub const BY: &str = "×";
     pub const USE_SIZE: &str = "Use this size";
-    pub const USE_GPU: &str = "Use this Mac's GPU";
+    pub const USE_GPU: &str = "Use this computer's GPU";
     pub const SOUND: &str = "Sound";
     pub const SOUND_ON: &str = "On";
     pub const SOUND_MUTED: &str = "Muted";

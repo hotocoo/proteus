@@ -355,7 +355,7 @@ impl Form {
     }
 }
 
-/// Puts `preset`'s values in `settings`, keeping CPUs and memory to what this Mac can spare.
+/// Puts `preset`'s values in `settings`, keeping CPUs and memory to what this computer can spare.
 fn apply_preset(settings: &mut Settings, preset: &config::Preset) {
     let cpus = u32::try_from(host_cpus()).unwrap_or(u32::MAX);
     let spare_cpus = cpus.saturating_sub(config::PRESET_HOST_CPUS_KEPT).max(1);
