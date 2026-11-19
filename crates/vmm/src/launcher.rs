@@ -17,7 +17,7 @@ use crate::copy::gui as text;
 use crate::painter::Painter;
 use crate::settings_ui::{Action, Form};
 use crate::style::{self, Pick};
-use crate::{copy, instance};
+use crate::{copy, instance, update};
 
 /// One instance as the list shows it.
 struct Entry {
@@ -45,6 +45,8 @@ struct Launcher {
     confirm_delete: Option<String>,
     status: String,
     failed: Option<String>,
+    /// The update the Update button started, while it runs.
+    updating: Option<std::thread::JoinHandle<Result<update::Outcome, String>>>,
 }
 
 /// The instance names in use, for a new instance's default name.
@@ -119,10 +121,34 @@ impl Launcher {
         self.refresh();
         egui::Panel::top(copy::LAUNCHER_HEADER_ID).show(ui, |ui| {
             ui.add_space(tune::GAP);
-            ui.heading(text::LAUNCHER_TITLE);
+            ui.horizontal(|ui| {
+                ui.heading(text::LAUNCHER_TITLE);
+                ui.add_space(tune::GAP);
+                let idle = self.updating.is_none();
+                let label = if idle { text::UPDATE } else { text::UPDATING };
+                let clicked = ui
+                    .add_enabled(idle, egui::Button::new(label))
+                    .on_hover_text(text::UPDATE_HINT)
+                    .clicked();
+                if clicked {
+                    self.updating = Some(std::thread::spawn(update::update));
+                }
+            });
             style::hint(ui, text::LAUNCHER_SUBTITLE);
             ui.add_space(tune::GAP);
         });
+        if self.updating.as_ref().is_some_and(|job| job.is_finished())
+            && let Some(job) = self.updating.take()
+        {
+            self.status = match job.join() {
+                Ok(Ok(update::Outcome::UpToDate(tag))) => copy::up_to_date(&tag),
+                Ok(Ok(update::Outcome::Updated(tag))) => copy::updated(&tag),
+                Ok(Err(why)) => why,
+                Err(_) => copy::UPDATE_STOPPED.to_owned(),
+            };
+        } else if self.updating.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
         if !self.status.is_empty() {
             egui::Panel::bottom(copy::STATUS_ID).show(ui, |ui| {
                 ui.label(&self.status);
@@ -424,6 +450,7 @@ pub fn run() -> Result<(), String> {
         confirm_delete: None,
         status: String::new(),
         failed: None,
+        updating: None,
     };
     let ran = event_loop.run_app(&mut launcher);
     launcher.window = None;
@@ -452,6 +479,7 @@ mod tests {
             confirm_delete: None,
             status: String::new(),
             failed: None,
+            updating: None,
         };
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(720.0, 900.0))

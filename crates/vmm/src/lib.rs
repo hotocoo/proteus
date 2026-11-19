@@ -46,6 +46,8 @@ mod setup;
 #[cfg(host_board)]
 mod style;
 #[cfg(host_board)]
+mod update;
+#[cfg(host_board)]
 mod usage;
 #[cfg(host_board)]
 pub mod window;
@@ -420,6 +422,8 @@ fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Conf
 /// Entry point of the `emu` binary.
 pub fn cli_main() -> ExitCode {
     let started = Instant::now();
+    #[cfg(host_board)]
+    update::remove_leftovers();
     let config = match config::parse(std::env::args_os().skip(1)) {
         Ok(config::Parsed::Help) => {
             println!("{}", copy::HELP);

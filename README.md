@@ -284,6 +284,9 @@ otherwise. Its network test binds loopback ports on the host.
 ## Privacy
 
 The emulator sends nothing anywhere on its own behalf: no analytics, no crash upload, no update check.
+The launcher's **Update emu** button (Windows and Linux) fetches the newest release only when pressed,
+through the GitHub CLI (`gh`, logged in with `gh auth login`), and replaces the program and the
+kernel beside it; restart emu afterwards.
 `deny.toml` bans analytics, crash-upload and HTTP client crates from the dependency tree, and CI enforces it.
 
 ## Layout

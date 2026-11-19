@@ -102,6 +102,8 @@ jobs:
           name="emu-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir "$name"
           cp target/release/emu README.md "$name/"
+          # The launcher's Update button compares this with the newest release.
+          echo "$GITHUB_REF_NAME" > "$name/emu.release"
           cp kernel/kernel-x86_64 kernel/kernel-x86_64.config kernel/kernel-x86_64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
@@ -139,6 +141,8 @@ jobs:
           Copy-Item target/release/emu.exe, README.md $name
           Copy-Item kernel/kernel-x86_64, kernel/kernel-x86_64.config, kernel/kernel-x86_64.source.txt $name
           Copy-Item guest/kernel/README.md "$name/KERNEL.md"
+          # The launcher's Update button compares this with the newest release.
+          Set-Content -NoNewline -Encoding ascii "$name/emu.release" $env:GITHUB_REF_NAME
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash -Algorithm SHA256 "$name.zip").Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"

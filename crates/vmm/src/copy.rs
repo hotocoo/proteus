@@ -417,6 +417,26 @@ pub const INSTANCE_EXISTS: &str = "there is already an instance with that name";
 pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
 pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
 pub const INSTANCE_KEPT: &str = "nothing was deleted";
+pub const UPDATE_UNSUPPORTED: &str =
+    "this build cannot update itself; download the newest release instead";
+pub const UPDATE_NEEDS_GH: &str =
+    "updating needs the GitHub CLI: install it (winget install GitHub.cli) and run `gh auth login`";
+pub const UPDATE_STOPPED: &str = "the update stopped unexpectedly";
+pub const UPDATE_NO_RELEASE: &str = "the repository has no release yet";
+pub const UPDATE_NO_ASSET: &str = "the newest release has no package for this system";
+pub const UPDATE_UNPACK_FAILED: &str = "the downloaded package could not be unpacked";
+
+pub fn update_gh_failed(why: &str) -> String {
+    format!("the GitHub CLI failed: {why}")
+}
+
+pub fn up_to_date(tag: &str) -> String {
+    format!("emu is up to date ({tag})")
+}
+
+pub fn updated(tag: &str) -> String {
+    format!("updated to {tag}; restart emu to use it")
+}
 pub const INSTANCE_RUNNING_MARK: &str = "running";
 
 pub fn instance_confirm_delete(name: &str) -> String {
@@ -472,6 +492,9 @@ pub mod gui {
     pub const CHOOSE: &str = "Choose…";
 
     pub const LAUNCHER_TITLE: &str = "Android emulator";
+    pub const UPDATE: &str = "Update emu";
+    pub const UPDATE_HINT: &str = "Install the newest release from GitHub, through the GitHub CLI";
+    pub const UPDATING: &str = "Updating…";
     pub const LAUNCHER_SUBTITLE: &str =
         "Each instance is a phone of its own: its own apps, data and settings.";
     pub const INSTANCES: &str = "Instances";

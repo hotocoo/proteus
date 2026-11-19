@@ -163,7 +163,13 @@ pub fn bundled_kernel() -> Option<PathBuf> {
     bundled(BUNDLED_KERNEL).map(|(_, path)| path)
 }
 /// The kernel's file name in a release, and where a macOS app keeps it, from its program's folder.
-pub const BUNDLED_KERNEL: &str = "kernel-arm64";
+pub const BUNDLED_KERNEL: &str = if cfg!(target_arch = "x86_64") {
+    "kernel-x86_64"
+} else {
+    "kernel-arm64"
+};
+/// The GitHub repository `emu update` installs releases from.
+pub const UPSTREAM: &str = "hotocoo/emulator";
 pub const APP_RESOURCES: &str = "../Resources";
 
 /// The emulator's home folder when `EMU_HOME` is not set: the platform's place for app data.
