@@ -106,18 +106,26 @@ and frame latency) has not been run.
 
 ## Running it
 
-```sh
-cargo build --release -p vmm --features gpu    # with GFXSTREAM_PATH=<folder with libgfxstream_backend.dylib>
-cp <that folder>/libgfxstream_backend.dylib target/release/
-install_name_tool -add_rpath @executable_path target/release/emu
-codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/release/emu
-# KosmicKrisp:  VK_DRIVER_FILES=<its icd.json> emu ... --gpu
-# MoltenVK:     put MoltenVK_icd.json (with an absolute library_path) in target/release/lib64/vulkan/,
-#               then ANDROID_EMU_VK_ICD=moltenvk emu ... --gpu
+The release ships MoltenVK, in the layout gfxstream reads by itself:
+
+```text
+emu
+libgfxstream_backend.dylib       found through emu's @executable_path rpath
+lib64/vulkan/libvulkan.dylib     the Vulkan loader (gfxstream looks here before the system)
+lib64/vulkan/MoltenVK_icd.json   library_path ./libMoltenVK.dylib, relative to the file
+lib64/vulkan/libMoltenVK.dylib
+licenses/                        gfxstream and its third-party code, MoltenVK, Vulkan-Loader
 ```
 
-Both drivers also need the Vulkan loader, `libvulkan.dylib`, where the program finds it (Homebrew's
-`vulkan-loader`, with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`).
+`emu --gpu` sets `ANDROID_EMU_VK_ICD=moltenvk` itself when that file is there and none of
+`ANDROID_EMU_VK_ICD`, `VK_DRIVER_FILES` or `VK_ICD_FILENAMES` is set, before the check runs, so the
+check and the renderer use the same driver. `scripts/build-gfxstream.sh <work> <out>` and
+`scripts/bundle-macos.sh` build that folder; the release workflow runs the same two scripts. MoltenVK
+was picked to ship because it links only system frameworks; Homebrew's KosmicKrisp links zstd, xcb
+and SPIRV-Tools from Homebrew.
+
+KosmicKrisp is still reachable: `VK_DRIVER_FILES=<its icd.json> emu ... --gpu`, with the Vulkan loader
+beside `emu` as above or `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
 
 Known messages that do not stop it: the guest's `DRM_IOCTL_VIRTGPU_GET_CAPS failed with Invalid
 argument` and `CONTEXT_INIT failed with File exists`; the driver carries on.

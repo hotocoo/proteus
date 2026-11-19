@@ -207,6 +207,21 @@ fn gpu_check() -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Points gfxstream at the Vulkan driver a release carries beside the program, unless the user
+/// chose one. Set before the check, so the check's child and the renderer see the same driver.
+fn use_bundled_vulkan_driver() {
+    let chosen = config::VULKAN_DRIVER_VARIABLES
+        .iter()
+        .any(|name| std::env::var_os(name).is_some());
+    let bundled = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .is_ok_and(|exe| exe.with_file_name(config::BUNDLED_VULKAN_ICD).is_file());
+    if !chosen && bundled {
+        // SAFETY: called from `main` before any thread is started.
+        unsafe { std::env::set_var(config::VULKAN_ICD_VARIABLE, config::BUNDLED_VULKAN_DRIVER) };
+    }
+}
+
 /// Whether the GPU renderer starts on this machine. It is tried in a child process with a time
 /// limit, because a renderer with no working Vulkan driver never comes back.
 fn gpu_works() -> Result<(), String> {
@@ -321,6 +336,7 @@ pub fn cli_main() -> ExitCode {
     logger::init(config.log_level);
     let mut config = config;
     if config.gpu {
+        use_bundled_vulkan_driver();
         match gpu_works() {
             Ok(()) => eprintln!("{}", copy::GPU_ACCELERATED),
             Err(why) => {

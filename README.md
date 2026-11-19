@@ -8,8 +8,10 @@ No QEMU, PCI, UEFI or ACPI: the guest sees a virtio-mmio board and is booted dir
 Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 
 - **Android boots to its home screen**, from Google's prebuilt AOSP virtual-device image and a kernel
-  built by this repository, in about 20 seconds. Graphics are drawn by the guest's CPU for now, so it
-  is slow: fine for looking around, not yet for games.
+  built by this repository, in about 20 seconds.
+- **GPU acceleration** (`--gpu`): Android draws with this Mac's GPU through gfxstream and MoltenVK,
+  both shipped in the release. Without `--gpu`, or where it cannot start, the guest's CPU draws:
+  slow, fine for looking around but not for games.
 - A window that shows the guest's display, with the mouse as a finger and the keyboard as a keyboard.
 - Networking without any host driver or admin rights: DHCP, DNS through the host's resolver, TCP and UDP.
 - A sinkhole that blocks domains you list (trackers, ads) at the DNS and TLS server-name level.
@@ -26,7 +28,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 
 - Several instances at once, with one able to drive the others.
 
-Not there yet: GPU acceleration in the release (it works in a source build, `docs/gfxstream.md`), a GUI,
+Not there yet: a GUI,
 a Linux desktop check, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
@@ -34,8 +36,9 @@ a Linux desktop check, Windows hosts, and an Android image of this project's own
 
 You need three things: the `emu` program, a guest kernel, and an Android image.
 
-1. **`emu` and the kernel** are in each release: `emu` and `kernel-arm64`. To build `emu` yourself, see
-   "Build" below; the kernel is built by the "Guest kernel" workflow (see `guest/kernel/README.md`).
+1. **`emu` and the kernel** are in each release: unpack `emu-<version>-macos-arm64.tar.gz` and keep its
+   folder together (`emu` finds its GPU libraries in it). To build `emu` yourself, see "Build" below;
+   the kernel is built by the "Guest kernel" workflow (see `guest/kernel/README.md`).
 2. **The Android image** is Google's: open
    <https://ci.android.com/builds/branches/aosp-android-latest-release/grid>, pick a green build of
    `aosp_cf_arm64_only_phone-userdebug`, and download `aosp_cf_arm64_only_phone-img-<build>.zip` from
@@ -43,7 +46,7 @@ You need three things: the `emu` program, a guest kernel, and an Android image.
 3. Start it:
 
 ```sh
-emu --kernel kernel-arm64 --android <image directory>
+emu --kernel kernel-arm64 --android <image directory> --gpu
 ```
 
 The first start creates `emu-data/` inside the image directory for this instance's own storage.
@@ -55,6 +58,7 @@ Useful options (`emu --help` lists all of them):
 
 | Option | Effect |
 |---|---|
+| `--gpu` | Draw with this Mac's GPU; falls back to the CPU and says so if it cannot start |
 | `--ram-mib <n>`, `--vcpus <n>` | Guest memory (default 4096) and CPUs (default 4) |
 | `--display <WxH>` | Size of the guest's screen (default 1280x720) |
 | `--headless` | No window; use the control socket or `--frame-dump` to see the screen |
@@ -62,6 +66,18 @@ Useful options (`emu --help` lists all of them):
 | `--logcat <file>` | Save Android's system log |
 | `--serial` | A root-capable shell and the kernel log on this terminal |
 | `--data-dir <dir>` | Where this instance keeps its data |
+
+### Keeping your settings
+
+Options given once to `emu instance create` are kept, so one short command starts it every time:
+
+```sh
+emu instance create android --kernel kernel-arm64 --android <image directory> --gpu --ram-mib 4096 --vcpus 4
+emu instance start android
+```
+
+The instance gets its own data, control socket (`emu ctl android ...`) and adb port. See "Several
+instances" below.
 
 ### Driving a running instance
 
@@ -137,6 +153,19 @@ codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/
 
 macOS refuses hypervisor access to unsigned binaries.
 
+With GPU acceleration, as the release is built (needs `cmake`, `ninja` and Homebrew's `molten-vk`
+and `vulkan-loader`):
+
+```sh
+scripts/build-gfxstream.sh <work folder> <gfxstream folder>
+GFXSTREAM_PATH=<gfxstream folder> cargo build --release -p vmm --features gpu
+scripts/bundle-macos.sh target/release/emu <gfxstream folder> <out folder>
+<out folder>/emu --kernel ... --gpu
+```
+
+The out folder holds `emu`, gfxstream's renderer, the Vulkan loader and MoltenVK, and their
+licences, and runs as it is. `docs/gfxstream.md` has the details and the other driver, KosmicKrisp.
+
 A plain Linux kernel must be an uncompressed ARM64 `Image`. To use the serial console it needs the 8250
 driver; for disks it needs virtio-mmio and virtio-blk built in.
 
@@ -195,10 +224,9 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 
 Honest list, most important first:
 
-- **GPU acceleration is experimental.** A build with `--features gpu` and `emu --gpu` draws Android
-  with this Mac's GPU through gfxstream (see `docs/gfxstream.md` for building and the Vulkan
-  driver). It has not been measured yet, frames are copied once on their way to the window, and
-  the release does not ship it.
+- **GPU acceleration is new.** `emu --gpu` draws Android with this Mac's GPU through gfxstream (see
+  `docs/gfxstream.md`). It has not been measured against Google's emulator yet, and frames are copied
+  once on their way to the window.
 - **More game controls.** Key maps are written by hand.
 - **Not yet tried for real:** a physical gamepad plugged in at start (the guest pad was checked
   with `--gamepad` and the `pad` command), dropping a file on the window (the same install was

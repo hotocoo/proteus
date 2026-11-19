@@ -37,10 +37,28 @@ jobs:
         run: cargo test --workspace --locked
       - name: Release build
         run: cargo build --release --locked -p vmm
+      - name: Cached gfxstream
+        id: gfxstream
+        uses: actions/cache@v4
+        with:
+          path: gfxstream-out
+          key: gfxstream-macos-arm64-${{ hashFiles('scripts/build-gfxstream.sh') }}
+      - name: Build gfxstream
+        if: steps.gfxstream.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja
+          scripts/build-gfxstream.sh "$RUNNER_TEMP/gfxstream" gfxstream-out
+      - name: Lint and build with GPU acceleration
+        env:
+          GFXSTREAM_PATH: ${{ github.workspace }}/gfxstream-out
+        run: |
+          cargo clippy -p vmm --features gpu --all-targets --locked -- -D warnings
+          cargo build --release --locked -p vmm --features gpu
+      # The budget counts what a release ships to run: emu and gfxstream's renderer.
       - name: Size budget
         run: |
-          size=$(stat -f %z target/release/emu)
-          echo "emu is $size bytes (budget $EMU_MAX_BYTES)"
+          size=$(( $(stat -f %z target/release/emu) + $(stat -f %z gfxstream-out/libgfxstream_backend.dylib) ))
+          echo "emu and its renderer are $size bytes (budget $EMU_MAX_BYTES)"
           test "$size" -lt "$EMU_MAX_BYTES"
 
   portable:

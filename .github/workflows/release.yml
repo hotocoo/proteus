@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Run by hand to build and check the packages without publishing them.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,13 +25,21 @@ jobs:
       - name: Install toolchain and device tree compiler
         run: |
           rustup show active-toolchain || rustup toolchain install
-          brew install dtc
+          brew install dtc ninja molten-vk vulkan-loader
       - name: Test
         run: cargo test --workspace --locked
-      - name: Build
-        run: cargo build --release --locked -p vmm
-      - name: Sign with the hypervisor entitlement
-        run: codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/release/emu
+      # gfxstream's renderer takes long to build, so it is kept between runs for its pinned revision.
+      - name: Cached gfxstream
+        id: gfxstream
+        uses: actions/cache@v4
+        with:
+          path: gfxstream-out
+          key: gfxstream-macos-arm64-${{ hashFiles('scripts/build-gfxstream.sh') }}
+      - name: Build gfxstream
+        if: steps.gfxstream.outputs.cache-hit != 'true'
+        run: scripts/build-gfxstream.sh "$RUNNER_TEMP/gfxstream" gfxstream-out
+      - name: Build with GPU acceleration
+        run: GFXSTREAM_PATH="$PWD/gfxstream-out" cargo build --release --locked -p vmm --features gpu
       # The guest kernel is built by its own workflow; the release ships the newest good one, with
       # the configuration and the exact source commit it was built from (it is GPL-2.0).
       - name: Fetch the guest kernel
@@ -44,8 +54,8 @@ jobs:
       - name: Package
         run: |
           name="emu-${GITHUB_REF_NAME}-macos-arm64"
-          mkdir "$name"
-          cp target/release/emu README.md packaging/macos/hv.entitlements "$name/"
+          scripts/bundle-macos.sh target/release/emu gfxstream-out "$name"
+          cp README.md packaging/macos/hv.entitlements "$name/"
           cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
@@ -94,6 +104,7 @@ jobs:
   publish:
     name: Publish
     needs: [macos, linux]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
       # The tag's own message becomes the release notes, so the tag has to be fetched with it.

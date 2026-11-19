@@ -70,7 +70,7 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
 name = "arch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hv",
  "vm-fdt",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "devices"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
  "virtio-bindings",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "gfx"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "devices",
  "rutabaga_gfx",
@@ -607,7 +607,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "hv"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "devices",
  "log",
@@ -1948,7 +1948,7 @@ checksum = "503041e3dca68fbd5425c04e4c2ad63c57a31da5b6eb13aaafbcaaf2b9cdc74f"
 
 [[package]]
 name = "vmm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arch",
  "cpal",

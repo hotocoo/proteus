@@ -87,6 +87,15 @@ pub const GPU_CHECK_ARG: &str = "--gpu-check";
 pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the check is looked at while it runs.
 pub const GPU_CHECK_POLL: Duration = Duration::from_millis(50);
+/// Where a release keeps its Vulkan driver (MoltenVK) and loader, beside the program: the layout
+/// gfxstream looks in itself.
+pub const BUNDLED_VULKAN_ICD: &str = "lib64/vulkan/MoltenVK_icd.json";
+/// gfxstream's switch to its MoltenVK path, which reads the bundled driver above.
+pub const VULKAN_ICD_VARIABLE: &str = "ANDROID_EMU_VK_ICD";
+pub const BUNDLED_VULKAN_DRIVER: &str = "moltenvk";
+/// Any of these set means the user picked a Vulkan driver, so the bundled one is left alone.
+pub const VULKAN_DRIVER_VARIABLES: [&str; 3] =
+    [VULKAN_ICD_VARIABLE, "VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
 /// Environment variable naming the emulator's home folder, where instances live.
 pub const EMU_HOME_VARIABLE: &str = "EMU_HOME";
 pub const INSTANCES_DIR: &str = "instances";
