@@ -55,6 +55,23 @@ enum Direction {
     GuestToDisk,
 }
 
+/// Opens one image file as a whole disk: an Android sparse image is expanded on the fly and is
+/// always read-only, anything else is mapped as it is. Returns the disk and whether it is writable
+/// (`writable` asked for, and not a sparse image).
+pub fn open_image(path: &std::path::Path, writable: bool) -> io::Result<(Disk, bool)> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .open(path)?;
+    if sparse::is_sparse(&mut file)? {
+        let mut disk = Disk::default();
+        sparse::append(&mut disk, file)?;
+        return Ok((disk, false));
+    }
+    let len = file.metadata()?.len();
+    Ok((Disk::from_file(file, len, writable), writable))
+}
+
 impl Disk {
     /// A disk backed by the first `len` bytes of one file.
     pub fn from_file(file: File, len: u64, writable: bool) -> Self {

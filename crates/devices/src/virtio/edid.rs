@@ -59,14 +59,19 @@ fn v_blank() -> u32 {
 /// The pixel clock, in 10 kHz units, of a `width` x `height` display refreshed `hz` times a second.
 /// `None` if it does not fit EDID's field.
 pub fn clock_units(width: u32, height: u32, hz: u32) -> Option<u16> {
-    let total = u64::from(width + h_blank()) * u64::from(height + v_blank());
-    let units = (total * u64::from(hz) + CLOCK_UNIT_HZ / 2) / CLOCK_UNIT_HZ;
+    let total = (u64::from(width) + u64::from(h_blank()))
+        .saturating_mul(u64::from(height) + u64::from(v_blank()));
+    let units = (total
+        .saturating_mul(u64::from(hz))
+        .saturating_add(CLOCK_UNIT_HZ / 2))
+        / CLOCK_UNIT_HZ;
     (units > 0 && units <= MAX_CLOCK_UNITS).then_some(units as u16)
 }
 
 /// The fastest refresh rate a `width` x `height` display can have and still be described.
 pub fn max_refresh(width: u32, height: u32) -> u32 {
-    let total = u64::from(width + h_blank()) * u64::from(height + v_blank());
+    let total = (u64::from(width) + u64::from(h_blank()))
+        .saturating_mul(u64::from(height) + u64::from(v_blank()));
     u32::try_from(MAX_CLOCK_UNITS * CLOCK_UNIT_HZ / total.max(1)).unwrap_or(u32::MAX)
 }
 

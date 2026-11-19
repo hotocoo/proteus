@@ -5,6 +5,7 @@
 //! frame is turned and scaled) is a plain function with tests, because the rest can only be checked
 //! by eye.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +20,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::config::{PANEL_WIDTH, TOOLBAR_WIDTH};
+use crate::config::{MIN_REMEMBERED_SIDE, PANEL_WIDTH, TOOLBAR_WIDTH};
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
 use crate::gui::{Effect, Gui};
@@ -182,6 +183,13 @@ pub fn key_name(key: KeyCode) -> String {
     format!("{key:?}")
 }
 
+/// The window's `size` without a side panel of `panel` points, which may be open or shut when the
+/// size comes back. `None` for a window too small to mean anything (minimized).
+fn remembered_size(size: LogicalSize<f64>, panel: f64) -> Option<LogicalSize<f64>> {
+    let size = LogicalSize::new(size.width - panel, size.height);
+    (size.width > MIN_REMEMBERED_SIDE && size.height > MIN_REMEMBERED_SIDE).then_some(size)
+}
+
 /// The window's size after the picture turns to `picture` pixels: the same scale as before, made
 /// smaller if needed to fit a share of the monitor, with `chrome` points of controls beside it.
 fn turned_size(
@@ -260,6 +268,9 @@ struct App {
     failed: Option<String>,
     /// Modifier keys held now.
     modifiers: ModifiersState,
+    /// Guest key codes sent down and not yet up, so each gets its up even if the window loses
+    /// focus or a shortcut modifier comes between.
+    held: HashSet<u16>,
     /// How far the device is turned about the screen's axis, in quarter turns clockwise.
     device_turns: u8,
     /// What the user asked for when the window closed: a restart, maybe after a factory reset.
@@ -271,6 +282,15 @@ struct App {
     counted: Instant,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
+    /// Whether the window has the keyboard and mouse.
+    focused: bool,
+    /// Android's screen turn, in quarter turns, as last reported.
+    turns: u8,
+    /// The window's last size (logical pixels) with the screen upright and turned sideways, so
+    /// turning back restores the size the user gave it. The width is without a side panel.
+    sizes: [Option<LogicalSize<f64>>; 2],
+    /// This process's cost at the last count, for the CPU meter.
+    usage: crate::usage::Reading,
 }
 
 impl App {
@@ -308,11 +328,24 @@ impl App {
     }
 
     /// Keeps and hides the pointer while the key map is using the mouse, and gives it back after.
+    /// Only while the window has focus: a lock kept after switching apps would hold the
+    /// pointer in other apps, and one macOS dropped on the switch would never come back.
     fn sync_pointer(&mut self) {
-        let wanted = self.mapper.as_ref().is_some_and(Mapper::wants_pointer);
+        let wanted = self.focused && self.mapper.as_ref().is_some_and(Mapper::wants_pointer);
         let Some(shown) = self.shown.as_ref().filter(|_| wanted != self.grabbed) else {
             return;
         };
+        // A locked pointer stays where it is, and clicks land there: over the picture, not on a
+        // button of the toolbar or the window's edge.
+        if wanted && let Some((rect, _)) = self.picture {
+            let scale = shown.painter.ctx.pixels_per_point();
+            let center = rect.center();
+            let position =
+                PhysicalPosition::new(f64::from(center.x * scale), f64::from(center.y * scale));
+            if shown.window.set_cursor_position(position).is_ok() {
+                self.pointer = position;
+            }
+        }
         let mode = if wanted {
             CursorGrabMode::Locked
         } else {
@@ -749,9 +782,19 @@ impl App {
                 let step = if clockwise { 1 } else { QUARTER_TURNS - 1 };
                 self.device_turns = (self.device_turns + step) % QUARTER_TURNS;
                 let degrees = f64::from(self.device_turns) * DEGREES_PER_TURN;
+                // The sensors take the short way to this angle, so 0 to 270 is a quarter back.
                 self.send(Command::Rotate([0.0, 0.0, degrees]));
             }
             Shortcut::Screenshot => self.gui.screenshot(),
+        }
+    }
+
+    /// The width of the side panel now beside the picture, in logical pixels.
+    fn panel_width(&self) -> f64 {
+        if self.panel_shown {
+            f64::from(PANEL_WIDTH)
+        } else {
+            0.0
         }
     }
 
@@ -760,9 +803,19 @@ impl App {
     fn rotated(&mut self, turns: u8) {
         self.touch(false);
         self.frame_waiting = true;
+        self.turns = turns;
         let (Some(shown), Some((rect, drawn))) = (&self.shown, self.picture) else {
             return;
         };
+        // Back to a way up the window has been before: the size it had then.
+        if let Some(size) = self.sizes[usize::from(turns % 2)] {
+            let wide = size.width + self.panel_width();
+            let _ = shown
+                .window
+                .request_inner_size(LogicalSize::new(wide, size.height));
+            shown.window.request_redraw();
+            return;
+        }
         // The size the picture was drawn at, not the guest's turn, which has already changed.
         let scale = f64::from(rect.width()) / f64::from(drawn.0.max(1));
         let full = orientation::upright_size(self.guest, turns);
@@ -798,12 +851,44 @@ impl App {
         }
     }
 
+    /// Updates the toolbar's meters: frames shown, and the CPU and memory this process uses.
+    fn count(&mut self) {
+        let seconds = self.counted.elapsed().as_secs_f64();
+        log::trace!("{}", copy::frame_rate(self.frames, self.counted.elapsed()));
+        let now = crate::usage::read();
+        self.gui.fps = Some(f64::from(self.frames) / seconds);
+        self.gui.cpu = crate::usage::cpu_percent(&self.usage, &now);
+        self.gui.memory_bytes = now.memory_bytes;
+        self.usage = now;
+        self.frames = 0;
+        self.counted = Instant::now();
+        if let Some(shown) = &self.shown {
+            shown.window.request_redraw();
+        }
+    }
+
     /// The mouse moved by this much, wherever the pointer is.
     fn mouse_moved(&mut self, dx: f64, dy: f64) {
         let touches = self.mapper.as_mut().filter(|map| map.wants_pointer());
         if let Some(touches) = touches.map(|map| map.pointer(dx, dy)) {
             self.apply(&touches);
         }
+    }
+
+    /// Lets go of everything held: the releases would go to another window.
+    fn let_go(&mut self) {
+        for code in std::mem::take(&mut self.held) {
+            self.send(Command::Key {
+                code,
+                down: Some(false),
+            });
+        }
+        if let Some(map) = self.mapper.as_mut() {
+            let touches = map.release();
+            self.apply(&touches);
+        }
+        self.touch(false);
+        self.modifiers = ModifiersState::empty();
     }
 
     fn key(&mut self, key: KeyCode, down: bool) {
@@ -823,12 +908,25 @@ impl App {
         {
             if down {
                 self.shortcut(shortcut);
+            } else if let Some(code) = linux_key(key)
+                && self.held.remove(&code)
+            {
+                // Pressed before the shortcut modifier: its release still goes to the guest.
+                self.send(Command::Key {
+                    code,
+                    down: Some(false),
+                });
             }
             return;
         }
         if let Some(code) = linux_key(key)
             && !self.mapped(code, down)
         {
+            if down {
+                self.held.insert(code);
+            } else {
+                self.held.remove(&code);
+            }
             self.send(Command::Key {
                 code,
                 down: Some(down),
@@ -873,13 +971,6 @@ impl ApplicationHandler<Notice> for App {
             Notice::Frame => {
                 self.frame_waiting = true;
                 self.frames += 1;
-                if self.counted.elapsed() >= crate::config::FRAME_RATE_PERIOD {
-                    log::trace!("{}", copy::frame_rate(self.frames, self.counted.elapsed()));
-                    let seconds = self.counted.elapsed().as_secs_f64();
-                    self.gui.fps = Some(f64::from(self.frames) / seconds);
-                    self.frames = 0;
-                    self.counted = Instant::now();
-                }
             }
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),
@@ -910,10 +1001,19 @@ impl ApplicationHandler<Notice> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.shown.is_some() && self.counted.elapsed() >= crate::config::FRAME_RATE_PERIOD {
+            self.count();
+        }
         let Some(shown) = &self.shown else {
             return;
         };
-        let mut wake = shown.painter.repaint_at;
+        let next_count = self.counted + crate::config::FRAME_RATE_PERIOD;
+        let mut wake = Some(
+            shown
+                .painter
+                .repaint_at
+                .map_or(next_count, |at| at.min(next_count)),
+        );
         if let Some(at) = shown.painter.repaint_at
             && at <= Instant::now()
         {
@@ -951,6 +1051,13 @@ impl ApplicationHandler<Notice> for App {
             WindowEvent::RedrawRequested => self.draw(),
             // The picture moves when the window changes; draw now so clicks use where it is.
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(shown) = &self.shown {
+                    let window = &shown.window;
+                    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+                    if let Some(size) = remembered_size(size, self.panel_width()) {
+                        self.sizes[usize::from(self.turns % 2)] = Some(size);
+                    }
+                }
                 self.touch(false);
                 self.draw();
                 self.resized = Some(Instant::now());
@@ -986,6 +1093,13 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => self.touch(false),
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused {
+                    self.let_go();
+                }
+                self.sync_pointer();
+            }
             // An install takes a while; the window keeps drawing meanwhile.
             WindowEvent::DroppedFile(path) => {
                 let controller = Arc::clone(&self.controller);
@@ -1011,11 +1125,17 @@ impl ApplicationHandler<Notice> for App {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::KeyboardInput { event, .. } if !event.repeat && !typing => {
+            WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 let PhysicalKey::Code(key) = event.physical_key else {
                     return;
                 };
-                self.key(key, event.state == ElementState::Pressed);
+                let down = event.state == ElementState::Pressed;
+                // A release of a key the guest has down always goes, even into a text field.
+                let owed = !down && linux_key(key).is_some_and(|code| self.held.contains(&code));
+                if typing && !owed {
+                    return;
+                }
+                self.key(key, down);
             }
             _ => {}
         }
@@ -1093,9 +1213,14 @@ impl WindowLoop {
             grabbed: false,
             failed: None,
             modifiers: ModifiersState::empty(),
+            held: HashSet::new(),
             device_turns: 0,
             exit: crate::Exit::Closed,
             panel_shown: false,
+            focused: true,
+            turns: 0,
+            sizes: [None; 2],
+            usage: crate::usage::read(),
             shutting_down: false,
             frames: 0,
             counted: Instant::now(),
@@ -1255,6 +1380,18 @@ mod tests {
         for key in [KEY_BACK, KEY_HOMEPAGE, KEY_APPSELECT] {
             assert!(crate::input::is_key(key), "{key}");
         }
+    }
+
+    #[test]
+    fn remembered_window_size_leaves_out_the_panel_and_ignores_a_minimized_window() {
+        let panel = f64::from(PANEL_WIDTH);
+        let wide = LogicalSize::new(400.0 + panel, 800.0);
+        assert_eq!(
+            remembered_size(wide, panel),
+            Some(LogicalSize::new(400.0, 800.0))
+        );
+        assert_eq!(remembered_size(LogicalSize::new(0.0, 0.0), 0.0), None);
+        assert_eq!(remembered_size(LogicalSize::new(panel, 800.0), panel), None);
     }
 
     #[test]

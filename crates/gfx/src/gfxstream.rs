@@ -176,7 +176,14 @@ impl Renderer for Gfxstream {
 
     fn map_blob(&mut self, resource: u32) -> Result<Mapping, String> {
         let mapping = self.0.map(resource).map_err(text)?;
-        let map_info = self.0.map_info(resource).map_err(text)?;
+        let map_info = match self.0.map_info(resource) {
+            Ok(info) => info,
+            Err(err) => {
+                // Don't leave the blob mapped when the caller sees a failure.
+                let _ = self.0.unmap(resource);
+                return Err(text(err));
+            }
+        };
         let host = NonNull::new(mapping.ptr as *mut u8).ok_or("the renderer mapped nothing")?;
         Ok(Mapping {
             host,

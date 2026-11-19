@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use crate::config::{ADB_CHUNK, ADB_CONNECT_TIMEOUT, ADB_IDLE_TIMEOUT};
+use crate::config::{ADB_CHUNK, ADB_CONNECT_TIMEOUT, ADB_IDLE_TIMEOUT, ADB_WRITE_TIMEOUT};
 use crate::copy;
 
 const A_CNXN: u32 = u32::from_le_bytes(*b"CNXN");
@@ -135,6 +135,13 @@ pub fn exec_on<S: Read + Write>(
         if ready && let Some(reader) = pending.as_mut() {
             let read = reader.read(&mut chunk)?;
             if read == 0 {
+                // The source ended before the length it was declared to have.
+                if reader.limit() > 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        copy::ADB_INPUT_SHORT,
+                    ));
+                }
                 pending = None;
             } else {
                 write_message(stream, A_WRTE, LOCAL_ID, remote, &chunk[..read])?;
@@ -182,12 +189,16 @@ fn exec_within(
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect_timeout(&address, ADB_CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(idle))?;
+    stream.set_write_timeout(Some(ADB_WRITE_TIMEOUT))?;
     stream.set_nodelay(true)?;
     let ran = exec_on(&mut stream, command, input, output);
     // The forward accepts at once and only then reaches the guest, so a guest whose adbd is not up
     // yet shows as a connection closed before the handshake.
     ran.map_err(|err| match err.kind() {
-        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset => {
+        // Not one of ours, which carry their own message.
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            if err.get_ref().is_none() =>
+        {
             io::Error::new(err.kind(), copy::ADB_NOT_ANSWERING)
         }
         _ => err,

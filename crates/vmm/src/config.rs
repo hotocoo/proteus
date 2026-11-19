@@ -297,6 +297,17 @@ pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
 pub const SHUTDOWN_ASK: Duration = Duration::from_secs(5);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SHUTDOWN_THREAD: &str = "shutdown";
+/// How many input commands wait for a slow follower before more are dropped.
+pub const SYNC_QUEUE: usize = 256;
+/// How long a follower's control socket may stall a read or write before it is dropped.
+pub const SYNC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long `emu ctl` waits for a line of an answer. Longer than the shutdown wait and a
+/// screen recording, so that neither is cut short; a macro that is silent longer still runs on.
+pub const CTL_REPLY_TIMEOUT: Duration = Duration::from_secs(900);
+/// How long the control socket's accept loop rests after a failed accept (out of descriptors, say).
+pub const CTL_ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// How long the guest's `adb` may take to accept a write before the command is given up.
+pub const ADB_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the window may take to answer a request from the control socket.
 /// Generous: a window whose display is asleep draws only about once a second.
 pub const WINDOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1029,3 +1040,7 @@ pub mod style {
     pub const BODY_SIZE: f32 = 13.5;
     pub const SMALL_SIZE: f32 = 11.5;
 }
+
+/// A window side this small or smaller means it is minimized or collapsed; such a size is not
+/// worth remembering.
+pub const MIN_REMEMBERED_SIDE: f64 = 50.0;

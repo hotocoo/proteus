@@ -76,7 +76,7 @@ pub mod esr {
     }
 
     /// A system register, identified by its encoding as it appears in the syndrome.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct SysReg(u64);
 
     /// OS lock registers. Linux clears both on every CPU it brings up; there is no debug state to lock.

@@ -84,6 +84,22 @@ const WITH_VALUE: [&str; 13] = [
     KEYMAP, KEYMAP_DIR, SYNC,
 ];
 
+/// Options that take a value, of those the panel does not show. Their value is kept with them, so
+/// that it is not mistaken for an option.
+const OTHER_WITH_VALUE: [&str; 11] = [
+    "--initrd",
+    "--cmdline",
+    "--disk",
+    "--ro-disk",
+    "--bootconfig",
+    "--frame-dump",
+    "--ctl",
+    "--data-dir",
+    "--logcat",
+    "--boot-marker",
+    "--log-level",
+];
+
 impl Settings {
     /// Reads saved options. A value that does not parse keeps the default, as the emulator would
     /// refuse it anyway.
@@ -118,6 +134,11 @@ impl Settings {
                 }
                 _ => (arg.as_str(), None),
             };
+            if inline.is_none() && OTHER_WITH_VALUE.contains(&option) {
+                settings.other.push(arg.clone());
+                settings.other.extend(iter.next().cloned());
+                continue;
+            }
             let shown = WITH_VALUE.contains(&option);
             let value = if shown {
                 inline.or_else(|| iter.next().cloned()).unwrap_or_default()
@@ -276,6 +297,33 @@ mod tests {
         check.extend(strings(&["--data-dir", "x"]));
         let check: Vec<std::ffi::OsString> = check.into_iter().map(Into::into).collect();
         assert!(crate::config::parse(check).is_ok());
+    }
+
+    #[test]
+    fn every_option_with_a_value_is_known_here() {
+        let source = include_str!("config.rs");
+        let names = source
+            .split("Long(\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next());
+        for name in names {
+            let option = format!("--{name}");
+            let args = ["--kernel", "k", option.as_str()].map(std::ffi::OsString::from);
+            let wants_value = crate::config::parse(args)
+                .err()
+                .is_some_and(|err| err.to_string().contains("missing"));
+            let known = WITH_VALUE.contains(&option.as_str())
+                || OTHER_WITH_VALUE.contains(&option.as_str());
+            assert!(!wants_value || known, "{option} takes a value");
+        }
+    }
+
+    #[test]
+    fn a_value_that_looks_like_an_option_stays_with_its_option() {
+        let args = strings(&["--cmdline", "--gpu", "--ram-mib", "2048"]);
+        let settings = Settings::from_args(&args);
+        assert!(!settings.gpu);
+        assert_eq!(settings.other, strings(&["--cmdline", "--gpu"]));
     }
 
     #[test]

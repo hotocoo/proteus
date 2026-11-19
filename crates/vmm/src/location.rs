@@ -89,7 +89,10 @@ fn travel(from: &Fix, bearing: f64, metres: f64) -> Fix {
         from.longitude.to_radians(),
         bearing.to_radians(),
     );
-    let lat2 = (lat1.sin() * angle.cos() + lat1.cos() * angle.sin() * heading.cos()).asin();
+    // Rounding can leave the sum a hair past 1, and `asin` of that is NaN.
+    let lat2 = (lat1.sin() * angle.cos() + lat1.cos() * angle.sin() * heading.cos())
+        .clamp(-1.0, 1.0)
+        .asin();
     let lon2 = lon1
         + (heading.sin() * angle.sin() * lat1.cos()).atan2(angle.cos() - lat1.sin() * lat2.sin());
     let longitude =
@@ -193,13 +196,26 @@ pub fn read_gpx(text: &str) -> Result<Vec<Fix>, String> {
 
 /// The value of attribute `name` in the text of a tag, if it is a number in quotes.
 fn gpx_attribute(tag: &str, name: &str) -> Option<f64> {
-    let at = tag.find(&format!(" {name}="))? + name.len() + 2;
-    let quote = tag[at..]
-        .chars()
-        .next()
-        .filter(|quote| *quote == '"' || *quote == '\'')?;
-    let rest = &tag[at + quote.len_utf8()..];
-    rest[..rest.find(quote)?].trim().parse().ok()
+    // Any whitespace before the name (a newline too), and spaces around the `=`.
+    let mut from = 0;
+    while let Some(found) = tag[from..].find(name) {
+        let start = from + found;
+        from = start + name.len();
+        let Some(rest) = tag[from..].trim_start().strip_prefix('=') else {
+            continue;
+        };
+        if !tag[..start].ends_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let quote = rest
+            .chars()
+            .next()
+            .filter(|quote| *quote == '"' || *quote == '\'')?;
+        let rest = &rest[quote.len_utf8()..];
+        return rest[..rest.find(quote)?].trim().parse().ok();
+    }
+    None
 }
 
 /// Every point written as `element` in a GPX file, in order.
@@ -392,6 +408,21 @@ mod tests {
         );
         // The image needs at least twelve fields on the first line.
         assert_eq!(text.lines().next().unwrap().split(',').count(), 12);
+    }
+
+    #[test]
+    fn gpx_attributes_may_follow_a_newline_and_have_spaces_around_the_equals_sign() {
+        let gpx = "<gpx><trkpt\n  lat = \"1.5\"\n\tlon='2.5'><ele>3</ele></trkpt></gpx>";
+        let points = read_gpx(gpx).unwrap();
+        assert_eq!((points[0].latitude, points[0].longitude), (1.5, 2.5));
+        // A name inside another name is not the attribute.
+        assert_eq!(gpx_attribute(" xlat=\"9\"", "lat"), None);
+    }
+
+    #[test]
+    fn travel_at_the_pole_stays_a_number() {
+        let pole = Fix::new(90.0, 0.0, 0.0).unwrap();
+        assert!(travel(&pole, 0.0, 1.0).latitude.is_finite());
     }
 
     fn close(a: f64, b: f64, within: f64) -> bool {

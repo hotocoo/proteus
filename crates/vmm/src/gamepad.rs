@@ -4,6 +4,7 @@
 //! shortcut: all pads share one guest pad, upgrade to one guest pad per host pad when two-player
 //! games need it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -114,6 +115,34 @@ fn commands(moved: Moved) -> Vec<Command> {
     }
 }
 
+/// The controls last sent away from neutral, by name.
+type Held = HashMap<&'static str, PadControl>;
+
+/// What the guest's pad should get for a host event: the controls it stands for, or, when a pad
+/// goes away, neutral for everything still held, since its releases will never come.
+fn forward(held: &mut Held, event: EventType) -> Vec<Command> {
+    if matches!(event, EventType::Disconnected | EventType::Dropped) {
+        return held
+            .drain()
+            .map(|(_, control)| Command::Pad {
+                control,
+                value: 0.0,
+            })
+            .collect();
+    }
+    let commands = translate(event);
+    for command in &commands {
+        if let Command::Pad { control, value } = command {
+            if *value == 0.0 {
+                held.remove(control.name);
+            } else {
+                held.insert(control.name, *control);
+            }
+        }
+    }
+    commands
+}
+
 /// Watches the host's gamepads on a thread of its own.
 pub struct HostPads {
     controller: mpsc::Sender<Arc<Controller>>,
@@ -152,8 +181,9 @@ impl HostPads {
                 let Ok(controller) = target.recv() else {
                     return;
                 };
+                let mut held = Held::new();
                 while let Some(event) = pads.next_event_blocking(None) {
-                    for command in translate(event.event) {
+                    for command in forward(&mut held, event.event) {
                         if let Err(why) = controller.execute(&command) {
                             log::debug!("{}", copy::window_input_dropped(&why));
                         }
@@ -224,5 +254,27 @@ mod tests {
         assert!(values(Moved::Axis(Axis::Unknown, 1.0)).is_empty());
         assert!(values(Moved::Button(Button::C, true)).is_empty());
         assert!(translate(EventType::Connected).is_empty());
+    }
+
+    #[test]
+    fn a_pad_that_goes_away_lets_go_of_what_it_held() {
+        let mut held = Held::new();
+        for button in [Button::South, Button::DPadUp] {
+            for command in commands(Moved::Button(button, true)) {
+                if let Command::Pad { control, .. } = command {
+                    held.insert(control.name, control);
+                }
+            }
+        }
+        let mut neutral: Vec<_> = forward(&mut held, EventType::Disconnected)
+            .into_iter()
+            .map(|command| match command {
+                Command::Pad { control, value } => (control.name, value),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        neutral.sort_by_key(|(name, _)| *name);
+        assert_eq!(neutral, [("a", 0.0), ("haty", 0.0)]);
+        assert!(held.is_empty());
     }
 }

@@ -196,6 +196,9 @@ impl State {
         match register {
             VIRTIO_MMIO_DEVICE_FEATURES_SEL => self.device_features_sel = value,
             VIRTIO_MMIO_DRIVER_FEATURES_SEL => self.driver_features_sel = value,
+            // Once FEATURES_OK is set the negotiation is over; later writes must not change what
+            // the device is activated with.
+            VIRTIO_MMIO_DRIVER_FEATURES if self.status & VIRTIO_CONFIG_S_FEATURES_OK != 0 => {}
             VIRTIO_MMIO_DRIVER_FEATURES => {
                 let keep_low = u64::from(low(self.driver_features));
                 let keep_high = u64::from(high(self.driver_features)) << HALF;
@@ -531,6 +534,18 @@ mod tests {
         let h = Harness::new();
         h.negotiate(DEVICE_FEATURE);
         assert_eq!(h.read(VIRTIO_MMIO_STATUS) & VIRTIO_CONFIG_S_FEATURES_OK, 0);
+    }
+
+    #[test]
+    fn features_written_after_features_ok_change_nothing() {
+        let h = Harness::new();
+        h.negotiate(ACCEPTED);
+        h.write(VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+        h.write(VIRTIO_MMIO_DRIVER_FEATURES, low(ACCEPTED | 1 << 7));
+        h.configure_queue();
+        h.driver_ok();
+        let seen = h.seen.lock().unwrap().activated_with;
+        assert_eq!(seen.map(|(features, ..)| features), Some(ACCEPTED));
     }
 
     #[test]

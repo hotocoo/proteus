@@ -57,6 +57,10 @@ use crate::input::{TOUCH_SLOTS, key_or_button_code};
 const FIRST_FINGER: u32 = 1;
 const LAST_FINGER: u32 = TOUCH_SLOTS - 2;
 const DEFAULT_SENSITIVITY: f64 = 1.0;
+/// Longest move the look finger makes in one go, as a share of its circle's radius.
+const LOOK_STEP_SHARE: f64 = 0.5;
+/// Most moves one mouse report is split into; beyond that each move is cut to the longest.
+const LOOK_MAX_STEPS: f64 = 32.0;
 const FULL_TURN_DEGREES: f64 = 360.0;
 /// Furthest a tilt key may turn the device: on its side, or flat.
 const MAX_TILT_DEGREES: i16 = 90;
@@ -65,6 +69,8 @@ const MAX_TILT_DEGREES: i16 = 90;
 const ZOOM_MOVES: u32 = 4;
 /// Scrolling by pixels (a trackpad) this far is one turn of a wheel.
 const ZOOM_PIXELS_PER_TURN: f64 = 40.0;
+/// Most wheel turns one scroll event acts on; a huge line count must not make a huge list.
+const ZOOM_MAX_TURNS: f64 = 10.0;
 
 /// One thing the map does to the guest's touchscreen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -382,11 +388,13 @@ impl Mapper {
         let zoom = match &file.zoom {
             Some(entry) => {
                 // Zooming out moves the fingers in by a step, so they must not meet or cross.
-                if entry.step == 0 || entry.step >= entry.spread {
+                let reach = entry.spread.checked_add(entry.step);
+                let Some(reach) = reach.filter(|_| entry.step != 0 && entry.step < entry.spread)
+                else {
                     return Err(copy::KEYMAP_BAD_ZOOM.to_owned());
-                }
+                };
                 Some(Zoom {
-                    center: circle(entry.center, entry.spread + entry.step, display)?,
+                    center: circle(entry.center, reach, display)?,
                     spread: entry.spread,
                     step: entry.step,
                     fingers: [finger()?, finger()?],
@@ -449,6 +457,7 @@ impl Mapper {
                 turns
             }
         };
+        let turns = turns.clamp(-ZOOM_MAX_TURNS, ZOOM_MAX_TURNS);
         let outwards = turns > 0.0;
         let mut touches = Vec::new();
         for _ in 0..turns.abs() as u32 {
@@ -568,42 +577,45 @@ impl Mapper {
         let Some(look) = &mut self.look else {
             return Vec::new();
         };
-        let Some((x, y)) = look.at else {
+        let Some(mut at) = look.at else {
             return Vec::new();
         };
-        let (center_x, center_y) = (f64::from(look.center.0), f64::from(look.center.1));
-        let (x, y) = (x + dx * look.sensitivity, y + dy * look.sensitivity);
-        let (off_x, off_y) = (x - center_x, y - center_y);
+        let center = (f64::from(look.center.0), f64::from(look.center.1));
+        let radius = f64::from(look.radius);
+        let (dx, dy) = (dx * look.sensitivity, dy * look.sensitivity);
+        // A fast flick can move further in one report than the whole circle; it is walked in
+        // steps shorter than the circle so none of it is lost.
+        let longest = radius * LOOK_STEP_SHARE;
+        let steps = (dx.hypot(dy) / longest).ceil().clamp(1.0, LOOK_MAX_STEPS);
+        let (mut step_x, mut step_y) = (dx / steps, dy / steps);
+        let length = step_x.hypot(step_y);
+        if length > longest {
+            (step_x, step_y) = (step_x * longest / length, step_y * longest / length);
+        }
         let finger = look.finger;
-        let place = |x: f64, y: f64| Touch::Place {
+        let place = |(x, y): (f64, f64)| Touch::Place {
             finger,
             x: x.round() as u32,
             y: y.round() as u32,
         };
-        // A finger cannot drag past the edge of its circle; it is lifted and starts again from
-        // the middle, carrying on in the same direction, so the view can turn without end.
-        if off_x.hypot(off_y) > f64::from(look.radius) {
-            let restart = (
-                center_x + dx * look.sensitivity,
-                center_y + dy * look.sensitivity,
-            );
-            let inside =
-                (restart.0 - center_x).hypot(restart.1 - center_y) <= f64::from(look.radius);
-            let restart = if inside {
-                restart
+        let mut touches = Vec::new();
+        for _ in 0..steps as u32 {
+            let next = (at.0 + step_x, at.1 + step_y);
+            // A finger cannot drag past the edge of its circle; it is lifted and starts again
+            // from the middle, carrying on in the same direction, so the view turns without end.
+            at = if (next.0 - center.0).hypot(next.1 - center.1) > radius {
+                touches.extend([Touch::Lift { finger }, place(center)]);
+                (center.0 + step_x, center.1 + step_y)
             } else {
-                (center_x, center_y)
+                next
             };
-            look.at = Some(restart);
-            let mut touches = vec![Touch::Lift { finger }, place(center_x, center_y)];
-            if restart != (center_x, center_y) {
-                touches.push(place(restart.0, restart.1));
-            }
-            return touches;
+            touches.push(place(at));
         }
-        look.at = Some((x, y));
-        debug_assert!(x >= 0.0 && y >= 0.0 && x < f64::from(self.display.0));
-        vec![place(x, y)]
+        look.at = Some(at);
+        debug_assert!(at.0 >= 0.0 && at.1 >= 0.0 && at.0 < f64::from(self.display.0));
+        // Moves under a pixel change nothing the guest sees.
+        touches.dedup();
+        touches
     }
 }
 
@@ -800,18 +812,30 @@ mod tests {
         assert_eq!(map.pointer(10.0, -4.0), vec![place(4, 910, 296)]);
         assert_eq!(map.pointer(0.4, 0.4), vec![place(4, 910, 296)]);
         // Past the edge of the circle: lifted, put back in the middle, and moved on from there.
+        let touches = map.pointer(245.0, 0.0);
+        assert_eq!(touches.first(), Some(&place(4, 1033, 296)));
         assert_eq!(
-            map.pointer(245.0, 0.0),
-            vec![
+            &touches[touches.len() - 3..],
+            &[
                 Touch::Lift { finger: 4 },
                 place(4, 900, 300),
-                place(4, 1145, 300)
+                place(4, 1023, 300)
             ]
         );
-        // One movement larger than the whole circle just starts again from the middle.
+        // A flick larger than the whole circle keeps all of its distance: steps, not a jump.
+        // From 1023, four moves of 100, two of them from a fresh start in the middle.
         assert_eq!(
             map.pointer(400.0, 0.0),
-            vec![Touch::Lift { finger: 4 }, place(4, 900, 300)]
+            vec![
+                place(4, 1123, 300),
+                Touch::Lift { finger: 4 },
+                place(4, 900, 300),
+                place(4, 1000, 300),
+                place(4, 1100, 300),
+                Touch::Lift { finger: 4 },
+                place(4, 900, 300),
+                place(4, 1000, 300),
+            ]
         );
         assert_eq!(map.key(look, true), Some(vec![Touch::Lift { finger: 4 }]));
         assert!(!map.wants_pointer());
@@ -842,6 +866,9 @@ mod tests {
         );
         // A part of a turn is nothing.
         assert!(map.scroll(Scroll::Turns(0.5)).is_empty());
+        // A huge scroll is cut to a few turns.
+        let huge = map.scroll(Scroll::Turns(1e9)).len();
+        assert_eq!(huge, ZOOM_MAX_TURNS as usize * pinch.len() / 2);
         // Trackpad pixels count up until they make a turn, and the rest carries over.
         assert!(map.scroll(Scroll::Pixels(30.0)).is_empty());
         assert_eq!(map.scroll(Scroll::Pixels(30.0)).len(), pinch.len() / 2);
@@ -945,6 +972,10 @@ mod tests {
         let zoom = "[zoom]\ncenter = [640, 360]\n";
         assert_eq!(
             refused(&format!("{zoom}spread = 50\nstep = 50")),
+            copy::KEYMAP_BAD_ZOOM
+        );
+        assert_eq!(
+            refused(&format!("{zoom}spread = 4294967295\nstep = 2")),
             copy::KEYMAP_BAD_ZOOM
         );
         assert_eq!(

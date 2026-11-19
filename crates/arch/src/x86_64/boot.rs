@@ -15,7 +15,7 @@ use super::layout::{
     BOOT_STACK, CMDLINE_ADDR, CMDLINE_MAX, EBDA_START, GDT_ADDR, HIMEM_START, IDT_ADDR,
     MMIO_GAP_END, MMIO_GAP_START, PDE_ADDR, PDPTE_ADDR, PML4_ADDR, ZERO_PAGE,
 };
-use crate::{ArchError, copy};
+use crate::{ArchError, KERNEL_CMDLINE_SIZE, copy};
 
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const ELF_CLASS_64: u8 = 2;
@@ -57,6 +57,9 @@ const XLF_KERNEL_64: u16 = 1;
 /// The 64-bit entry point sits this far into a bzImage's protected-mode kernel.
 const ENTRY_64_OFFSET: u64 = 0x200;
 const SECTOR: u64 = 512;
+/// `syssize`: the protected-mode kernel's length in 16-byte paragraphs.
+const BP_SYSSIZE: usize = 0x1f4;
+const PARAGRAPH: u64 = 16;
 /// A bzImage that says it has no setup sectors has four (old kernels).
 const DEFAULT_SETUP_SECTS: u64 = 4;
 /// What the protocol says older kernels accept as the highest ramdisk address.
@@ -132,7 +135,13 @@ where
     };
     let offset = (setup_sects + 1) * SECTOR;
     let init_size = u64::from(le_u32(&start, BP_INIT_SIZE));
-    let len = file_len.saturating_sub(offset);
+    if file_len <= offset {
+        return Err(ArchError::KernelImage(copy::X86_BZIMAGE_TRUNCATED));
+    }
+    let len = file_len - offset;
+    if len < u64::from(le_u32(&start, BP_SYSSIZE)) * PARAGRAPH {
+        return Err(ArchError::KernelImage(copy::X86_BZIMAGE_TRUNCATED));
+    }
     if HIMEM_START + init_size.max(len) > ram_end {
         return Err(ArchError::Layout(copy::RAM_TOO_SMALL));
     }
@@ -277,8 +286,8 @@ pub fn write_boot_params<M: GuestMemory>(
 ) -> Result<(), ArchError> {
     let mut command = cmdline.as_bytes().to_vec();
     command.push(0);
-    if command.len() as u64 > CMDLINE_MAX {
-        return Err(ArchError::Layout(copy::X86_CMDLINE_TOO_LONG));
+    if command.len() > KERNEL_CMDLINE_SIZE || command.len() as u64 > CMDLINE_MAX {
+        return Err(ArchError::Layout(copy::CMDLINE_TOO_LONG));
     }
     mem.write_slice(&command, GuestAddress(CMDLINE_ADDR))?;
 
@@ -442,6 +451,36 @@ mod tests {
             ArchError::KernelImage(_)
         ));
         assert!(matches!(refused(vec![0u8; 100]), ArchError::KernelImage(_)));
+    }
+
+    #[test]
+    fn a_truncated_bzimage_is_refused() {
+        let mem = memory();
+        let mut past_eof = bzimage(8, 0x020f, 1);
+        past_eof.truncate(8 * 512);
+        assert!(matches!(
+            load_kernel(&mem, &mut Cursor::new(past_eof), RAM),
+            Err(ArchError::KernelImage(_))
+        ));
+        let mut short = bzimage(8, 0x020f, 1);
+        short[BP_SYSSIZE..BP_SYSSIZE + 4].copy_from_slice(&0x10000u32.to_le_bytes());
+        assert!(matches!(
+            load_kernel(&mem, &mut Cursor::new(short), RAM),
+            Err(ArchError::KernelImage(_))
+        ));
+    }
+
+    #[test]
+    fn a_command_line_linux_would_cut_is_refused() {
+        let mem = memory();
+        let kernel = load_kernel(&mem, &mut Cursor::new(bzimage(4, 0x020f, 1)), RAM).unwrap();
+        let fits = "x".repeat(KERNEL_CMDLINE_SIZE - 1);
+        assert!(write_boot_params(&mem, &kernel, &fits, None, RAM).is_ok());
+        let long = "x".repeat(KERNEL_CMDLINE_SIZE);
+        assert!(matches!(
+            write_boot_params(&mem, &kernel, &long, None, RAM),
+            Err(ArchError::Layout(_))
+        ));
     }
 
     #[test]

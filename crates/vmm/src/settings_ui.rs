@@ -36,6 +36,10 @@ pub struct Form {
     blocklists: String,
     allowlists: String,
     sync: String,
+    /// What the host has, as the form says it; read once, when the form opens.
+    host_hint: String,
+    /// The size of the instance's data disk now; read when the form opens and after a save.
+    userdata_now: Option<u64>,
     /// Whether what is shown is what is saved.
     saved: bool,
     confirm_reset: bool,
@@ -54,6 +58,8 @@ impl Form {
         let args = instance::args(&root, name).map_err(|err| err.to_string())?;
         let settings = Settings::from_args(&args);
         Ok(Self {
+            host_hint: text::host_has(host_cpus(), host_memory_mib()),
+            userdata_now: instance::userdata_bytes(&root, name),
             root,
             name: name.to_owned(),
             custom_display: settings.display,
@@ -90,7 +96,9 @@ impl Form {
             config::CHECK_DATA_DIR.into(),
         ]);
         config::parse(check).map_err(|err| err.to_string())?;
-        instance::set_args(&self.root, &self.name, &args).map_err(|err| err.to_string())
+        instance::set_args(&self.root, &self.name, &args).map_err(|err| err.to_string())?;
+        self.userdata_now = instance::userdata_bytes(&self.root, &self.name);
+        Ok(())
     }
 
     /// Shows the form. `running` says whether the instance is running now, which decides whether
@@ -146,7 +154,7 @@ impl Form {
             edited |= ui
                 .add(egui::Slider::new(&mut settings.vcpus, config::VCPUS_RANGE).text(text::CPUS))
                 .changed();
-            style::hint(ui, &text::host_has(host_cpus(), host_memory_mib()));
+            style::hint(ui, &self.host_hint);
         });
 
         style::section(ui, text::SCREEN, |ui| {
@@ -281,7 +289,7 @@ impl Form {
                         .text(text::DATA_SIZE),
                 )
                 .changed();
-            match instance::userdata_bytes(&self.root, &self.name) {
+            match self.userdata_now {
                 Some(bytes) => {
                     let now = config::storage_gb(bytes);
                     style::hint(ui, &text::data_size_now(now));

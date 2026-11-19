@@ -63,6 +63,10 @@ pub fn build(cfg: &FdtConfig<'_>) -> Result<Vec<u8>, ArchError> {
         return Err(ArchError::Layout(copy::TOO_MANY_VIRTIO));
     }
 
+    // bootargs is a C string in the tree; Linux cuts it at its own limit.
+    if cfg.cmdline.len() >= crate::KERNEL_CMDLINE_SIZE {
+        return Err(ArchError::Layout(copy::CMDLINE_TOO_LONG));
+    }
     let mut fdt = FdtWriter::new()?;
     let root = fdt.begin_node("")?;
     fdt.property_string("compatible", COMPATIBLE)?;

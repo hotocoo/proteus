@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use crate::adb;
 use crate::config::{BUNDLED_APPS_DIR, INSTALLED_APPS_FILE, SETUP_POLL, SETUP_TIMEOUT};
 use crate::copy;
+use crate::session::PowerSwitch;
 
 /// Prints `1` once Android has finished booting.
 const BOOT_COMPLETED: &str = "getprop sys.boot_completed";
@@ -46,6 +47,14 @@ const GAMING_TRIM: &str = "for package in \
      com.android.dreams.phototable com.google.android.telephony.satellite \
      com.android.threadnetwork.demoapp com.android.traceur com.android.wallpaper.livepicker; \
      do pm disable-user --user 0 $package >/dev/null 2>&1; done";
+/// Stops the image's radio and Thread network services. They are Cuttlefish's, made for its host
+/// tools: the radio service exits at once without Cuttlefish's modem simulator, and the Thread
+/// service without its simulated radio, so init restarts each every five seconds for good.
+/// `com.android.phone` still waits for the radio and is restarted by Android now and then; that
+/// needs a modem, which this board does not have.
+const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
+     su 0 cmd thread_network force-stop-ot-daemon enabled; \
+     su 0 setprop ctl.stop vendor.threadnetwork_hal; su 0 setprop ctl.stop vendor.ril-daemon";
 /// Bundled apps are files with this ending.
 const APK_EXTENSION: &str = "apk";
 
@@ -79,10 +88,12 @@ fn apps_dir() -> Option<PathBuf> {
     crate::config::bundled(BUNDLED_APPS_DIR).map(|(_, path)| path)
 }
 
-/// Waits for Android to boot, then sets it up, on its own thread, until `done` is set.
+/// Waits for Android to boot, then sets it up, on its own thread, until `done` is set; again
+/// after each restart of the guest, since a restart undoes what was set.
 /// `data` is the instance's Android data folder, where installed bundled apps are noted.
 pub fn spawn(
     adb_port: Arc<AtomicU16>,
+    power: Arc<PowerSwitch>,
     done: Arc<AtomicBool>,
     keep_log_stream: bool,
     reset_shape: bool,
@@ -91,37 +102,53 @@ pub fn spawn(
     std::thread::Builder::new()
         .name(copy::SETUP_THREAD.into())
         .spawn(move || {
-            let port = loop {
-                if done.load(Ordering::SeqCst) {
+            while !done.load(Ordering::SeqCst) {
+                let boot = power.boot();
+                let Some(port) = booted(&adb_port, &done) else {
                     return;
-                }
-                let port = adb_port.load(Ordering::SeqCst);
-                let booted = port != 0
-                    && adb::output_within(port, BOOT_COMPLETED, SETUP_TIMEOUT)
-                        .is_ok_and(|printed| printed.trim() == BOOTED);
-                if booted {
-                    break port;
-                }
-                std::thread::sleep(SETUP_POLL);
-            };
-            let mut steps = vec![BLUETOOTH_OFF, UWB_OFF, GAMING_TRIM];
-            // Without a window to give Android its shape, a logical size from an earlier run would
-            // leave bars in every frame; a window sets (and reads back) the shape itself.
-            if reset_shape {
-                steps.push(crate::fill::WM_SIZE_RESET);
-            }
-            if !keep_log_stream {
-                steps.push(STOP_LOG_STREAM);
-            }
-            for step in steps {
-                if let Err(err) = adb::output(port, step) {
-                    log::warn!("{}", copy::setup_failed(&err));
-                }
-            }
-            if let (Some(apps), Some(data)) = (apps_dir(), data) {
-                install_bundled(port, &apps, &data);
+                };
+                set_up(port, keep_log_stream, reset_shape, data.as_deref());
+                // Until this boot is over; `done` is looked at now and then meanwhile.
+                while !done.load(Ordering::SeqCst) && !power.wait_for(boot, SETUP_POLL) {}
             }
         })
+}
+
+/// Waits until Android has booted and gives its adb port, or `None` once `done` is set.
+fn booted(adb_port: &AtomicU16, done: &AtomicBool) -> Option<u16> {
+    loop {
+        if done.load(Ordering::SeqCst) {
+            return None;
+        }
+        let port = adb_port.load(Ordering::SeqCst);
+        let booted = port != 0
+            && adb::output_within(port, BOOT_COMPLETED, SETUP_TIMEOUT)
+                .is_ok_and(|printed| printed.trim() == BOOTED);
+        if booted {
+            return Some(port);
+        }
+        std::thread::sleep(SETUP_POLL);
+    }
+}
+
+fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Path>) {
+    let mut steps = vec![BLUETOOTH_OFF, UWB_OFF, RADIOS_OFF, GAMING_TRIM];
+    // Without a window to give Android its shape, a logical size from an earlier run would
+    // leave bars in every frame; a window sets (and reads back) the shape itself.
+    if reset_shape {
+        steps.push(crate::fill::WM_SIZE_RESET);
+    }
+    if !keep_log_stream {
+        steps.push(STOP_LOG_STREAM);
+    }
+    for step in steps {
+        if let Err(err) = adb::output(port, step) {
+            log::warn!("{}", copy::setup_failed(&err));
+        }
+    }
+    if let (Some(apps), Some(data)) = (apps_dir(), data) {
+        install_bundled(port, &apps, data);
+    }
 }
 
 fn install_bundled(port: u16, apps: &Path, data: &Path) {

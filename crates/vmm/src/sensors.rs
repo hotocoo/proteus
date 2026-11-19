@@ -23,6 +23,9 @@ pub const CONTROL_PORT: usize = 18;
 /// Terminal the image reads sensor readings from (`/dev/hvc19`).
 pub const DATA_PORT: usize = 19;
 
+/// Degrees in a half and a whole turn, for finding the short way round.
+const HALF_CIRCLE: f64 = 180.0;
+const FULL_CIRCLE: f64 = 360.0;
 const HEADER_LEN: usize = 8;
 /// Set in the first header word of a message that answers a request.
 const IS_RESPONSE: u32 = 1 << 31;
@@ -178,7 +181,9 @@ impl Motion {
         let reach = ROTATION_SPEED * step.as_secs_f64();
         let target = pose.target;
         for (current, target) in pose.current.iter_mut().zip(target) {
-            *current += (target - *current).clamp(-reach, reach);
+            // The short way round: 0 to 270 degrees is a quarter turn back, not three forward.
+            let short = (target - *current + HALF_CIRCLE).rem_euclid(FULL_CIRCLE) - HALF_CIRCLE;
+            *current += short.clamp(-reach, reach);
         }
         let after = rotation(&pose.current);
         let mut acceleration = apply(&after, &[0.0, GRAVITY, 0.0]);
@@ -347,6 +352,14 @@ mod tests {
         // A quarter turn about z puts gravity on x: the device is on its side.
         let side = apply(&rotation(&[0.0, 0.0, 90.0]), &[0.0, GRAVITY, 0.0]);
         assert!(close(&side, &[GRAVITY, 0.0, 0.0]), "{side:?}");
+    }
+
+    #[test]
+    fn turning_to_270_degrees_goes_back_a_quarter_not_forward_three() {
+        let motion = Motion::default();
+        motion.rotate_to([0.0, 0.0, 270.0]);
+        motion.advance(STEP, Instant::now());
+        assert!(motion.pose.lock().unwrap().current[2] < 0.0);
     }
 
     #[test]

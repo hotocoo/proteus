@@ -25,6 +25,13 @@ pub const ADB_PORT_ATTEMPTS: u16 = 16;
 const SNIFF_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long the guest has to finish a TCP handshake it started.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A relayed TCP flow with no bytes moving either way for this long is reset. Generous: push
+/// connections idle for tens of minutes. It only has to stop dead peers from filling the flow table.
+const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Same, once either side has finished sending: the flow is only waiting for the other side to follow.
+const TCP_HALF_CLOSED_TIMEOUT: Duration = Duration::from_secs(120);
+/// How soon the loop looks again while the guest is not draining the frames queued for it.
+const RX_FULL_RETRY: Duration = Duration::from_millis(5);
 /// A UDP port mapping unused for this long is released.
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DHCP_LEASE_SECS: u32 = 24 * 60 * 60;
@@ -37,6 +44,8 @@ const TCP_BUFFER_LEN: usize = 64 * 1024;
 const MAX_TCP_FLOWS: usize = 1024;
 const MAX_UDP_PEERS: usize = 1024;
 const MAX_QUEUED_FRAMES: usize = 1024;
+/// Host name lookups waiting for a free resolver thread; more are answered with a server failure.
+const MAX_PENDING_LOOKUPS: usize = 256;
 /// Concurrent host name lookups.
 const RESOLVER_THREADS: usize = 4;
 
@@ -64,6 +73,9 @@ pub struct NetConfig {
     pub sniff_timeout: Duration,
     pub handshake_timeout: Duration,
     pub udp_idle_timeout: Duration,
+    pub tcp_idle_timeout: Duration,
+    pub tcp_half_closed_timeout: Duration,
+    pub rx_full_retry: Duration,
     pub dhcp_lease_secs: u32,
     pub dns_ttl_secs: u32,
     pub tcp_buffer_len: usize,
@@ -71,6 +83,7 @@ pub struct NetConfig {
     pub max_udp_peers: usize,
     pub max_queued_frames: usize,
     pub resolver_threads: usize,
+    pub max_pending_lookups: usize,
 }
 
 impl Default for NetConfig {
@@ -90,6 +103,9 @@ impl Default for NetConfig {
             sniff_timeout: SNIFF_TIMEOUT,
             handshake_timeout: HANDSHAKE_TIMEOUT,
             udp_idle_timeout: UDP_IDLE_TIMEOUT,
+            tcp_idle_timeout: TCP_IDLE_TIMEOUT,
+            tcp_half_closed_timeout: TCP_HALF_CLOSED_TIMEOUT,
+            rx_full_retry: RX_FULL_RETRY,
             dhcp_lease_secs: DHCP_LEASE_SECS,
             dns_ttl_secs: DNS_TTL_SECS,
             tcp_buffer_len: TCP_BUFFER_LEN,
@@ -97,6 +113,7 @@ impl Default for NetConfig {
             max_udp_peers: MAX_UDP_PEERS,
             max_queued_frames: MAX_QUEUED_FRAMES,
             resolver_threads: RESOLVER_THREADS,
+            max_pending_lookups: MAX_PENDING_LOOKUPS,
         }
     }
 }

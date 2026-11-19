@@ -7,6 +7,7 @@
 //! Turns are quarter turns of Android's display rotation: 0 is the panel's natural way up, 1 is
 //! `ROTATION_90`, whose picture lies on the panel turned a quarter clockwise.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::thread::JoinHandle;
@@ -63,14 +64,14 @@ pub fn to_panel(x: u32, y: u32, panel: (u32, u32), turns: u8) -> Option<(u32, u3
     })
 }
 
-/// A copy of `frame` turned upright, in the same pixel format.
-pub fn upright(frame: &Frame<'_>, turns: u8) -> (u32, u32, Vec<u8>) {
+/// `frame` turned upright, in the same pixel format. Borrowed as it is when nothing turns.
+pub fn upright<'a>(frame: &Frame<'a>, turns: u8) -> (u32, u32, Cow<'a, [u8]>) {
     let panel = (frame.width, frame.height);
     let (width, height) = upright_size(panel, turns);
     let stride = frame.width as usize * BYTES_PER_PIXEL;
     // A frame whose size and pixels disagree is passed on as it is, for its user to refuse.
     if turns.is_multiple_of(TURNS) || frame.pixels.len() != stride * frame.height as usize {
-        return (frame.width, frame.height, frame.pixels.to_vec());
+        return (frame.width, frame.height, Cow::Borrowed(frame.pixels));
     }
     let mut pixels = Vec::with_capacity(frame.pixels.len());
     for y in 0..height {
@@ -80,7 +81,7 @@ pub fn upright(frame: &Frame<'_>, turns: u8) -> (u32, u32, Vec<u8>) {
             pixels.extend_from_slice(&frame.pixels[at..at + BYTES_PER_PIXEL]);
         }
     }
-    (width, height, pixels)
+    (width, height, Cow::Owned(pixels))
 }
 
 /// Asks the guest which way up its display is every `ORIENTATION_POLL`, and calls `changed` with

@@ -38,6 +38,11 @@ const EVENT_LEN: usize = 8;
 /// Events waiting for the guest to post buffers. Beyond this the newest batch is dropped whole,
 /// so the guest never sees half of a multi-event report.
 const MAX_PENDING_EVENTS: usize = 4096;
+/// evdev numbers of what marks a release: a key or button going to zero, a touch slot's tracking id to -1.
+const EV_KEY: u16 = 1;
+const EV_ABS: u16 = 3;
+const ABS_MT_TRACKING_ID: u16 = 0x39;
+const TRACKING_ID_LIFT: i32 = -1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputEvent {
@@ -169,20 +174,30 @@ pub struct InputHandle(Arc<Shared>);
 
 impl InputHandle {
     /// Queues a batch of events for the guest, normally ending in a `SYN_REPORT`.
-    /// Returns false, queuing nothing, if the guest has fallen too far behind.
+    /// Returns false, queuing nothing, if the guest has fallen too far behind. A batch that
+    /// releases something (key up, touch lift) is queued regardless: dropped, the guest would
+    /// see the key or finger held forever.
     pub fn send(&self, events: &[InputEvent]) -> bool {
         let mut pending = self
             .0
             .pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if pending.len() + events.len() > MAX_PENDING_EVENTS {
+        if pending.len() + events.len() > MAX_PENDING_EVENTS && !events.iter().any(is_release) {
             return false;
         }
         pending.extend(events);
         drop(pending);
         self.0.wake();
         true
+    }
+}
+
+fn is_release(event: &InputEvent) -> bool {
+    match event.kind {
+        EV_KEY => event.value == 0,
+        EV_ABS => event.code == ABS_MT_TRACKING_ID && event.value == TRACKING_ID_LIFT,
+        _ => false,
     }
 }
 
@@ -389,8 +404,6 @@ mod tests {
 
     // evdev numbers used by the tests.
     const EV_SYN: u16 = 0;
-    const EV_KEY: u16 = 1;
-    const EV_ABS: u16 = 3;
     const BTN_TOUCH: u16 = 0x14a;
     const ABS_MT_POSITION_X: u16 = 0x35;
     const INPUT_PROP_DIRECT: u16 = 1;
@@ -576,5 +589,13 @@ mod tests {
         assert!(!handle.send(&[event, event]));
         assert!(handle.send(&[event]));
         assert!(!handle.send(&[event]));
+        // A release still gets through a full queue; a press does not.
+        let press = InputEvent {
+            kind: EV_KEY,
+            code: 30,
+            value: 1,
+        };
+        assert!(!handle.send(&[press]));
+        assert!(handle.send(&[InputEvent { value: 0, ..press }]));
     }
 }

@@ -46,6 +46,8 @@ mod setup;
 #[cfg(host_board)]
 mod style;
 #[cfg(host_board)]
+mod usage;
+#[cfg(host_board)]
 pub mod window;
 
 /// Exit status for a command line the program could not understand.
@@ -120,6 +122,7 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
         Some(android) => Some(
             setup::spawn(
                 std::sync::Arc::clone(&session.controller.adb_port),
+                std::sync::Arc::clone(&session.controller.power),
                 std::sync::Arc::clone(&done),
                 config.logcat.is_some(),
                 !config.window,

@@ -56,6 +56,8 @@ pub const BOOTCONFIG_TOO_LARGE: &str = "exceeds the kernel's 32 KiB limit";
 pub const BOOT_IMAGE_BAD_MAGIC: &str = "not a boot image of the expected kind";
 pub const BOOT_IMAGE_BAD_VERSION: &str = "only header versions 3 and 4 are supported";
 pub const BOOT_IMAGE_BAD_PAGE_SIZE: &str = "page size is not a power of two";
+pub const BOOT_IMAGE_BAD_HEADER_SIZE: &str =
+    "the vendor boot header is shorter than its version needs";
 pub const BOOT_IMAGE_TRUNCATED: &str = "a section runs past the end of the file";
 
 pub const X86_NOT_A_KERNEL: &str = "not an x86_64 kernel (neither an ELF vmlinux nor a bzImage)";
@@ -64,5 +66,7 @@ pub const X86_NO_64_BIT_ENTRY: &str =
 pub const X86_BAD_ELF: &str = "this ELF file is not a 64-bit kernel the loader can read";
 pub const X86_RAMDISK_TOO_LARGE: &str =
     "the ramdisk does not fit below where the kernel accepts it";
-pub const X86_CMDLINE_TOO_LONG: &str = "the kernel command line is too long";
+pub const CMDLINE_TOO_LONG: &str =
+    "the kernel command line is too long (Linux silently cuts it at 2047 bytes)";
+pub const X86_BZIMAGE_TRUNCATED: &str = "this bzImage is shorter than its header says";
 pub const MPTABLE_TOO_MANY_CPUS: &str = "too many CPUs for the MP table (at most 32)";

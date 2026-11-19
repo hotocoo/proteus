@@ -8,10 +8,10 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use devices::virtio::snd::{AudioSink, BYTES_PER_FRAME, CHANNELS, SAMPLE_RATE, Silence};
+use devices::virtio::snd::{AudioSink, CHANNELS, SAMPLE_RATE, Silence, playing_time};
 
 use crate::config::{AUDIO_RING_FRAMES, AUDIO_RING_POLL, AUDIO_STALL_MARGIN};
 use crate::copy;
@@ -93,7 +93,7 @@ fn start() -> Result<rtrb::Producer<i16>, String> {
 /// Puts `frames` into the ring, waiting for room. If the ring does not drain (the output has gone
 /// away), what is left is dropped once the sound would have been over anyway.
 fn feed(ring: &mut rtrb::Producer<i16>, frames: &[u8]) {
-    let lasts = Duration::from_secs((frames.len() / BYTES_PER_FRAME) as u64) / SAMPLE_RATE;
+    let lasts = playing_time(frames);
     let give_up = Instant::now() + lasts + AUDIO_STALL_MARGIN;
     let (samples, _) = frames.as_chunks::<BYTES_PER_SAMPLE>();
     for sample in samples {

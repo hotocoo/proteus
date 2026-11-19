@@ -115,7 +115,7 @@ pub fn write_places(path: &Path, places: &[Place]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    crate::instance::write_atomic(path, text)
 }
 
 /// Package names in what `pm list packages` printed.
@@ -211,6 +211,9 @@ pub struct Gui {
     status: String,
     /// Frames the guest showed per second, as last counted.
     pub fps: Option<f64>,
+    /// This process's CPU use (percent of one core) and memory, as last counted.
+    pub cpu: Option<f64>,
+    pub memory_bytes: Option<u64>,
     apps: Apps,
     location: Location,
     sensors: [f64; 3],
@@ -243,6 +246,8 @@ impl Gui {
             open: None,
             status: String::new(),
             fps: None,
+            cpu: None,
+            memory_bytes: None,
             apps: Apps::default(),
             location: Location {
                 latitude: String::new(),
@@ -351,6 +356,13 @@ impl Gui {
         ui.vertical_centered_justified(|ui| {
             if let Some(fps) = self.fps {
                 ui.label(text::fps(fps)).on_hover_text(text::FPS_HINT);
+            }
+            if let Some(cpu) = self.cpu {
+                ui.label(text::cpu(cpu)).on_hover_text(text::CPU_HINT);
+            }
+            if let Some(bytes) = self.memory_bytes {
+                ui.label(text::memory(bytes))
+                    .on_hover_text(text::MEMORY_HINT);
             }
             let button = |ui: &mut Ui, label: &str, hint: &str| {
                 ui.add_sized(size, egui::Button::new(label))

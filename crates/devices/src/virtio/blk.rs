@@ -4,7 +4,6 @@
 //! Data moves straight between the file and guest memory, with no intermediate buffer.
 //! Every field of a request comes from the guest and is checked before it is used.
 
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,7 +17,7 @@ use vm_memory::{Bytes, GuestMemoryMmap};
 
 use super::{Activate, DeviceError, VirtioDevice, VirtioInterrupt};
 use crate::copy;
-use crate::disk::{Disk, sparse};
+use crate::disk::{Disk, open_image};
 
 /// virtio-blk addresses the disk in 512-byte sectors whatever the image's block size.
 const SECTOR_SHIFT: u32 = 9;
@@ -53,18 +52,11 @@ pub struct DiskImage {
 }
 
 impl DiskImage {
-    /// Opens one image file as a whole disk. A read-only Android sparse image is expanded on the fly.
+    /// Opens one image file as a whole disk. An Android sparse image is expanded on the fly and is always read-only.
     /// `id` is what the guest sees under `/sys/block/*/serial`; longer strings are cut to 20 bytes.
     pub fn open(path: &Path, read_only: bool, id: &str) -> std::io::Result<Self> {
-        let mut file = OpenOptions::new().read(true).write(!read_only).open(path)?;
-        let disk = if read_only && sparse::is_sparse(&mut file)? {
-            let mut disk = Disk::default();
-            sparse::append(&mut disk, file)?;
-            disk
-        } else {
-            let len = file.metadata()?.len();
-            Disk::from_file(file, len, !read_only)
-        };
+        let (disk, writable) = open_image(path, !read_only)?;
+        let read_only = !writable;
         Ok(Self::from_disk(disk, read_only, id))
     }
 
@@ -632,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_sparse_image_is_served_expanded() {
+    fn sparse_image_is_served_expanded_and_read_only() {
         use crate::disk::sparse::tests::{Chunk, image};
         let data = vec![0x5a; 4096];
         let sparse =
@@ -652,9 +644,10 @@ mod tests {
             guest_bytes(&mem, DATA_AT, 1024),
             [vec![0; 512], vec![0x5a; 512]].concat()
         );
-        // Opened writable, the same file is taken as raw bytes, magic and all.
-        let raw = DiskImage::open(&sparse.0, false, "").unwrap();
-        assert_ne!(raw.capacity_bytes, 8192);
+        // Asking for it writable changes nothing: a sparse image is never exposed as raw bytes.
+        let writable = DiskImage::open(&sparse.0, false, "").unwrap();
+        assert_eq!(writable.capacity_bytes, 8192);
+        assert!(writable.read_only);
     }
 
     #[test]

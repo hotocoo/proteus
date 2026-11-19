@@ -238,8 +238,8 @@ impl Editor {
     /// there places what the editor is waiting to place.
     pub fn overlay(&mut self, ui: &mut Ui, rect: Rect, picture: (u32, u32)) {
         // The display size the map is checked against when it is saved: any way up.
-        let long = picture.0.max(picture.1);
-        ui.data_mut(|data| data.insert_temp(egui::Id::unique(DISPLAY_KEY), (long, long)));
+        let any = crate::orientation::any_way_up(picture);
+        ui.data_mut(|data| data.insert_temp(egui::Id::unique(DISPLAY_KEY), any));
         let scale = rect.width() / picture.0.max(1) as f32;
         let to_screen = |at: [u32; 2]| {
             Pos2::new(

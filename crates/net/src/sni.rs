@@ -14,7 +14,7 @@ const VERSION_AND_RANDOM_LEN: usize = 34;
 const EXTENSION_SERVER_NAME: u16 = 0;
 const NAME_TYPE_HOST: u8 = 0;
 /// Longest DNS name in text form.
-const MAX_NAME_LEN: usize = 253;
+pub(crate) const MAX_NAME_LEN: usize = 253;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Sni<'a> {

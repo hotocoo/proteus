@@ -70,7 +70,8 @@ pub fn append(disk: &mut Disk, mut file: File) -> io::Result<u64> {
     }
 
     let before = disk.len();
-    let mut chunk_headers = Vec::with_capacity(total_chunks as usize);
+    // Not pre-sized: the count comes from the file's header and may claim billions of chunks.
+    let mut chunk_headers = Vec::new();
     let mut at = file_header_len;
     let mut blocks = 0u64;
     for _ in 0..total_chunks {
@@ -231,6 +232,13 @@ pub(crate) mod tests {
             disk.write_from_guest(&mem, GuestAddress(0), 0, 512)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_header_claiming_billions_of_chunks_is_refused_without_allocating_for_them() {
+        let mut lying = image(&[Chunk::Skip(1)]);
+        lying[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(expand(&lying).is_err());
     }
 
     #[test]

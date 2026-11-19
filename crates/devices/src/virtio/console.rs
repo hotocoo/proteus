@@ -31,6 +31,8 @@ const PORT_OPEN: u16 = 6;
 const CONTROL_LEN: usize = 8;
 /// The value that means "yes" in the control messages used here.
 const YES: u16 = 1;
+/// Most answers kept for a driver that sends control messages but posts no buffers to receive them.
+const MAX_PENDING_CONTROL: usize = 256;
 
 /// Configuration space: columns (u16), rows (u16), number of ports (u32), emergency write (u32).
 const CONFIG_LEN: usize = 12;
@@ -118,6 +120,13 @@ struct Ports {
 }
 
 impl Ports {
+    /// Keeps an answer for the driver; past the cap it is dropped, as the driver is not listening.
+    fn queue_control(control: &mut VecDeque<[u8; CONTROL_LEN]>, message: [u8; CONTROL_LEN]) {
+        if control.len() < MAX_PENDING_CONTROL {
+            control.push_back(message);
+        }
+    }
+
     /// Reads the control messages the driver sent and queues the answers.
     fn read_control(&mut self, mem: &GuestMemoryMmap) -> Result<bool, virtio_queue::Error> {
         let mut used_any = false;
@@ -146,14 +155,14 @@ impl Ports {
             let value = u16::from_le_bytes([message[6], message[7]]);
             match (event, value) {
                 (DEVICE_READY, YES) => {
-                    let ports = 0..self.sinks.len() as u32;
-                    self.control
-                        .extend(ports.map(|port| control(port, PORT_ADD, YES)));
+                    for port in 0..self.sinks.len() as u32 {
+                        Self::queue_control(&mut self.control, control(port, PORT_ADD, YES));
+                    }
                 }
                 // Every port is a terminal, and its host end is always open.
                 (PORT_READY, YES) if (port as usize) < self.sinks.len() => {
-                    self.control.push_back(control(port, CONSOLE_PORT, YES));
-                    self.control.push_back(control(port, PORT_OPEN, YES));
+                    Self::queue_control(&mut self.control, control(port, CONSOLE_PORT, YES));
+                    Self::queue_control(&mut self.control, control(port, PORT_OPEN, YES));
                 }
                 _ => {}
             }
@@ -608,6 +617,16 @@ mod tests {
         assert_eq!(rig.read(fifth, CONTROL_LEN), control(1, PORT_OPEN, YES));
         assert!(rig.ports.control.is_empty());
         assert_eq!(rig.used_len(CONTROL_RX, 4), CONTROL_LEN as u32);
+    }
+
+    #[test]
+    fn answers_for_a_driver_that_never_listens_are_capped() {
+        let mem = memory();
+        let mut rig = Rig::new(&mem);
+        for _ in 0..MAX_PENDING_CONTROL + 10 {
+            Ports::queue_control(&mut rig.ports.control, control(0, PORT_OPEN, YES));
+        }
+        assert_eq!(rig.ports.control.len(), MAX_PENDING_CONTROL);
     }
 
     #[test]

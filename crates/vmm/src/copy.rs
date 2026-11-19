@@ -427,7 +427,14 @@ pub fn sync_failed(target: &Path, why: &dyn Display) -> String {
     format!("input sync to {}: {why}", target.display())
 }
 
+pub const SHUTDOWN_REQUEST_THREAD: &str = "stop request";
 pub const SYNC_THREAD: &str = "input sync";
+pub const ADB_INPUT_SHORT: &str = "the file ended before its full length was sent";
+pub const DATA_DIR_LOCKED: &str =
+    "another emulator is running on this data folder; stop it first, or use a different --data-dir";
+pub const CTL_RECORDING_FULL: &str =
+    "the recording got longer than a macro can be; it was saved up to there";
+pub const CTL_BAD_SYNC: &str = "only input commands can be synced";
 
 /// What the window's controls say.
 pub mod gui {
@@ -695,6 +702,16 @@ pub mod gui {
         changes: a still screen sends none.";
     pub fn fps(rate: f64) -> String {
         format!("{rate:.0} fps")
+    }
+    pub const CPU_HINT: &str = "Host CPU this emulator used in the last second, as a share of one \
+        core: 400% is four cores busy.";
+    pub fn cpu(percent: f64) -> String {
+        format!("CPU {percent:.0}%")
+    }
+    pub const MEMORY_HINT: &str = "Memory this emulator holds on the Mac, as Activity Monitor \
+        counts it: the RAM Android has used plus the GPU memory its apps use.";
+    pub fn memory(bytes: u64) -> String {
+        format!("RAM {:.1} GB", bytes as f64 / 1e9)
     }
     pub const PRESET_GAMING: &str = "Gaming";
     pub const PRESET_BALANCED: &str = "Balanced";

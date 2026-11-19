@@ -55,6 +55,7 @@ use std::time::{Duration, Instant};
 
 use devices::virtio::input::{InputEvent, InputHandle};
 
+use crate::config::{CTL_ACCEPT_RETRY, CTL_REPLY_TIMEOUT, SYNC_IO_TIMEOUT, SYNC_QUEUE};
 use crate::config::{DEFAULT_SWIPE, MACRO_CANCEL_POLL, MACRO_MAX_BYTES, SWIPE_STEP, TAP_HOLD};
 use crate::config::{GUEST_RECORDING, MAX_KMH, ROUTE_DEFAULT_KMH, SCREENRECORD_MAX};
 use crate::copy;
@@ -95,6 +96,11 @@ const WORD_WINDOW_RESIZE: &str = "window-resize";
 /// Starts each line of what a `shell` command printed, so the answer line after them stands out.
 pub const SHELL_LINE: &str = "| ";
 const MACRO_COMMENT: char = '#';
+/// Starts a line a follower is sent: the command has already been synced once, so it is carried out
+/// and not passed on, which keeps two instances that follow each other from echoing forever.
+const SYNC_PREFIX: &str = "sync ";
+/// Only one screen recording at a time, as they share a file in the guest.
+static SCREENRECORDING: Mutex<()> = Mutex::new(());
 const WORD_DOWN: &str = "down";
 const WORD_UP: &str = "up";
 
@@ -417,11 +423,14 @@ fn counted(rest: &str) -> Option<(&str, u32)> {
 pub struct Recording {
     path: PathBuf,
     lines: Vec<String>,
+    /// How many bytes `lines` come to, and whether more was left out for being past `MACRO_MAX_BYTES`.
+    bytes: u64,
+    full: bool,
     /// When the last command was recorded, to write the pause before the next one.
     last: Option<Instant>,
 }
 
-/// Reads a macro file into its commands. Macros do not start other macros or recordings.
+/// Reads a macro file into its commands. A macro holds what a recording does: inputs and waits.
 fn read_macro(path: &Path) -> Result<Vec<Command>, String> {
     let too_large = std::fs::metadata(path).is_ok_and(|file| file.len() > MACRO_MAX_BYTES);
     if too_large {
@@ -434,12 +443,8 @@ fn read_macro(path: &Path) -> Result<Vec<Command>, String> {
         if line.is_empty() {
             continue;
         }
-        let command = parse(line).filter(|command| {
-            !matches!(
-                command,
-                Command::Run { .. } | Command::Record(_) | Command::RecordStop | Command::Cancel
-            )
-        });
+        let command =
+            parse(line).filter(|command| command.is_input() || matches!(command, Command::Wait(_)));
         commands.push(command.ok_or_else(|| copy::ctl_bad_macro_line(path, number))?);
     }
     Ok(commands)
@@ -465,13 +470,13 @@ fn along(from: (u32, u32), to: (u32, u32), step: u32, steps: u32) -> (u32, u32) 
 /// Other instances that get this one's input too: one thread each, which keeps a connection to
 /// that instance's control socket and sends it every command it is handed.
 #[derive(Default)]
-pub struct Followers(Vec<mpsc::Sender<String>>);
+pub struct Followers(Vec<mpsc::SyncSender<String>>);
 
 impl Followers {
     pub fn start(targets: &[PathBuf]) -> std::io::Result<Self> {
         let mut senders = Vec::new();
         for target in targets {
-            let (sender, lines) = mpsc::channel::<String>();
+            let (sender, lines) = mpsc::sync_channel::<String>(SYNC_QUEUE);
             let target = target.clone();
             thread::Builder::new()
                 .name(copy::SYNC_THREAD.into())
@@ -481,11 +486,11 @@ impl Followers {
         Ok(Self(senders))
     }
 
-    /// Hands a command to every follower. It does not wait for them.
+    /// Hands a command to every follower. It does not wait for them: a follower that is behind
+    /// misses the command.
     fn send(&self, line: &str) {
         for sender in &self.0 {
-            // A follower thread only ends when this end is dropped.
-            let _ = sender.send(line.to_owned());
+            let _ = sender.try_send(format!("{SYNC_PREFIX}{line}"));
         }
     }
 }
@@ -494,13 +499,23 @@ impl Followers {
 /// running misses what happens until it is; that is reported once per connection attempt.
 fn follow(target: &Path, lines: &mpsc::Receiver<String>) {
     let mut connection: Option<(BufReader<UnixStream>, UnixStream)> = None;
+    let mut reported = false;
     for line in lines {
         if connection.is_none() {
-            let opened = UnixStream::connect(target)
-                .and_then(|stream| Ok((BufReader::new(stream.try_clone()?), stream)));
+            let opened = UnixStream::connect(target).and_then(|stream| {
+                stream.set_read_timeout(Some(SYNC_IO_TIMEOUT))?;
+                stream.set_write_timeout(Some(SYNC_IO_TIMEOUT))?;
+                Ok((BufReader::new(stream.try_clone()?), stream))
+            });
+            // Reported once until it connects again, not for every line it misses.
             connection = opened
-                .inspect_err(|err| log::warn!("{}", copy::sync_failed(target, err)))
+                .inspect_err(|err| {
+                    if !std::mem::replace(&mut reported, true) {
+                        log::warn!("{}", copy::sync_failed(target, err));
+                    }
+                })
                 .ok();
+            reported &= connection.is_none();
         }
         let Some((reader, writer)) = connection.as_mut() else {
             continue;
@@ -648,6 +663,9 @@ impl Controller {
         if duration.is_zero() || duration > SCREENRECORD_MAX {
             return Err(copy::ctl_record_too_long(SCREENRECORD_MAX));
         }
+        let _one_at_a_time = SCREENRECORDING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let port = self.adb_port.load(Ordering::SeqCst);
         let guest_file = crate::adb::quote(GUEST_RECORDING);
         let record = format!(
@@ -656,24 +674,37 @@ impl Controller {
         );
         let failed = |err: std::io::Error| copy::file(path, &err);
         let said = crate::adb::output(port, &record).map_err(failed)?;
-        let mut file = std::fs::File::create(path).map_err(|err| copy::file(path, &err))?;
+        // Copied beside the target and moved over it once it is whole, so that a failure leaves
+        // what was there.
+        let partial = crate::instance::partial(path);
+        let mut file = std::fs::File::create(&partial).map_err(|err| copy::file(path, &err))?;
         let copied = crate::adb::exec(port, &format!("cat {guest_file}"), None, &mut file);
         let _ = crate::adb::output(port, &format!("rm -f {guest_file}"));
-        copied.map_err(failed)?;
-        // screenrecord says nothing when it works; an empty file means it did not.
-        if file.metadata().map_err(|err| copy::file(path, &err))?.len() == 0 {
-            let _ = std::fs::remove_file(path);
-            return Err(copy::ctl_record_failed(said.trim()));
+        let saved = copied.map_err(failed).and_then(|()| {
+            // screenrecord says nothing when it works; an empty file means it did not.
+            match file.metadata() {
+                Ok(meta) if meta.len() == 0 => Err(copy::ctl_record_failed(said.trim())),
+                Ok(_) => std::fs::rename(&partial, path).map_err(|err| copy::file(path, &err)),
+                Err(err) => Err(copy::file(path, &err)),
+            }
+        });
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&partial);
         }
-        Ok(())
+        saved
     }
 
     /// Carries out one command. Gestures, waits and macros take as long as they last.
     pub fn execute(&self, command: &Command) -> Result<(), String> {
+        self.run(command, true)
+    }
+
+    /// As `execute`; `forward` says whether input goes on to the followers.
+    fn run(&self, command: &Command, forward: bool) -> Result<(), String> {
         // The pause before a command is measured to when it starts, not to when it has finished.
         let started = Instant::now();
         self.perform(command)?;
-        if command.is_input() {
+        if forward && command.is_input() {
             self.followers.send(&command.to_string());
         }
         let mut recording = self
@@ -681,12 +712,23 @@ impl Controller {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(recording) = recording.as_mut().filter(|_| command.is_input()) {
+            if recording.full {
+                return Ok(());
+            }
+            let mut added = Vec::with_capacity(2);
             if let Some(last) = recording.last {
-                let pause = started.saturating_duration_since(last);
-                recording.lines.push(Command::Wait(pause).to_string());
+                added.push(Command::Wait(started.saturating_duration_since(last)).to_string());
             }
             recording.last = Some(started);
-            recording.lines.push(command.to_string());
+            added.push(command.to_string());
+            let bytes: u64 = added.iter().map(|line| line.len() as u64 + 1).sum();
+            if recording.bytes + bytes > MACRO_MAX_BYTES {
+                // Past what a macro may be: this command and the rest are left out.
+                recording.full = true;
+            } else {
+                recording.bytes += bytes;
+                recording.lines.extend(added);
+            }
         }
         Ok(())
     }
@@ -843,11 +885,18 @@ impl Controller {
                 if recording.is_some() {
                     return Err(copy::CTL_ALREADY_RECORDING.to_owned());
                 }
-                // Made now, so that a path that cannot be written is reported before the recording.
-                std::fs::write(path, "").map_err(|err| copy::file(path, &err))?;
+                // Opened now, without emptying it, so that a path that cannot be written is reported
+                // before the recording; the file is only replaced when the recording ends.
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)
+                    .map_err(|err| copy::file(path, &err))?;
                 *recording = Some(Recording {
                     path: path.clone(),
                     lines: vec![copy::MACRO_HEADER.to_owned()],
+                    bytes: copy::MACRO_HEADER.len() as u64 + 1,
+                    full: false,
                     last: None,
                 });
                 Ok(())
@@ -859,7 +908,12 @@ impl Controller {
                     .unwrap_or_else(PoisonError::into_inner);
                 let done = recording.take().ok_or(copy::CTL_NOT_RECORDING)?;
                 let text = done.lines.join("\n") + "\n";
-                std::fs::write(&done.path, text).map_err(|err| copy::file(&done.path, &err))
+                crate::instance::write_atomic(&done.path, text)
+                    .map_err(|err| copy::file(&done.path, &err))?;
+                if done.full {
+                    return Err(copy::CTL_RECORDING_FULL.to_owned());
+                }
+                Ok(())
             }
             Command::Cancel => {
                 self.cancel.store(true, Ordering::SeqCst);
@@ -878,7 +932,16 @@ pub fn serve(controller: &Controller, reader: impl BufRead, mut writer: impl Wri
         if line.trim().is_empty() {
             continue;
         }
-        let done = match parse(&line) {
+        // A line a follower is sent is carried out here and not forwarded again.
+        let synced = line.strip_prefix(SYNC_PREFIX);
+        let done = match parse(synced.unwrap_or(&line)) {
+            Some(command) if synced.is_some() => {
+                if command.is_input() {
+                    controller.run(&command, false)
+                } else {
+                    Err(copy::CTL_BAD_SYNC.to_owned())
+                }
+            }
             // What the shell printed goes back too, a line at a time, before the answer.
             Some(Command::Shell(command)) => controller.shell(&command).and_then(|printed| {
                 printed
@@ -947,8 +1010,10 @@ impl Server {
                 let (reader, writer) = match connection {
                     Ok(pair) => pair,
                     Err(err) => {
+                        // Out of descriptors, an aborted connection: not a reason to stop listening.
                         log::warn!("{}", copy::ctl_accept_failed(&err));
-                        break;
+                        thread::sleep(CTL_ACCEPT_RETRY);
+                        continue;
                     }
                 };
                 let controller = Arc::clone(&controller);
@@ -989,6 +1054,8 @@ impl Drop for Server {
 /// Sends `command` and gives back the answer line. Lines a `shell` command printed go to `printed`.
 pub fn request(socket: &Path, command: &str, printed: &mut impl Write) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(CTL_REPLY_TIMEOUT))?;
+    stream.set_write_timeout(Some(CTL_REPLY_TIMEOUT))?;
     writeln!(stream, "{command}")?;
     let mut reader = BufReader::new(stream);
     loop {
@@ -1378,6 +1445,36 @@ mod tests {
         });
         std::fs::remove_file(&path).unwrap();
         assert!(read_macro(&path).is_err());
+    }
+
+    #[test]
+    fn synced_input_is_carried_out_but_not_passed_on() {
+        let (sender, followed) = mpsc::sync_channel(4);
+        let mut controller = controller(None);
+        controller.followers = Followers(vec![sender]);
+        assert_eq!(replies(&controller, "tap 1 2\n"), [copy::CTL_OK]);
+        assert_eq!(followed.try_recv().unwrap(), "sync tap 1 2");
+        // What a follower is sent is run and ends there, and only input is taken that way.
+        let answers = replies(&controller, "sync tap 1 2\nsync screenshot x.png\n");
+        assert_eq!(
+            answers,
+            [
+                copy::CTL_OK.to_owned(),
+                copy::ctl_error(&copy::CTL_BAD_SYNC)
+            ]
+        );
+        assert!(followed.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_macro_holds_only_inputs_and_waits() {
+        let path = std::env::temp_dir().join(format!("emu-macro-kinds-{}.txt", std::process::id()));
+        std::fs::write(&path, "tap 1 2\nwait 5\nscreenshot x.png\n").unwrap();
+        assert_eq!(
+            read_macro(&path).err().unwrap(),
+            copy::ctl_bad_macro_line(&path, 3)
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

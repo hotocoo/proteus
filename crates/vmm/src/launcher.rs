@@ -288,14 +288,26 @@ impl Launcher {
     }
 }
 
+/// Asks the instance to shut down. The answer only comes once it has, which can take a while, so
+/// that waits on a thread of its own and not in the window; a failure goes to the log.
 fn stop(name: &str) -> String {
     let socket = instance::root().and_then(|root| instance::socket(&root, name));
-    let stopped = socket.and_then(|socket| {
-        crate::ctl::request(&socket, crate::ctl::WORD_SHUTDOWN, &mut std::io::sink())
-    });
-    match stopped {
+    let socket = match socket {
+        Ok(socket) => socket,
+        Err(err) => return err.to_string(),
+    };
+    let stopping = std::thread::Builder::new()
+        .name(copy::SHUTDOWN_REQUEST_THREAD.into())
+        .spawn(move || {
+            let stopped =
+                crate::ctl::request(&socket, crate::ctl::WORD_SHUTDOWN, &mut std::io::sink());
+            if let Err(err) = stopped {
+                log::warn!("{}", copy::file(&socket, &err));
+            }
+        });
+    match stopping {
         Ok(_) => text::stopping(name),
-        Err(err) => err.to_string(),
+        Err(err) => copy::thread(&err),
     }
 }
 

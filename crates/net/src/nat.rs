@@ -12,7 +12,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ use smoltcp::wire::{
     EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint,
 };
 
-use crate::config::{ADB_PORT_ATTEMPTS, NetConfig};
+use crate::config::{ADB_PORT_ATTEMPTS, AdbForward, NetConfig};
 use crate::dns::{self, Answer};
 use crate::frames::{self, Ingress, UdpDatagram};
 use crate::policy::{FlowPolicy, Proto, Verdict};
@@ -142,6 +142,23 @@ struct TcpFlow {
     host_eof: bool,
     /// The guest finished sending and that end-of-stream was passed on to the host.
     guest_eof: bool,
+    /// The host side reported end-of-stream or an error; noticed even while the guest side cannot
+    /// take data yet.
+    host_read_closed: bool,
+    /// When bytes last moved in either direction (or the flow was created); drives the reaping of
+    /// dead flows.
+    last_active: Instant,
+}
+
+/// How long a flow may go without moving bytes before it is reset.
+fn flow_limit(cfg: &NetConfig, state: tcp::State, flow: &TcpFlow) -> Duration {
+    if state == tcp::State::SynSent {
+        cfg.handshake_timeout
+    } else if flow.guest_eof || flow.host_eof {
+        cfg.tcp_half_closed_timeout
+    } else {
+        cfg.tcp_idle_timeout
+    }
 }
 
 /// A connection the guest has started but not finished opening.
@@ -160,11 +177,34 @@ struct UdpPeer {
 struct Lookup {
     query: dns::Query,
     guest_port: u16,
+    /// The server address the guest asked; the answer comes back from it.
+    server: SocketAddrV4,
 }
 
 struct Resolved {
     lookup: Lookup,
     result: io::Result<Vec<Ipv4Addr>>,
+}
+
+/// The host address that stands for `dst`. Only differs for the gateway when it aliases loopback.
+fn host_addr(cfg: &NetConfig, dst: SocketAddrV4) -> SocketAddr {
+    let aliased = cfg.host_loopback && *dst.ip() == cfg.gateway_ip;
+    SocketAddr::from((
+        if aliased {
+            Ipv4Addr::LOCALHOST
+        } else {
+            *dst.ip()
+        },
+        dst.port(),
+    ))
+}
+
+/// The guest may only reach the gateway address itself when that is switched on, and never a
+/// loopback address directly: the gateway alias is the only way to the host's own services.
+fn reachable(cfg: &NetConfig, dst: SocketAddrV4) -> bool {
+    let ip = dst.ip();
+    !(ip.is_broadcast() || ip.is_multicast() || ip.is_unspecified() || ip.is_loopback())
+        && (cfg.host_loopback || *ip != cfg.gateway_ip)
 }
 
 fn v4(endpoint: IpEndpoint) -> SocketAddrV4 {
@@ -187,7 +227,7 @@ struct Worker {
     graveyard: Vec<SocketHandle>,
     udp: HashMap<Token, UdpPeer>,
     udp_by_guest_port: HashMap<u16, Token>,
-    lookups: Sender<Lookup>,
+    lookups: SyncSender<Lookup>,
     resolved: Receiver<Resolved>,
     adb: Option<TcpListener>,
     next_token: usize,
@@ -200,9 +240,10 @@ struct Worker {
 fn spawn_resolvers(
     resolver: &Arc<dyn Resolver>,
     threads: usize,
+    queue_len: usize,
     waker: &Arc<Waker>,
-) -> io::Result<(Sender<Lookup>, Receiver<Resolved>)> {
-    let (lookups, pending) = mpsc::channel::<Lookup>();
+) -> io::Result<(SyncSender<Lookup>, Receiver<Resolved>)> {
+    let (lookups, pending) = mpsc::sync_channel::<Lookup>(queue_len);
     let (done, resolved) = mpsc::channel();
     let pending = Arc::new(Mutex::new(pending));
     for _ in 0..threads {
@@ -289,7 +330,12 @@ impl Worker {
             .add_default_ipv4_route(cfg.gateway_ip)
             .map_err(|_| io::Error::other(copy::ROUTE_TABLE_FULL))?;
 
-        let (lookups, resolved) = spawn_resolvers(resolver, cfg.resolver_threads, waker)?;
+        let (lookups, resolved) = spawn_resolvers(
+            resolver,
+            cfg.resolver_threads,
+            cfg.max_pending_lookups,
+            waker,
+        )?;
         let mut adb = cfg.adb.and_then(|forward| bind_adb(forward.host_port));
         let bound = adb.as_ref().and_then(|listener| listener.local_addr().ok());
         let bound = bound.map_or(0, |address| address.port());
@@ -343,26 +389,6 @@ impl Worker {
         tcp::Socket::new(buffer(), buffer())
     }
 
-    /// The host address that stands for `dst`. Only differs for the gateway when it aliases loopback.
-    fn host_addr(&self, dst: SocketAddrV4) -> SocketAddr {
-        let aliased = self.cfg.host_loopback && *dst.ip() == self.cfg.gateway_ip;
-        SocketAddr::from((
-            if aliased {
-                Ipv4Addr::LOCALHOST
-            } else {
-                *dst.ip()
-            },
-            dst.port(),
-        ))
-    }
-
-    /// The guest may only reach the gateway address itself when that is switched on.
-    fn reachable(&self, dst: SocketAddrV4) -> bool {
-        let ip = dst.ip();
-        !(ip.is_broadcast() || ip.is_multicast() || ip.is_unspecified())
-            && (self.cfg.host_loopback || *ip != self.cfg.gateway_ip)
-    }
-
     fn queue_to_guest(&mut self, frame: Vec<u8>) {
         if self.wire.to_guest.len() < self.cfg.max_queued_frames {
             self.wire.to_guest.push_back(frame);
@@ -408,7 +434,7 @@ impl Worker {
         let key = (src, dst);
         let known = self.opening.iter().any(|opening| opening.key == key);
         let full = self.flows.len() + self.opening.len() >= self.cfg.max_tcp_flows;
-        if known || full || *src.ip() != self.cfg.guest_ip || !self.reachable(dst) {
+        if known || full || *src.ip() != self.cfg.guest_ip || !reachable(&self.cfg, dst) {
             return;
         }
         if self.policy.connect(dst, Proto::Tcp) == Verdict::Sinkhole {
@@ -453,11 +479,15 @@ impl Worker {
         if *datagram.src.ip() != self.cfg.guest_ip {
             return;
         }
-        if datagram.dst == SocketAddrV4::new(gateway, DNS_PORT) {
-            self.dns_query(datagram.src.port(), datagram.payload);
+        // With a block list, DNS to any server is answered here: relaying it raw would let the guest
+        // skip the check by asking a public resolver. Non-DNS traffic on port 53 is dropped then.
+        let dns_wanted = *datagram.dst.ip() == gateway
+            || (self.policy.inspects_dns() && reachable(&self.cfg, datagram.dst));
+        if datagram.dst.port() == DNS_PORT && dns_wanted {
+            self.dns_query(datagram.src.port(), datagram.dst, datagram.payload);
             return;
         }
-        if !self.reachable(datagram.dst)
+        if !reachable(&self.cfg, datagram.dst)
             || self.policy.connect(datagram.dst, Proto::Udp) == Verdict::Sinkhole
         {
             return;
@@ -470,7 +500,7 @@ impl Worker {
                 None => return,
             },
         };
-        let host_dst = self.host_addr(datagram.dst);
+        let host_dst = host_addr(&self.cfg, datagram.dst);
         if let Some(peer) = self.udp.get_mut(&token) {
             peer.last_used = Instant::now();
             // A datagram the host cannot send right now is lost, as UDP allows.
@@ -478,6 +508,8 @@ impl Worker {
         }
     }
 
+    // shortcut: a mapping accepts datagrams from any host (full cone), not only the ones the guest
+    // wrote to; peer-to-peer games need that. Tighten to known peers if that ever matters.
     fn open_udp_peer(&mut self, guest_port: u16) -> Option<Token> {
         if self.udp.len() >= self.cfg.max_udp_peers {
             return None;
@@ -500,26 +532,37 @@ impl Worker {
         Some(token)
     }
 
-    fn dns_query(&mut self, guest_port: u16, payload: &[u8]) {
+    fn dns_query(&mut self, guest_port: u16, server: SocketAddrV4, payload: &[u8]) {
         let Some(query) = dns::parse_query(payload) else {
             return;
         };
         if self.policy.dns(&query.name) == Verdict::Sinkhole {
             log::info!("{}", copy::sinkholed(copy::BLOCKED_DNS, &query.name));
-            self.dns_answer(&query, guest_port, Answer::NameError);
+            self.dns_answer(&query, guest_port, server, Answer::NameError);
         } else if query.qtype != dns::TYPE_A || query.qclass != dns::CLASS_IN {
             // Only IPv4 addresses are served; the guest network has no IPv6, and leaving HTTPS records
             // unanswered keeps Encrypted Client Hello keys from reaching the guest.
-            self.dns_answer(&query, guest_port, Answer::NoData);
-        } else if let Err(unsent) = self.lookups.send(Lookup { query, guest_port }) {
-            self.dns_answer(&unsent.0.query, guest_port, Answer::ServerFailure);
+            self.dns_answer(&query, guest_port, server, Answer::NoData);
+        } else if let Err(TrySendError::Full(unsent) | TrySendError::Disconnected(unsent)) =
+            self.lookups.try_send(Lookup {
+                query,
+                guest_port,
+                server,
+            })
+        {
+            self.dns_answer(&unsent.query, guest_port, server, Answer::ServerFailure);
         }
     }
 
-    fn dns_answer(&mut self, query: &dns::Query, guest_port: u16, answer: Answer<'_>) {
+    fn dns_answer(
+        &mut self,
+        query: &dns::Query,
+        guest_port: u16,
+        server: SocketAddrV4,
+        answer: Answer<'_>,
+    ) {
         let response = dns::build_response(query, answer, self.cfg.dns_ttl_secs);
-        let src = SocketAddrV4::new(self.cfg.gateway_ip, DNS_PORT);
-        self.udp_to_guest(src, guest_port, &response);
+        self.udp_to_guest(server, guest_port, &response);
     }
 
     fn finish_lookups(&mut self) {
@@ -530,7 +573,12 @@ impl Worker {
                 // The host resolver does not say why it failed; an unknown name is by far the usual reason.
                 Err(_) => Answer::NameError,
             };
-            self.dns_answer(&done.lookup.query, done.lookup.guest_port, answer);
+            self.dns_answer(
+                &done.lookup.query,
+                done.lookup.guest_port,
+                done.lookup.server,
+                answer,
+            );
         }
     }
 
@@ -544,7 +592,11 @@ impl Worker {
             };
             peer.last_used = Instant::now();
             let guest_port = peer.guest_port;
-            if self.cfg.host_loopback && from.ip().is_loopback() {
+            if from.ip().is_loopback() {
+                // Host services stay out of reach unless the gateway alias is switched on.
+                if !self.cfg.host_loopback {
+                    continue;
+                }
                 from.set_ip(self.cfg.gateway_ip);
             }
             self.udp_to_guest(from, guest_port, &buffer[..len]);
@@ -572,43 +624,66 @@ impl Worker {
         let Some(forward) = self.cfg.adb else {
             return;
         };
-        while let Some(Ok((mut stream, _))) = self.adb.as_ref().map(TcpListener::accept) {
-            let token = self.token();
-            let interest = Interest::READABLE | Interest::WRITABLE;
-            if self
-                .poll
-                .registry()
-                .register(&mut stream, token, interest)
-                .is_err()
-            {
-                continue;
-            }
-            let guest = SocketAddrV4::new(self.cfg.guest_ip, forward.guest_port);
-            let local = IpListenEndpoint {
-                addr: Some(IpAddress::Ipv4(self.cfg.gateway_ip)),
-                port: self.ephemeral_port(),
+        loop {
+            let Some(listener) = self.adb.as_ref() else {
+                return;
             };
-            let mut socket = self.new_socket();
-            let remote = IpEndpoint::new(IpAddress::Ipv4(*guest.ip()), guest.port());
-            if socket.connect(self.stack.context(), remote, local).is_err() {
-                let _ = self.poll.registry().deregister(&mut stream);
-                continue;
+            match listener.accept() {
+                Ok((stream, _)) => self.adopt_adb(stream, forward),
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        ErrorKind::Interrupted | ErrorKind::ConnectionAborted
+                    ) => {}
+                // WouldBlock means the backlog is drained; anything else (such as running out of file
+                // descriptors) would only repeat, so wait for the next readiness event.
+                Err(_) => return,
             }
-            let handle = self.sockets.add(socket);
-            self.flows.insert(
-                token,
-                TcpFlow {
-                    handle,
-                    dst: guest,
-                    host: Some(stream),
-                    phase: Phase::Relaying,
-                    host_readable: false,
-                    host_writable: false,
-                    host_eof: false,
-                    guest_eof: false,
-                },
-            );
         }
+    }
+
+    fn adopt_adb(&mut self, mut stream: TcpStream, forward: AdbForward) {
+        // The same cap as for guest flows; the stream is dropped, which refuses `adb`.
+        if self.flows.len() + self.opening.len() >= self.cfg.max_tcp_flows {
+            return;
+        }
+        let token = self.token();
+        let interest = Interest::READABLE | Interest::WRITABLE;
+        if self
+            .poll
+            .registry()
+            .register(&mut stream, token, interest)
+            .is_err()
+        {
+            return;
+        }
+        let guest = SocketAddrV4::new(self.cfg.guest_ip, forward.guest_port);
+        let local = IpListenEndpoint {
+            addr: Some(IpAddress::Ipv4(self.cfg.gateway_ip)),
+            port: self.ephemeral_port(),
+        };
+        let mut socket = self.new_socket();
+        let remote = IpEndpoint::new(IpAddress::Ipv4(*guest.ip()), guest.port());
+        if socket.connect(self.stack.context(), remote, local).is_err() {
+            let _ = self.poll.registry().deregister(&mut stream);
+            return;
+        }
+        let handle = self.sockets.add(socket);
+        self.flows.insert(
+            token,
+            TcpFlow {
+                handle,
+                dst: guest,
+                host: Some(stream),
+                phase: Phase::Relaying,
+                host_readable: false,
+                host_writable: false,
+                host_eof: false,
+                guest_eof: false,
+                host_read_closed: false,
+                last_active: Instant::now(),
+            },
+        );
     }
 
     // ---- TCP flows ----
@@ -643,6 +718,8 @@ impl Worker {
                             host_writable: false,
                             host_eof: false,
                             guest_eof: false,
+                            host_read_closed: false,
+                            last_active: now,
                         },
                     );
                 }
@@ -675,7 +752,15 @@ impl Worker {
             return false;
         };
         let socket = self.sockets.get_mut::<tcp::Socket>(flow.handle);
-        if socket.state() == tcp::State::Closed {
+        let state = socket.state();
+        if state == tcp::State::Closed {
+            return false;
+        }
+        // A dead peer or a host that left: reset, so the flow table cannot fill up with them.
+        let dead = now.duration_since(flow.last_active) >= flow_limit(&self.cfg, state, flow)
+            || (state == tcp::State::SynSent && flow.host_read_closed);
+        if dead {
+            socket.abort();
             return false;
         }
         if let Phase::Sniffing { deadline } = flow.phase {
@@ -702,13 +787,7 @@ impl Worker {
                 socket.abort();
                 return false;
             }
-            let aliased = self.cfg.host_loopback && *flow.dst.ip() == self.cfg.gateway_ip;
-            let ip = if aliased {
-                Ipv4Addr::LOCALHOST
-            } else {
-                *flow.dst.ip()
-            };
-            let target = SocketAddr::from((ip, flow.dst.port()));
+            let target = host_addr(&self.cfg, flow.dst);
             let interest = Interest::READABLE | Interest::WRITABLE;
             let connected = TcpStream::connect(target).and_then(|mut host| {
                 self.poll
@@ -776,6 +855,7 @@ impl Worker {
             if !matches!(moved, Ok(1..)) {
                 break;
             }
+            flow.last_active = now;
         }
         // Host to guest: read straight into the stack's send buffer while it has room.
         while flow.host_readable && !flow.host_eof && socket.can_send() && !failed {
@@ -790,14 +870,16 @@ impl Worker {
                     (0, 0)
                 }
                 Err(err) if err.kind() == ErrorKind::Interrupted => (0, 1),
+                // A reset still leaves earlier bytes to deliver: end the stream, do not abort.
                 Err(_) => {
-                    failed = true;
+                    flow.host_eof = true;
                     (0, 0)
                 }
             });
             if !matches!(moved, Ok(1..)) {
                 break;
             }
+            flow.last_active = now;
         }
         if failed {
             socket.abort();
@@ -845,6 +927,7 @@ impl Worker {
         } else if let Some(flow) = self.flows.get_mut(&token) {
             let broken = event.is_error();
             flow.host_readable |= event.is_readable() || event.is_read_closed() || broken;
+            flow.host_read_closed |= event.is_read_closed() || broken;
             flow.host_writable |= event.is_writable() || event.is_write_closed() || broken;
         } else if self.udp.contains_key(&token) {
             self.udp_from_host(token);
@@ -870,21 +953,31 @@ impl Worker {
     /// How long the loop may sleep if nothing wakes it.
     fn sleep_for(&mut self) -> Option<Duration> {
         let now = Instant::now();
-        let stack = self
-            .stack
-            .poll_delay(StackInstant::now(), &self.sockets)
-            .map(|delay| Duration::from_micros(delay.total_micros()));
+        // With the guest not draining its queue the stack's "now" would spin the loop; look again
+        // after a short pause instead.
+        let stack = if self.wire.to_guest.len() >= self.cfg.max_queued_frames {
+            Some(self.cfg.rx_full_retry)
+        } else {
+            self.stack
+                .poll_delay(StackInstant::now(), &self.sockets)
+                .map(|delay| Duration::from_micros(delay.total_micros()))
+        };
         let sniffing = self.flows.values().filter_map(|flow| match flow.phase {
             Phase::Sniffing { deadline } => Some(deadline),
             Phase::Connecting | Phase::Relaying => None,
         });
         let opening = self.opening.iter().map(|opening| opening.deadline);
+        let reaping = self.flows.values().map(|flow| {
+            let state = self.sockets.get::<tcp::Socket>(flow.handle).state();
+            flow.last_active + flow_limit(&self.cfg, state, flow)
+        });
         let udp = self
             .udp
             .values()
             .map(|peer| peer.last_used + self.cfg.udp_idle_timeout);
         let deadline = sniffing
             .chain(opening)
+            .chain(reaping)
             .chain(udp)
             .min()
             .map(|at| at.saturating_duration_since(now));
@@ -993,5 +1086,37 @@ impl NetBackend for Network {
 impl Drop for Network {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dst(ip: Ipv4Addr) -> SocketAddrV4 {
+        SocketAddrV4::new(ip, 80)
+    }
+
+    #[test]
+    fn loopback_and_gateway_are_unreachable_by_default() {
+        let cfg = NetConfig::default();
+        assert!(!reachable(&cfg, dst(Ipv4Addr::LOCALHOST)));
+        assert!(!reachable(&cfg, dst(Ipv4Addr::new(127, 1, 2, 3))));
+        assert!(!reachable(&cfg, dst(cfg.gateway_ip)));
+        assert!(reachable(&cfg, dst(Ipv4Addr::new(203, 0, 113, 9))));
+    }
+
+    #[test]
+    fn the_gateway_aliases_loopback_only_when_allowed() {
+        let mut cfg = NetConfig::default();
+        let gateway = dst(cfg.gateway_ip);
+        assert_eq!(host_addr(&cfg, gateway), SocketAddr::from(gateway));
+        cfg.host_loopback = true;
+        assert!(reachable(&cfg, gateway));
+        assert_eq!(
+            host_addr(&cfg, gateway),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 80))
+        );
+        assert!(!reachable(&cfg, dst(Ipv4Addr::LOCALHOST)));
     }
 }

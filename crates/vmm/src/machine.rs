@@ -107,6 +107,22 @@ impl InterruptLine for SpiLine {
     }
 }
 
+/// The aarch64 UART's line: the device tree declares it edge-triggered, but the device only ever raises
+/// it, so each raise is a pulse (high, then low) for the next one to be an edge too. Virtio and the RTC
+/// stay level-triggered on a plain `SpiLine`.
+#[cfg(target_arch = "aarch64")]
+struct EdgeLine(SpiLine);
+
+#[cfg(target_arch = "aarch64")]
+impl InterruptLine for EdgeLine {
+    fn set(&self, level: bool) {
+        if level {
+            self.0.set(true);
+            self.0.set(false);
+        }
+    }
+}
+
 /// What the vCPUs reach: the MMIO bus, and on x86_64 the I/O ports.
 struct BusIo<'a>(&'a Machine);
 
@@ -756,7 +772,13 @@ pub fn run_in(
     )];
     if config.serial {
         #[cfg(target_arch = "aarch64")]
-        let serial = Arc::new(Serial::new(line(layout::UART_SPI), output));
+        let serial = Arc::new(Serial::new(
+            Arc::new(EdgeLine(SpiLine {
+                chip: Arc::clone(&irqchip),
+                spi: layout::UART_SPI,
+            })),
+            output,
+        ));
         #[cfg(target_arch = "aarch64")]
         bus.insert(
             layout::UART_BASE,

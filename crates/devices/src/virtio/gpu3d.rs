@@ -48,6 +48,8 @@ use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap};
 use crate::copy;
 
 /// Gallium's 2D texture target and render-target bind flag: what a 2D resource is to a 3D renderer.
+/// Gallium's `PIPE_BUFFER` texture target: a plain run of bytes, not an image.
+const PIPE_BUFFER: u32 = 0;
 const PIPE_TEXTURE_2D: u32 = 2;
 const PIPE_BIND_RENDER_TARGET: u32 = 1 << 1;
 /// Limits on what a guest can make the device do in one command.
@@ -462,8 +464,12 @@ impl Gpu3d {
             }
             CMD_UNREF => {
                 let resource = body.u32()?;
-                if let Some((offset, len)) = self.mapped.remove(&resource) {
-                    let _ = self.mapper.unmap(offset, len);
+                // Still mapped means the guest can still reach the memory: keep the resource then.
+                if let Some(&(offset, len)) = self.mapped.get(&resource) {
+                    self.mapper
+                        .unmap(offset, len)
+                        .map_err(renderer_failed("unmap"))?;
+                    self.mapped.remove(&resource);
                 }
                 self.formats.remove(&resource);
                 if self.scanout.is_some_and(|shown| shown.resource == resource) {
@@ -574,13 +580,15 @@ impl Gpu3d {
             }
             CMD_UNMAP_BLOB => {
                 let resource = body.u32()?;
-                let (offset, len) = self
+                let &(offset, len) = self
                     .mapped
-                    .remove(&resource)
+                    .get(&resource)
                     .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
+                // Forgotten only once the mapper let go, so a failed unmap can be retried.
                 self.mapper
                     .unmap(offset, len)
                     .map_err(renderer_failed("unmap"))?;
+                self.mapped.remove(&resource);
                 let unmapped = self.renderer.unmap_blob(resource);
                 unmapped.map_err(renderer_failed("unmap"))?;
                 Ok(Answer::NoData)
@@ -588,17 +596,18 @@ impl Gpu3d {
             CMD_SET_SCANOUT => {
                 let (x, y, width, height) = (body.u32()?, body.u32()?, body.u32()?, body.u32()?);
                 let (scanout, resource) = (body.u32()?, body.u32()?);
-                let format = self
+                let (format, size) = self
                     .formats
                     .get(&resource)
-                    .map_or(0, |(format, ..)| *format);
-                self.set_scanout(scanout, resource, [x, y, width, height], format)
+                    .map_or((0, None), |&(format, w, h)| (format, Some((w, h))));
+                self.set_scanout(scanout, resource, [x, y, width, height], format, size)
             }
             CMD_SET_SCANOUT_BLOB => {
                 let (x, y, width, height) = (body.u32()?, body.u32()?, body.u32()?, body.u32()?);
                 let (scanout, resource) = (body.u32()?, body.u32()?);
-                let (_blob_width, _blob_height, format) = (body.u32()?, body.u32()?, body.u32()?);
-                self.set_scanout(scanout, resource, [x, y, width, height], format)
+                let (blob_width, blob_height, format) = (body.u32()?, body.u32()?, body.u32()?);
+                let size = Some((blob_width, blob_height));
+                self.set_scanout(scanout, resource, [x, y, width, height], format, size)
             }
             CMD_FLUSH => {
                 let (_x, _y, _width, _height) =
@@ -613,6 +622,15 @@ impl Gpu3d {
     fn create_3d(&mut self, resource: u32, create: Create3d) -> Result<Answer, u32> {
         if resource == 0 {
             return Err(RESP_ERR_INVALID_RESOURCE_ID);
+        }
+        // Textures are held to what a display can be; buffers (also made here) are sized in bytes.
+        let too_big = |dimension: u32| dimension > MAX_DIMENSION;
+        if (create.target != PIPE_BUFFER && too_big(create.width))
+            || too_big(create.height)
+            || too_big(create.depth)
+            || too_big(create.array_size)
+        {
+            return Err(RESP_ERR_INVALID_PARAMETER);
         }
         let created = self.renderer.resource_create_3d(resource, create);
         created.map_err(renderer_failed("resource"))?;
@@ -664,6 +682,7 @@ impl Gpu3d {
         resource: u32,
         [x, y, width, height]: [u32; 4],
         format: u32,
+        size: Option<(u32, u32)>,
     ) -> Result<Answer, u32> {
         if scanout >= SCANOUTS {
             return Err(RESP_ERR_INVALID_SCANOUT_ID);
@@ -672,6 +691,14 @@ impl Gpu3d {
         let sane = (1..=MAX_DIMENSION).contains(&width) && (1..=MAX_DIMENSION).contains(&height);
         if resource != 0 && !sane {
             return Err(RESP_ERR_INVALID_PARAMETER);
+        }
+        // The read-back at every flush must stay inside the resource, whose size is only known here.
+        if let (true, Some((rw, rh))) = (resource != 0, size) {
+            let inside = x.checked_add(width).is_some_and(|right| right <= rw)
+                && y.checked_add(height).is_some_and(|bottom| bottom <= rh);
+            if !inside {
+                return Err(RESP_ERR_INVALID_PARAMETER);
+            }
         }
         self.scanout = (resource != 0).then_some(Scanout {
             resource,
@@ -1027,6 +1054,34 @@ mod tests {
             ]
         );
         assert!(log.0.lock().unwrap().contains(&"unref 11".to_owned()));
+    }
+
+    #[test]
+    fn scanout_outside_its_resource_and_oversized_textures_are_refused() {
+        let (mut gpu, _, _) = setup(PAGE as usize);
+        let too_big = MAX_DIMENSION + 1;
+        assert_eq!(
+            run(&mut gpu, CMD_CREATE_2D, 0, &words(&[5, 2, too_big, 32])),
+            Err(RESP_ERR_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            run(&mut gpu, CMD_CREATE_2D, 0, &words(&[5, 2, 64, 32])),
+            Ok(Answer::NoData)
+        );
+        for rect in [
+            [0, 0, 65, 32],
+            [1, 0, 64, 32],
+            [0, 0, 64, 33],
+            [u32::MAX, 0, 2, 1],
+        ] {
+            let mut body = words(&rect);
+            body.extend(words(&[0, 5]));
+            assert_eq!(
+                run(&mut gpu, CMD_SET_SCANOUT, 0, &body),
+                Err(RESP_ERR_INVALID_PARAMETER),
+                "{rect:?}"
+            );
+        }
     }
 
     #[test]

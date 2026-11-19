@@ -34,6 +34,8 @@ const VENDOR_TABLE_SIZE_AT: usize = 2112;
 const VENDOR_BOOTCONFIG_SIZE_AT: usize = 2124;
 /// Bytes of a vendor boot image header this parser reads (the whole version 4 header).
 pub const VENDOR_HEADER_LEN: usize = 2128;
+/// Size of a version 3 vendor header, which stops before the ramdisk table fields.
+const VENDOR_HEADER_V3_LEN: u32 = 2112;
 
 fn u32_at(bytes: &[u8], at: usize) -> u64 {
     let word: [u8; 4] = bytes[at..at + 4].try_into().expect("slice is four bytes");
@@ -96,7 +98,16 @@ pub fn vendor_boot(header: &[u8], file_len: u64) -> Result<VendorBoot, ArchError
     if !page.is_power_of_two() {
         return Err(ArchError::BootImage(copy::BOOT_IMAGE_BAD_PAGE_SIZE));
     }
-    let ramdisk_start = pages(u32_at(header, VENDOR_HEADER_SIZE_AT), page);
+    let header_size = u32_at(header, VENDOR_HEADER_SIZE_AT);
+    let min_header = if u32_at(header, VENDOR_HEADER_VERSION_AT) == u64::from(MAX_VERSION) {
+        VENDOR_HEADER_LEN as u64
+    } else {
+        u64::from(VENDOR_HEADER_V3_LEN)
+    };
+    if header_size < min_header {
+        return Err(ArchError::BootImage(copy::BOOT_IMAGE_BAD_HEADER_SIZE));
+    }
+    let ramdisk_start = pages(header_size, page);
     let ramdisk = section(
         ramdisk_start,
         u32_at(header, VENDOR_RAMDISK_SIZE_AT),
@@ -192,6 +203,18 @@ mod tests {
         // Version 3 has neither a ramdisk table nor bootconfig.
         let v3 = vendor_boot(&vendor_header(3, 4096, 5000, 100, 108, 77), 1 << 20).unwrap();
         assert!(v3.bootconfig.is_empty());
+    }
+
+    #[test]
+    fn vendor_header_size_must_cover_its_version() {
+        let mut v4 = vendor_header(4, 4096, 10, 0, 0, 0);
+        put(&mut v4, VENDOR_HEADER_SIZE_AT, VENDOR_HEADER_V3_LEN);
+        assert!(vendor_boot(&v4, 1 << 20).is_err());
+        put(&mut v4, VENDOR_HEADER_SIZE_AT, 0);
+        assert!(vendor_boot(&v4, 1 << 20).is_err());
+        let mut v3 = vendor_header(3, 4096, 10, 0, 0, 0);
+        put(&mut v3, VENDOR_HEADER_SIZE_AT, VENDOR_HEADER_V3_LEN);
+        assert!(vendor_boot(&v3, 1 << 20).is_ok());
     }
 
     #[test]

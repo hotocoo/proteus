@@ -7,12 +7,12 @@
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
+use crate::sni::MAX_NAME_LEN;
+
 /// Port of HTTPS over TCP and of QUIC over UDP.
 const HTTPS_PORT: u16 = 443;
 /// Port of DNS over TLS and of DNS over QUIC.
 const DNS_OVER_TLS_PORT: u16 = 853;
-/// Longest DNS name in text form.
-const MAX_NAME_LEN: usize = 253;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Proto {
@@ -34,6 +34,11 @@ pub trait FlowPolicy: Send + Sync {
     /// Judged once a TCP flow's first bytes are in. `sni` is `None` for anything but a TLS ClientHello
     /// that names a server.
     fn tls_sni(&self, dst: SocketAddrV4, sni: Option<&str>) -> Verdict;
+    /// True if `dns` can block names. Then the NAT answers DNS sent to any server, not only to the
+    /// gateway, so that a guest cannot skip the check by asking 8.8.8.8 itself.
+    fn inspects_dns(&self) -> bool {
+        false
+    }
 }
 
 /// Lowercases, drops a trailing dot and a leading `*.`, and rejects anything that is not a
@@ -79,9 +84,8 @@ impl DomainSet {
 
     /// True if `name` or any parent domain of it is in the set.
     pub fn contains(&self, name: &str) -> bool {
-        let Some(name) = normalise(name) else {
-            return false;
-        };
+        // No validation here: a name with odd characters must still match its blocked parent.
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
         let mut rest = name.as_str();
         loop {
             if self.0.contains(rest) {
@@ -104,23 +108,20 @@ impl DomainSet {
             if line.is_empty() || line.starts_with('!') {
                 continue;
             }
-            let candidate = match line.strip_prefix("||") {
+            let names: Vec<&str> = match line.strip_prefix("||") {
                 // An adblock rule that is only "this domain and its subdomains".
-                Some(rule) => rule.strip_suffix('^'),
+                Some(rule) => rule.strip_suffix('^').into_iter().collect(),
                 None => {
                     let mut fields = line.split_whitespace();
-                    match (fields.next(), fields.next(), fields.next()) {
-                        (Some(domain), None, _) => Some(domain),
-                        (Some(address), Some(domain), None)
-                            if address.parse::<Ipv4Addr>().is_ok() =>
-                        {
-                            Some(domain)
-                        }
-                        _ => None,
+                    match fields.next() {
+                        // A hosts line: an address, then every name that points at it.
+                        Some(address) if address.parse::<Ipv4Addr>().is_ok() => fields.collect(),
+                        Some(domain) if fields.next().is_none() => vec![domain],
+                        _ => Vec::new(),
                     }
                 }
             };
-            if let Some(domain) = candidate {
+            for domain in names {
                 self.insert(domain);
             }
         }
@@ -172,6 +173,10 @@ impl FlowPolicy for Sinkhole {
 
     fn tls_sni(&self, _dst: SocketAddrV4, sni: Option<&str>) -> Verdict {
         sni.map_or(Verdict::Allow, |name| self.name(name))
+    }
+
+    fn inspects_dns(&self) -> bool {
+        !self.blocked.is_empty()
     }
 }
 
@@ -253,6 +258,31 @@ mod tests {
         ] {
             assert!(!set.contains(domain), "{domain}");
         }
+    }
+
+    #[test]
+    fn odd_characters_in_a_query_do_not_evade_a_blocked_parent() {
+        let set = set(&["ads.example"]);
+        assert!(set.contains("x!.ads.example"));
+        assert!(set.contains("a b.ads.example."));
+        assert!(!set.contains("x!.example"));
+    }
+
+    #[test]
+    fn hosts_lines_with_several_names_add_each() {
+        let mut set = DomainSet::default();
+        assert_eq!(set.extend_from_list("0.0.0.0 a.example b.example # x\n"), 2);
+        assert!(set.contains("a.example") && set.contains("b.example"));
+    }
+
+    #[test]
+    fn dns_is_inspected_only_with_a_block_list() {
+        assert!(!Sinkhole::default().inspects_dns());
+        let policy = Sinkhole {
+            blocked: set(&["ads.example"]),
+            ..Sinkhole::default()
+        };
+        assert!(policy.inspects_dns());
     }
 
     #[test]

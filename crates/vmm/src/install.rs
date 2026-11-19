@@ -359,6 +359,13 @@ pub fn install(port: u16, path: &Path) -> io::Result<()> {
                     .next()
                     .unwrap_or(&entry.name)
                     .to_owned();
+                // Read whole, so held to the same size as a deflated entry.
+                if entry.size > ZIP_MAX_INFLATED {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        copy::INSTALL_TOO_LARGE,
+                    ));
+                }
                 let mut reader = zip_open(&mut archive, entry)?;
                 let mut bytes = Vec::new();
                 reader.read_to_end(&mut bytes)?;

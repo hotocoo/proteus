@@ -2,9 +2,10 @@
 
 mod ffi;
 
+use std::collections::HashSet;
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::aarch64::{INSN_LEN, SMCCC_NOT_SUPPORTED, esr, mpidr_affinity};
@@ -313,7 +314,19 @@ impl HvfVcpu {
             } else {
                 copy::SYSREG_WRITE
             };
-            log::warn!("{}", copy::sysreg_ignored(direction, syndrome, pc));
+            // A guest can poll such a register in a loop: warn once per register and direction.
+            static WARNED: Mutex<Option<HashSet<(esr::SysReg, bool)>>> = Mutex::new(None);
+            let first = WARNED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_or_insert_with(HashSet::new)
+                .insert((access.sysreg, access.is_read));
+            let message = copy::sysreg_ignored(direction, syndrome, pc);
+            if first {
+                log::warn!("{message}");
+            } else {
+                log::debug!("{message}");
+            }
         }
         if access.is_read {
             self.set_gpr(access.reg, 0)?;

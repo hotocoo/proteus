@@ -17,6 +17,8 @@ use crate::copy;
 
 const ARGS_FILE: &str = "args";
 const DATA_DIR: &str = "data";
+/// Follows `data` in the name a wiped data folder is moved to, then the process's number.
+const TRASH_SUFFIX: &str = ".trash-";
 const SOCKET_FILE: &str = "ctl.sock";
 /// Options an instance sets for itself; they cannot be given when it is created.
 const OWN_OPTIONS: [&str; 2] = ["--data-dir", "--ctl"];
@@ -38,6 +40,32 @@ const PATH_OPTIONS: [&str; 11] = [
 ];
 /// `--sync` names an instance or a socket; only a socket that exists is a path.
 const SYNC_OPTION: &str = "--sync";
+/// Ends the name of the file a write goes to before it replaces the real one.
+const PARTIAL_SUFFIX: &str = ".partial";
+
+/// Whether `target`, looked for from `cwd`, is something that exists: the one rule for telling a
+/// socket path from an instance name.
+fn names_a_path(cwd: &Path, target: &Path) -> bool {
+    cwd.join(target).exists()
+}
+
+/// Where `path` is written first, beside it.
+pub fn partial(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(PARTIAL_SUFFIX);
+    name.into()
+}
+
+/// Writes `bytes` to `path` so that it is either all there or what it was: to a file beside it
+/// first, then moved over it.
+pub fn write_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    let partial = partial(path);
+    std::fs::write(&partial, bytes)
+        .and_then(|()| std::fs::rename(&partial, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&partial);
+        })
+}
 
 /// `args` with every path-valued option's relative value made relative to `cwd` instead.
 fn absolute(args: &[String], cwd: &Path) -> Vec<String> {
@@ -53,7 +81,7 @@ fn absolute(args: &[String], cwd: &Path) -> Vec<String> {
             let relative = Path::new(value).is_relative();
             relative
                 && (PATH_OPTIONS.contains(&option)
-                    || (option == SYNC_OPTION && cwd.join(value).exists()))
+                    || (option == SYNC_OPTION && names_a_path(cwd, Path::new(value))))
         };
         match inline {
             Some(value) if is_path(value) => out.push(format!("{option}={}", fix(value))),
@@ -117,7 +145,7 @@ pub fn resolve(target: &Path) -> PathBuf {
         socket(&root, name).ok()
     });
     match named {
-        Some(socket) if !target.exists() => socket,
+        Some(socket) if !names_a_path(Path::new(""), target) => socket,
         _ => target.to_owned(),
     }
 }
@@ -147,7 +175,12 @@ pub fn create(root: &Path, name: &str, args: &[String], cwd: &Path) -> io::Resul
     })?;
     let mut text = args.join("\n");
     text.push('\n');
-    std::fs::write(dir.join(ARGS_FILE), text)
+    let written = write_atomic(&dir.join(ARGS_FILE), text);
+    if written.is_err() {
+        // Nothing of it is kept, so that the name is free to try again.
+        let _ = std::fs::remove_dir(&dir);
+    }
+    written
 }
 
 /// The folder of the instance called `name`, where it keeps its data and the panel its files.
@@ -179,7 +212,7 @@ pub fn set_args(root: &Path, name: &str, args: &[String]) -> io::Result<()> {
     check_args(args)?;
     let mut text = args.join("\n");
     text.push('\n');
-    std::fs::write(dir.join(ARGS_FILE), text)
+    write_atomic(&dir.join(ARGS_FILE), text)
 }
 
 /// Refuses options an instance cannot keep: its own, and any with a line break.
@@ -214,9 +247,12 @@ pub fn wipe_data(root: &Path, name: &str) -> io::Result<()> {
     if running(&dir.join(SOCKET_FILE)) {
         return Err(io::Error::other(copy::INSTANCE_RUNNING));
     }
-    match std::fs::remove_dir_all(dir.join(DATA_DIR)) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-        _ => Ok(()),
+    // Renamed first, which is one step: a wipe cut short leaves the data gone, not half of it.
+    let trash = dir.join(format!("{DATA_DIR}{TRASH_SUFFIX}{}", std::process::id()));
+    match std::fs::rename(dir.join(DATA_DIR), &trash) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+        Ok(()) => std::fs::remove_dir_all(trash),
     }
 }
 
@@ -299,6 +335,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("emu-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_write_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let dir = scratch("write_atomic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file");
+        write_atomic(&path, "old").unwrap();
+        write_atomic(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert!(!partial(&path).exists());
+        // A target that cannot be replaced is left as it was, with no partial file behind.
+        let blocked = dir.join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_atomic(&blocked, "x").is_err());
+        assert!(!partial(&blocked).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -14,7 +14,8 @@ const MAX_TEXT_LEN: usize = 32 * 1024 - 1;
 const FOOTER_LEN: usize = 2 * size_of::<u32>() + MAGIC.len();
 
 fn valid_key(key: &str) -> bool {
-    !key.is_empty()
+    // Empty segments (`a..b`, `.a`, `a.`) are a syntax error to the kernel's parser.
+    key.split('.').all(|segment| !segment.is_empty())
         && key
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
@@ -39,14 +40,15 @@ pub fn trailer(params: &[(String, String)], ramdisk_len: usize) -> Result<Vec<u8
     // The kernel treats the text as a C string.
     let mut out = text.into_bytes();
     out.push(0);
-    if out.len() > MAX_TEXT_LEN {
-        return Err(ArchError::Bootconfig(copy::BOOTCONFIG_TOO_LARGE));
-    }
     let checksum = out
         .iter()
         .fold(0u32, |sum, byte| sum.wrapping_add(u32::from(*byte)));
     let unpadded = ramdisk_len + out.len() + FOOTER_LEN;
     out.resize(out.len() + unpadded.next_multiple_of(ALIGN) - unpadded, 0);
+    // The kernel checks the size the footer records, which includes the padding.
+    if out.len() > MAX_TEXT_LEN {
+        return Err(ArchError::Bootconfig(copy::BOOTCONFIG_TOO_LARGE));
+    }
     let size = u32::try_from(out.len()).expect("bounded by MAX_TEXT_LEN plus padding");
     out.extend_from_slice(&size.to_le_bytes());
     out.extend_from_slice(&checksum.to_le_bytes());
@@ -112,7 +114,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_keys() {
-        for bad in ["", "a b", "a=b", "a\nb"] {
+        for bad in ["", "a b", "a=b", "a\nb", "a..b", ".a", "a."] {
             assert!(matches!(
                 trailer(&params(&[(bad, "v")]), 0),
                 Err(ArchError::Bootconfig(_))
@@ -127,5 +129,14 @@ mod tests {
             trailer(&params(&[("k", &big)]), 0),
             Err(ArchError::Bootconfig(_))
         ));
+    }
+
+    #[test]
+    fn size_limit_counts_the_padding() {
+        // Text plus NUL fits, but padding to four bytes pushes the recorded size past the limit.
+        let fixed = "k = \"\"\n".len() + 1;
+        let value = "x".repeat(MAX_TEXT_LEN - fixed - 1);
+        assert!(trailer(&params(&[("k", &value)]), 0).is_err());
+        assert!(trailer(&params(&[("k", &value[..value.len() - 8])]), 0).is_ok());
     }
 }

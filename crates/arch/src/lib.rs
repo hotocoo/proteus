@@ -12,6 +12,9 @@ pub mod slots;
 /// Built on every host: it is plain data layout, so its tests run anywhere.
 pub mod x86_64;
 
+/// `COMMAND_LINE_SIZE` in Linux on arm64 and x86, terminator included: longer lines are cut silently.
+pub const KERNEL_CMDLINE_SIZE: usize = 2048;
+
 #[derive(Debug)]
 pub enum ArchError {
     /// The kernel file is not a bootable image for this architecture.

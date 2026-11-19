@@ -84,9 +84,14 @@ impl Default for Silence {
     }
 }
 
+/// How long `frames` (stereo 16-bit samples at `SAMPLE_RATE`) take to play.
+pub fn playing_time(frames: &[u8]) -> Duration {
+    Duration::from_secs((frames.len() / BYTES_PER_FRAME) as u64) / SAMPLE_RATE
+}
+
 impl AudioSink for Silence {
     fn play(&mut self, frames: &[u8]) {
-        let lasts = Duration::from_secs((frames.len() / BYTES_PER_FRAME) as u64) / SAMPLE_RATE;
+        let lasts = playing_time(frames);
         // After a pause the clock starts again from now, not from where it stopped.
         let now = Instant::now();
         self.played_until = self.played_until.max(now) + lasts;
@@ -271,6 +276,10 @@ fn serve(
         // Control requests are looked at again after every period, so that "stop" does not have
         // to wait behind all the sound already queued.
         loop {
+            // A reset waits for this thread: stop between periods, not after the whole queue.
+            if matches!(wake.try_recv(), Ok(Wake::Stop)) {
+                return sink;
+            }
             let step =
                 drain_control(&mut queues[CONTROL_QUEUE], &mem, &mut stream).and_then(|answered| {
                     let played = play_one(&mut queues[TX_QUEUE], &mem, &stream, sink.as_mut())?;

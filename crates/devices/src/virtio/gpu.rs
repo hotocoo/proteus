@@ -72,6 +72,8 @@ pub const BYTES_PER_PIXEL: usize = 4;
 /// Limits on what a guest can make the device allocate.
 const MAX_DIMENSION: u32 = 8192;
 const MAX_RESOURCES: usize = 256;
+/// Most pixel memory all 2D resources together may hold (1 GiB); the per-resource limit alone allows 64 GiB.
+const MAX_RESOURCE_BYTES: usize = 1 << 30;
 const MAX_BACKING_ENTRIES: u32 = 16_384;
 /// `struct virtio_gpu_resp_edid` after the header: size, padding, then room for the EDID.
 const EDID_ROOM: usize = 1024;
@@ -203,10 +205,18 @@ impl Display {
                 if !sane {
                     return Err(RESP_ERR_INVALID_PARAMETER);
                 }
-                if self.resources.len() >= MAX_RESOURCES && !self.resources.contains_key(&id) {
+                // Replacing a resource would leave the scanout pointing at the old one's geometry.
+                if self.resources.contains_key(&id) {
+                    return Err(RESP_ERR_INVALID_RESOURCE_ID);
+                }
+                let bytes = width as usize * height as usize * BYTES_PER_PIXEL;
+                let held: usize = self.resources.values().map(|r| r.pixels.len()).sum();
+                if self.resources.len() >= MAX_RESOURCES
+                    || held.saturating_add(bytes) > MAX_RESOURCE_BYTES
+                {
                     return Err(RESP_ERR_OUT_OF_MEMORY);
                 }
-                let pixels = vec![0u8; width as usize * height as usize * BYTES_PER_PIXEL];
+                let pixels = vec![0u8; bytes];
                 self.resources.insert(
                     id,
                     Resource {
@@ -306,7 +316,19 @@ impl Display {
                     .resources
                     .get(&id)
                     .ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
-                if let (Some((_, rect)), Some(sink)) = (shown, &self.sink) {
+                // The shown part must still lie inside the resource before it is sliced.
+                let fits = |rect: &Rect| {
+                    rect.x
+                        .checked_add(rect.width)
+                        .is_some_and(|r| r <= resource.width)
+                        && rect
+                            .y
+                            .checked_add(rect.height)
+                            .is_some_and(|b| b <= resource.height)
+                };
+                if let (Some((_, rect)), Some(sink)) =
+                    (shown.filter(|(_, rect)| fits(rect)), &self.sink)
+                {
                     // A resource can be larger than what is shown of it (drivers round sizes up).
                     let whole = rect.width == resource.width && rect.height == resource.height;
                     let pixels = if whole {
@@ -644,9 +666,13 @@ fn serve(
                 };
                 let ready = gpu.pending.release(done);
                 let any = !ready.is_empty();
+                // Answer every released fence even if one fails; report the first error.
                 ready
                     .into_iter()
-                    .try_for_each(|(head, written)| queue_used(&mut control, &mem, head, written))
+                    .map(|(head, written)| queue_used(&mut control, &mem, head, written))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .collect::<Result<(), _>>()
                     .map(|()| any)
             }
             Ok(Wake::Stop) | Err(_) => return,
@@ -1100,6 +1126,50 @@ mod tests {
                 .iter()
                 .chain(&pixels[start + 8..])
                 .all(|byte| *byte == 0)
+        );
+    }
+
+    #[test]
+    fn recreating_a_resource_is_refused_so_a_flush_cannot_outrun_the_scanout() {
+        let mut display = display(Some(Arc::new(Recorder::default())));
+        let mem = memory();
+        let create = |display: &mut Display, size| {
+            run(
+                display,
+                &mem,
+                CMD_CREATE_2D,
+                &words(&[1, FORMAT_BGRX, size, size]),
+            )
+        };
+        assert_eq!(create(&mut display, 64), RESP_OK_NODATA);
+        run(
+            &mut display,
+            &mem,
+            CMD_SET_SCANOUT,
+            &words(&[0, 0, 64, 64, 0, 1]),
+        );
+        assert_eq!(create(&mut display, 16), RESP_ERR_INVALID_RESOURCE_ID);
+        let flush = words(&[0, 0, 64, 64, 1, 0]);
+        assert_eq!(run(&mut display, &mem, CMD_FLUSH, &flush), RESP_OK_NODATA);
+    }
+
+    #[test]
+    fn resources_together_are_capped_by_memory() {
+        let mut display = display(Some(Arc::new(Recorder::default())));
+        let mem = memory();
+        let biggest = MAX_DIMENSION * MAX_DIMENSION * BYTES_PER_PIXEL as u32;
+        let fit = MAX_RESOURCE_BYTES / biggest as usize;
+        for id in 1..=fit as u32 {
+            let body = words(&[id, FORMAT_BGRX, MAX_DIMENSION, MAX_DIMENSION]);
+            assert_eq!(
+                run(&mut display, &mem, CMD_CREATE_2D, &body),
+                RESP_OK_NODATA
+            );
+        }
+        let body = words(&[fit as u32 + 1, FORMAT_BGRX, MAX_DIMENSION, MAX_DIMENSION]);
+        assert_eq!(
+            run(&mut display, &mem, CMD_CREATE_2D, &body),
+            RESP_ERR_OUT_OF_MEMORY
         );
     }
 

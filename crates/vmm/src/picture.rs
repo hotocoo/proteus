@@ -77,7 +77,7 @@ impl Picture {
         match native_format(frame.format) {
             Some(format) => self.upload(frame, format, render),
             None => {
-                let Some(image) = crate::window::color_image(frame, 0) else {
+                let Some(image) = crate::window::color_image(frame, turns) else {
                     return;
                 };
                 let options = egui::TextureOptions::LINEAR;
@@ -171,7 +171,7 @@ impl Picture {
             return;
         };
         painter.rect_filled(rect, 0.0, Color32::BLACK);
-        // The converted texture is already upright.
+        // The converted texture was turned upright when it was made.
         let turns = if self.native.is_some() { self.turns } else { 0 };
         let mut mesh = egui::Mesh::with_texture(id);
         let corners = [

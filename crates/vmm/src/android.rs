@@ -8,20 +8,24 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::layout;
 use arch::android::bootimg::{self, BOOT_HEADER_LEN, VENDOR_HEADER_LEN};
 use arch::android::{cpio, lz4};
+use devices::disk::Disk;
 use devices::disk::gpt::{self, Partition, SECTOR};
-use devices::disk::{Disk, sparse};
 use devices::virtio::blk::DiskImage;
 
 use crate::config::AndroidOptions;
 use crate::{VmmError, copy};
 
 const MIB: u64 = 1 << 20;
+/// The file in the data folder that an emulator locks while it runs on that folder.
+const DATA_LOCK_FILE: &str = ".lock";
 
 /// Slot the images are presented as. The image set has one copy of everything, so there is only "a".
 const SLOT_SUFFIX: &str = "_a";
@@ -247,14 +251,7 @@ fn file_error(path: &Path) -> impl FnOnce(std::io::Error) -> VmmError + '_ {
 }
 
 fn image(path: &Path) -> Result<Disk, VmmError> {
-    let mut file = File::open(path).map_err(file_error(path))?;
-    let mut disk = Disk::default();
-    if sparse::is_sparse(&mut file).map_err(file_error(path))? {
-        sparse::append(&mut disk, file).map_err(file_error(path))?;
-    } else {
-        let len = file.metadata().map_err(file_error(path))?.len();
-        disk = Disk::from_file(file, len, false);
-    }
+    let (mut disk, _) = devices::disk::open_image(path, false).map_err(file_error(path))?;
     disk.pad_to(SECTOR);
     Ok(disk)
 }
@@ -294,7 +291,9 @@ fn read_header<const N: usize>(path: &Path) -> Result<(File, [u8; N], u64), VmmE
 /// `key=value` lines as the vendor image stores them. Values may be quoted.
 fn parse_bootconfig(text: &str) -> Vec<(String, String)> {
     text.lines()
-        .filter_map(|line| line.trim().split_once('='))
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
         .map(|(key, value)| {
             (
                 key.trim().to_owned(),
@@ -322,8 +321,33 @@ pub fn machine_bootconfig(serial: bool, ram_bytes: u64, gpu: bool) -> Vec<(Strin
         .collect()
 }
 
+/// Data folders this process has locked. The lock lasts as long as the file is open, so they stay
+/// open until the process ends.
+static DATA_LOCKS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+/// Takes the exclusive lock on `data`, so that two emulators never write the same disk images.
+fn lock_data(data: &Path) -> Result<(), VmmError> {
+    let path = data.join(DATA_LOCK_FILE);
+    let file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(file_error(&path))?;
+    // SAFETY: `flock` only takes the descriptor of a file that is open here; it touches no memory.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(VmmError::Config(copy::DATA_DIR_LOCKED));
+    }
+    DATA_LOCKS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(file);
+    Ok(())
+}
+
 pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), VmmError> {
     std::fs::create_dir_all(&options.data).map_err(file_error(&options.data))?;
+    lock_data(&options.data)?;
     let image_path = |file: &str| -> PathBuf { options.images.join(file) };
 
     let mut partitions = Vec::new();
@@ -402,6 +426,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_data_folder_is_locked_by_one_emulator_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("emu-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        lock_data(&dir).unwrap();
+        // A second open file description conflicts, even inside this process.
+        assert!(matches!(lock_data(&dir), Err(VmmError::Config(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn machine_bootconfig_follows_the_serial_port_and_ram_size() {
         let with = machine_bootconfig(true, 4096 * MIB, false);
         assert!(with.contains(&("androidboot.console".to_owned(), "ttyS0".to_owned())));
@@ -432,6 +466,12 @@ mod tests {
                 ("a".to_owned(), "b=c".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn bootconfig_comments_and_blank_lines_are_skipped() {
+        let parsed = parse_bootconfig("# a = b\n\n  # c = d\nk=v\n");
+        assert_eq!(parsed, [("k".to_owned(), "v".to_owned())]);
     }
 
     #[test]
