@@ -68,6 +68,11 @@ impl Painter {
         })
     }
 
+    /// The GPU device, queue and egui's renderer, once the window has a surface.
+    pub fn render_state(&self) -> Option<egui_wgpu::RenderState> {
+        self.painter.render_state()
+    }
+
     /// Gives a window event to egui. True if egui used it, so the guest should not get it.
     pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         if let WindowEvent::Resized(size) = event
@@ -78,7 +83,9 @@ impl Painter {
                 .on_window_resized(egui::ViewportId::ROOT, width, height);
         }
         let response = self.state.on_window_event(window, event);
-        if response.repaint {
+        // egui asks to repaint after every event, a redraw included; asking again for that one
+        // would draw without end.
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
             window.request_redraw();
         }
         response.consumed

@@ -33,6 +33,8 @@ pub mod machine;
 pub mod orientation;
 #[cfg(host_board)]
 mod painter;
+#[cfg(host_board)]
+mod picture;
 pub mod profiles;
 pub mod sensors;
 pub mod session;

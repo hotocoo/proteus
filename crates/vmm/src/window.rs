@@ -27,6 +27,7 @@ use crate::input::button_code;
 use crate::keyedit::Editor;
 use crate::keymap::{self, Mapper, Scroll, Touch};
 use crate::painter::Painter;
+use crate::picture::Picture;
 use crate::{VmmError, copy, orientation, profiles};
 
 /// Quarter turns in a whole turn, and degrees in a quarter turn.
@@ -80,7 +81,7 @@ fn guest_pixel(rect: egui::Rect, picture: (u32, u32), point: egui::Pos2) -> Opti
 }
 
 /// `frame` turned upright, as an RGBA image for the window. `None` if its size and pixels disagree.
-fn color_image(frame: &Frame<'_>, turns: u8) -> Option<egui::ColorImage> {
+pub(crate) fn color_image(frame: &Frame<'_>, turns: u8) -> Option<egui::ColorImage> {
     let stride = frame.width as usize * BYTES_PER_PIXEL;
     if frame.width == 0 || frame.pixels.len() != stride * frame.height as usize {
         return None;
@@ -182,10 +183,10 @@ struct App {
     shown: Option<Shown>,
     gui: Gui,
     /// The guest's picture, as last uploaded, and whether a newer frame has come since.
-    texture: Option<egui::TextureHandle>,
+    picture_texture: Picture,
     frame_waiting: bool,
-    /// Where the picture was drawn last, in points.
-    picture: Option<egui::Rect>,
+    /// Where the picture was drawn last, in points, and its upright size in guest pixels.
+    picture: Option<(egui::Rect, (u32, u32))>,
     /// Where the pointer is, in window pixels.
     pointer: PhysicalPosition<f64>,
     /// Whether the mouse's finger is on the guest's screen.
@@ -206,6 +207,9 @@ struct App {
     device_turns: u8,
     /// What the user asked for when the window closed: a restart, maybe after a factory reset.
     exit: crate::Exit,
+    /// Frames the guest has sent since `counted`, for the debug log's frame rate.
+    frames: u32,
+    counted: Instant,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
 }
@@ -293,7 +297,8 @@ impl App {
 
     /// The upright guest pixel under the pointer, if it is over the picture.
     fn pointer_pixel(&self) -> Option<(u32, u32)> {
-        guest_pixel(self.picture?, self.upright(), self.pointer_points()?)
+        let (rect, size) = self.picture?;
+        guest_pixel(rect, size, self.pointer_points()?)
     }
 
     /// Moves the mouse's finger to the pointer, puts it down or lifts it, as `pressed` says.
@@ -327,32 +332,25 @@ impl App {
         if self.frame_waiting
             && let Some(shown) = &self.shown
             && let Some(screen) = &self.controller.screen
+            && let Some(render) = shown.painter.render_state()
         {
             self.frame_waiting = false;
             let turns = screen.turns();
-            let image = screen
-                .with_latest(|frame| color_image(frame, turns))
-                .flatten();
-            if let Some(image) = image {
-                match &mut self.texture {
-                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
-                    None => {
-                        self.texture = Some(shown.painter.ctx.load_texture(
-                            copy::GUEST_TEXTURE,
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        ));
-                    }
-                }
-            }
+            let picture = &mut self.picture_texture;
+            let ctx = &shown.painter.ctx;
+            screen.with_latest(|frame| picture.update(frame, turns, &render, ctx));
         }
-        let upright = self.upright();
+        // The picture's shape is the one of the frame on screen, so clicks match what is seen.
+        let upright = self
+            .picture_texture
+            .upright()
+            .unwrap_or_else(|| self.upright());
         let Some(shown) = self.shown.as_mut() else {
             return;
         };
         let mut effects = Vec::new();
         let gui = &mut self.gui;
-        let texture = &self.texture;
+        let texture = &self.picture_texture;
         let editor = &mut self.editor;
         let mut picture = None;
         shown.painter.paint(&shown.window, |ui| {
@@ -378,13 +376,10 @@ impl App {
             }
             egui::CentralPanel::no_frame().show(ui, |ui| {
                 let space = ui.max_rect();
-                match (texture, fit(space, upright)) {
-                    (Some(texture), Some(rect)) => {
-                        let uv =
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                        ui.painter()
-                            .image(texture.id(), rect, uv, egui::Color32::WHITE);
-                        picture = Some(rect);
+                match (texture.upright(), fit(space, upright)) {
+                    (Some(_), Some(rect)) => {
+                        texture.paint(ui.painter(), rect);
+                        picture = Some((rect, upright));
                         if let Some(editor) = editor.as_mut() {
                             editor.overlay(ui, rect, upright);
                         }
@@ -503,12 +498,12 @@ impl App {
         };
         let old = self.upright();
         let new = orientation::upright_size(self.guest, turns);
-        let scale = f64::from(picture.width()) / f64::from(old.0.max(1));
+        let scale = f64::from(picture.0.width()) / f64::from(old.0.max(1));
         let size = shown
             .window
             .inner_size()
             .to_logical::<f64>(shown.window.scale_factor());
-        let chrome = size.width - f64::from(picture.width());
+        let chrome = size.width - f64::from(picture.0.width());
         let wanted = LogicalSize::new(f64::from(new.0) * scale + chrome, f64::from(new.1) * scale);
         let _ = shown.window.request_inner_size(wanted);
         shown.window.request_redraw();
@@ -599,7 +594,15 @@ impl ApplicationHandler<Notice> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, notice: Notice) {
         match notice {
-            Notice::Frame => self.frame_waiting = true,
+            Notice::Frame => {
+                self.frame_waiting = true;
+                self.frames += 1;
+                if self.counted.elapsed() >= crate::config::FRAME_RATE_PERIOD {
+                    log::debug!("{}", copy::frame_rate(self.frames, self.counted.elapsed()));
+                    self.frames = 0;
+                    self.counted = Instant::now();
+                }
+            }
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),
             Notice::Rotated(turns) => self.rotated(turns),
@@ -760,7 +763,7 @@ impl WindowLoop {
             guest,
             shown: None,
             gui,
-            texture: None,
+            picture_texture: Picture::default(),
             frame_waiting: true,
             picture: None,
             pointer: PhysicalPosition::default(),
@@ -774,10 +777,16 @@ impl WindowLoop {
             device_turns: 0,
             exit: crate::Exit::Closed,
             panel_shown: false,
+            frames: 0,
+            counted: Instant::now(),
         };
         let ran = self.0.run_app(&mut app);
         // The GPU objects go before the window they draw into.
-        app.texture = None;
+        let render = app
+            .shown
+            .as_ref()
+            .and_then(|shown| shown.painter.render_state());
+        app.picture_texture.release(render.as_ref());
         app.shown = None;
         match (app.failed, ran) {
             (Some(why), _) => Err(VmmError::Device(copy::window_failed(&why))),

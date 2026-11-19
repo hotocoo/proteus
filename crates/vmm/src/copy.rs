@@ -233,6 +233,13 @@ pub const WINDOW_TITLE: &str = "emu";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
 
+pub fn frame_rate(frames: u32, over: std::time::Duration) -> String {
+    format!(
+        "guest frames: {:.1} per second",
+        f64::from(frames) / over.as_secs_f64()
+    )
+}
+
 pub fn window_touch(window_x: f64, window_y: f64, x: u32, y: u32) -> String {
     format!("window pixel {window_x:.0},{window_y:.0} touches guest pixel {x},{y}")
 }

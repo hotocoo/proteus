@@ -212,6 +212,8 @@ pub const CHECK_DATA_DIR: &str = "check";
 /// What the settings' storage slider allows, in GiB, and how tall the list fields are.
 pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
 pub const LIST_ROWS: usize = 2;
+/// How often the debug log reports the guest's frame rate.
+pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(5);
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
 /// Apps a release carries beside the program, installed when a data folder first boots, and the
 /// file in the data folder that notes which were.

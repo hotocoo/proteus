@@ -26,9 +26,11 @@ const STORED_BLOCK_MAX: usize = 0xffff;
 const ADLER_MODULUS: u32 = 65_521;
 
 // `VIRTIO_GPU_FORMAT_*` values, grouped by the byte order of their channels.
-const FORMATS_BGRX: [u32; 2] = [1, 2];
+pub(crate) const FORMATS_BGRX: [u32; 2] = [1, 2];
 const FORMATS_XRGB: [u32; 2] = [3, 4];
 const FORMATS_XBGR: [u32; 2] = [68, 121];
+/// virgl's R8G8B8A8 and R8G8B8X8: red first.
+pub(crate) const FORMATS_RGBX: [u32; 2] = [67, 134];
 
 /// Positions of red, green and blue within one four-byte pixel of the given format.
 pub(crate) fn channel_order(format: u32) -> [usize; RGB_BYTES] {
