@@ -36,6 +36,38 @@ const INITRD_ENV: &str = "EMU_TEST_INITRD";
 /// The hypervisor allows one VM per process, and the test harness runs tests on parallel threads.
 static ONE_VM: Mutex<()> = Mutex::new(());
 
+/// Takes the one VM, and makes sure the emulator's warnings and errors reach the test's output: a
+/// vCPU that fails stops the machine and says why only through the log. A test that failed while
+/// holding the VM does not fail the next one.
+fn one_vm() -> std::sync::MutexGuard<'static, ()> {
+    static LOGGER: StderrLog = StderrLog;
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
+    });
+    ONE_VM
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct StderrLog;
+
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("emu {}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 const RAM_BYTES: u64 = 512 << 20;
 const VCPUS: u32 = 2;
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -242,7 +274,7 @@ fn linux_boots_to_a_shell_uses_two_cpus_and_two_disks_then_powers_off() {
     let Some([kernel, initrd]) = fixtures([KERNEL_ENV, INITRD_ENV]) else {
         return;
     };
-    let _one_vm = ONE_VM.lock().unwrap();
+    let _one_vm = one_vm();
     let disk = ScratchDisk::new();
     let read_only_disk = ScratchDisk::new();
     let read_only_before = read_only_disk.contents();
@@ -337,7 +369,7 @@ fn host_power_switch_stops_a_running_guest() {
     let Some([kernel, initrd]) = fixtures([KERNEL_ENV, INITRD_ENV]) else {
         return;
     };
-    let _one_vm = ONE_VM.lock().unwrap();
+    let _one_vm = one_vm();
     let mut config = Config::new(kernel);
     config.net = None;
     let session = Session::boot(config, initrd);
@@ -359,7 +391,7 @@ fn kernel_reads_the_bootconfig_appended_to_the_ramdisk() {
     let Some([kernel, initrd]) = fixtures([BOOTCONFIG_KERNEL_ENV, INITRD_ENV]) else {
         return;
     };
-    let _one_vm = ONE_VM.lock().unwrap();
+    let _one_vm = one_vm();
     let mut config = Config::new(kernel);
     config.bootconfig = vec![
         ("androidboot.hardware".into(), "emu".into()),
@@ -465,7 +497,7 @@ fn guest_network_gets_dhcp_dns_tcp_adb_and_respects_the_sinkhole() {
     let Some([kernel, initrd]) = fixtures([KERNEL_ENV, INITRD_ENV]) else {
         return;
     };
-    let _one_vm = ONE_VM.lock().unwrap();
+    let _one_vm = one_vm();
     let server = PongServer::start();
     let resolver = Arc::new(FixedResolver::default());
     let adb_port = free_loopback_port();
