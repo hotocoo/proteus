@@ -125,7 +125,8 @@ jobs:
             --json databaseId --jq '.[0].databaseId')
           gh run download "$run" -n kernel-x86_64 -D "$RUNNER_TEMP/kernel"
       - name: Fetch the Android image
-        run: scripts/fetch-cuttlefish.sh aosp_cf_x86_64_only_phone-userdebug "$RUNNER_TEMP/image"
+        # A fixed build, so that a failure here is a change in this repository, not in the image.
+        run: scripts/fetch-cuttlefish.sh aosp_cf_x86_64_only_phone-userdebug "$RUNNER_TEMP/image" 16644040
       - name: Boot Android
         run: |
           target/release/emu --kernel "$RUNNER_TEMP/kernel/kernel-x86_64" \

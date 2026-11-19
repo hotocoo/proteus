@@ -96,7 +96,10 @@ jobs:
     needs: [macos, linux]
     runs-on: ubuntu-24.04
     steps:
+      # The tag's own message becomes the release notes, so the tag has to be fetched with it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
