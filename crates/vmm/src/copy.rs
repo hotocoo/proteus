@@ -78,8 +78,8 @@ Usage: emu --kernel <file> [options]
   shake                                  Shake the device
   shell <command>                        Run a command in Android's shell and print what it
                                          printed, such as `am force-stop <package>`
-  stop                                   Turn the machine off at once, like pulling the plug;
-                                         shut Android down from inside when you can
+  shutdown                               Shut Android down, then turn the machine off
+  stop                                   Turn the machine off at once, like pulling the plug
   record <file>                          Record the touches and keys that follow as a macro
   record-stop                            End the recording and write the file
   run <file> [<times>]                   Play a macro: a file of these commands, one per line,
@@ -445,6 +445,7 @@ pub mod gui {
     pub const SETTINGS: &str = "Settings";
 
     pub const WORKING: &str = "Working…";
+    pub const SHUTTING_DOWN: &str = "Android is shutting down… (close again to cut the power)";
     pub const CHOOSE: &str = "Choose…";
 
     pub const LAUNCHER_TITLE: &str = "Android emulator";

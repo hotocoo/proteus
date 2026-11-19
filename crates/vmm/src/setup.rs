@@ -52,8 +52,7 @@ fn bundled_apps(dir: &Path) -> Vec<String> {
 
 /// The folder of bundled apps: `apps/` beside the program, if it has one.
 fn apps_dir() -> Option<PathBuf> {
-    let program = std::env::current_exe().ok()?.canonicalize().ok()?;
-    Some(program.parent()?.join(BUNDLED_APPS_DIR)).filter(|dir| dir.is_dir())
+    crate::config::bundled(BUNDLED_APPS_DIR).map(|(_, path)| path)
 }
 
 /// Waits for Android to boot, then sets it up, on its own thread, until `done` is set.

@@ -207,6 +207,8 @@ struct App {
     device_turns: u8,
     /// What the user asked for when the window closed: a restart, maybe after a factory reset.
     exit: crate::Exit,
+    /// Whether Android has been asked to shut down.
+    shutting_down: bool,
     /// Frames the guest has sent since `counted`, for the debug log's frame rate.
     frames: u32,
     counted: Instant,
@@ -438,11 +440,11 @@ impl App {
             }
             Effect::Restart => {
                 self.exit = crate::Exit::Restart;
-                self.controller.power.off();
+                self.shut_down();
             }
             Effect::FactoryReset => {
                 self.exit = crate::Exit::FactoryReset;
-                self.controller.power.off();
+                self.shut_down();
             }
             Effect::Turn(clockwise) => self.shortcut(Shortcut::Turn(clockwise)),
         }
@@ -472,6 +474,23 @@ impl App {
         }
         self.mapper = mapper;
         self.sync_pointer();
+    }
+
+    /// Shuts Android down on a thread of its own, so the window keeps drawing meanwhile.
+    fn shut_down(&mut self) {
+        if self.shutting_down {
+            return;
+        }
+        self.shutting_down = true;
+        self.gui.set_status(copy::gui::SHUTTING_DOWN);
+        let controller = Arc::clone(&self.controller);
+        let started = std::thread::Builder::new()
+            .name(crate::config::SHUTDOWN_THREAD.into())
+            .spawn(move || controller.shut_down());
+        if let Err(err) = started {
+            log::error!("{}", copy::thread(&err));
+            self.controller.power.off();
+        }
     }
 
     /// Does what a shortcut stands for.
@@ -645,7 +664,10 @@ impl ApplicationHandler<Notice> for App {
             .is_some_and(|shown| shown.painter.ctx.egui_wants_keyboard_input());
         match event {
             // The machine is switched off; the window closes when it has stopped.
-            WindowEvent::CloseRequested => self.controller.power.off(),
+            // Android shuts down first; the window closes when the machine has stopped. A second
+            // close pulls the plug.
+            WindowEvent::CloseRequested if self.shutting_down => self.controller.power.off(),
+            WindowEvent::CloseRequested => self.shut_down(),
             WindowEvent::RedrawRequested => self.draw(),
             // The picture moves when the window changes; draw now so clicks use where it is.
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -777,6 +799,7 @@ impl WindowLoop {
             device_turns: 0,
             exit: crate::Exit::Closed,
             panel_shown: false,
+            shutting_down: false,
             frames: 0,
             counted: Instant::now(),
         };

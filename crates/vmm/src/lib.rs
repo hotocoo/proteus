@@ -301,31 +301,31 @@ fn start_gpu() -> Result<(), String> {
     let chosen = config::VULKAN_DRIVER_VARIABLES
         .iter()
         .any(|name| std::env::var_os(name).is_some());
-    let program = std::env::current_exe().and_then(std::fs::canonicalize);
-    let bundled: Vec<&str> = config::BUNDLED_VULKAN_DRIVERS
+    let bundled: Vec<(&str, std::path::PathBuf)> = config::BUNDLED_VULKAN_DRIVERS
         .iter()
-        .filter(|(_, icd)| {
-            program
-                .as_ref()
-                .is_ok_and(|exe| exe.with_file_name(icd).is_file())
-        })
-        .map(|(driver, _)| *driver)
+        .filter_map(|(driver, icd)| config::bundled(icd).map(|(dir, _)| (*driver, dir)))
         .collect();
     if chosen || bundled.is_empty() {
         return gpu_works();
     }
     // The first bundled driver that starts is used; each is tried in its own child process.
     let mut why = String::new();
-    for driver in bundled {
+    for (driver, dir) in bundled {
         // SAFETY: called from `main` before any thread is started.
-        unsafe { std::env::set_var(config::VULKAN_ICD_VARIABLE, driver) };
+        unsafe {
+            std::env::set_var(config::VULKAN_ICD_VARIABLE, driver);
+            std::env::set_var(config::VULKAN_LAUNCHER_DIR_VARIABLE, dir);
+        }
         match gpu_works() {
             Ok(()) => return Ok(()),
             Err(failed) => why = failed,
         }
     }
     // SAFETY: as above.
-    unsafe { std::env::remove_var(config::VULKAN_ICD_VARIABLE) };
+    unsafe {
+        std::env::remove_var(config::VULKAN_ICD_VARIABLE);
+        std::env::remove_var(config::VULKAN_LAUNCHER_DIR_VARIABLE);
+    }
     Err(why)
 }
 

@@ -79,6 +79,9 @@ const WORD_ROUTE: &str = "route";
 const WORD_ROTATE: &str = "rotate";
 const WORD_SHAKE: &str = "shake";
 pub const WORD_STOP: &str = "stop";
+pub const WORD_SHUTDOWN: &str = "shutdown";
+/// Asks Android to power off, as its power menu does.
+const SHUTDOWN_COMMAND: &str = "reboot -p";
 const WORD_WAIT: &str = "wait";
 const WORD_RUN: &str = "run";
 const WORD_RECORD: &str = "record";
@@ -152,6 +155,8 @@ pub enum Command {
     Shell(String),
     /// Turn the machine off without asking the guest.
     Stop,
+    /// Shut Android down, then turn the machine off.
+    Shutdown,
     Wait(Duration),
     /// Play the macro in a file this many times.
     Run {
@@ -228,6 +233,7 @@ impl std::fmt::Display for Command {
             Self::Shake => f.write_str(WORD_SHAKE),
             Self::Shell(command) => write!(f, "{WORD_SHELL} {command}"),
             Self::Stop => f.write_str(WORD_STOP),
+            Self::Shutdown => f.write_str(WORD_SHUTDOWN),
             Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
             Self::Run { path, times } => write!(f, "{WORD_RUN} {} {times}", path.display()),
             Self::Record(path) => write!(f, "{WORD_RECORD} {}", path.display()),
@@ -276,6 +282,7 @@ pub fn parse(line: &str) -> Option<Command> {
         }
         (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
         (WORD_STOP, Some(&[])) => return Some(Command::Stop),
+        (WORD_SHUTDOWN, Some(&[])) => return Some(Command::Shutdown),
         (WORD_WALK, None) if rest == WORD_STOP => return Some(Command::Walk(None)),
         (WORD_ROUTE, _) if !rest.is_empty() => {
             let speed = rest
@@ -526,6 +533,22 @@ impl Controller {
         send(keyboard, &input::key(code, down))
     }
 
+    /// Shuts Android down the way its power menu does, so everything is written to disk, then
+    /// switches the machine off. If Android cannot be asked, or has not finished within
+    /// `SHUTDOWN_TIMEOUT`, the power is cut anyway. Blocks until then.
+    pub fn shut_down(&self) {
+        let boot = self.power.boot();
+        let port = self.adb_port.load(Ordering::SeqCst);
+        let asked = port != 0
+            && crate::adb::output_within(port, SHUTDOWN_COMMAND, crate::config::SHUTDOWN_ASK)
+                .is_ok();
+        if asked {
+            self.power.wait_for(boot, crate::config::SHUTDOWN_TIMEOUT);
+        }
+        // Off for good, also if Android restarted instead.
+        self.power.off();
+    }
+
     /// Runs `command` in the guest's shell and gives back what it printed.
     pub fn shell(&self, command: &str) -> Result<String, String> {
         let port = self.adb_port.load(Ordering::SeqCst);
@@ -691,6 +714,10 @@ impl Controller {
             }
             Command::Stop => {
                 self.power.off();
+                Ok(())
+            }
+            Command::Shutdown => {
+                self.shut_down();
                 Ok(())
             }
             Command::Wait(duration) => self.wait(duration),
@@ -1031,6 +1058,7 @@ mod tests {
             Some(Command::Rotate([-90.0, 0.0, 12.5]))
         );
         assert_eq!(parse("shake"), Some(Command::Shake));
+        assert_eq!(parse("shutdown"), Some(Command::Shutdown));
         assert_eq!(
             parse("shell am force-stop com.example.game"),
             Some(Command::Shell("am force-stop com.example.game".into()))
@@ -1118,6 +1146,7 @@ mod tests {
             Command::Shake,
             Command::Shell("dumpsys window | grep -i rotation".into()),
             Command::Stop,
+            Command::Shutdown,
             Command::Wait(Duration::from_millis(1500)),
             Command::Run {
                 path: "my macro.txt".into(),

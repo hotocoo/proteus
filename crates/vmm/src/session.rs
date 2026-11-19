@@ -52,6 +52,17 @@ impl PowerSwitch {
         switch.unwrap_or_else(PoisonError::into_inner).off_requested
     }
 
+    /// As `wait`, giving up after `limit`. True if the machine is off or the boot is over.
+    pub fn wait_for(&self, boot: u64, limit: std::time::Duration) -> bool {
+        let switch = self.switch.lock().unwrap_or_else(PoisonError::into_inner);
+        let waiting = |switch: &mut Switch| !switch.off_requested && switch.boots_ended == boot;
+        let (_switch, timeout) = self
+            .changed
+            .wait_timeout_while(switch, limit, waiting)
+            .unwrap_or_else(PoisonError::into_inner);
+        !timeout.timed_out()
+    }
+
     /// Marks the running boot as over, which releases whoever waits on it.
     pub fn boot_ended(&self) {
         let mut switch = self.switch.lock().unwrap_or_else(PoisonError::into_inner);
@@ -173,8 +184,18 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_timed_wait_gives_up_or_sees_the_boot_end() {
+        let power = PowerSwitch::default();
+        let boot = power.boot();
+        assert!(!power.wait_for(boot, Duration::from_millis(10)));
+        power.boot_ended();
+        assert!(power.wait_for(boot, Duration::from_millis(10)));
+    }
 
     #[test]
     fn waiting_ends_when_the_boot_does_and_reports_no_power_off() {

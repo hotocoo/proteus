@@ -283,7 +283,7 @@ impl Launcher {
 fn stop(name: &str) -> String {
     let socket = instance::root().and_then(|root| instance::socket(&root, name));
     let stopped = socket.and_then(|socket| {
-        crate::ctl::request(&socket, crate::ctl::WORD_STOP, &mut std::io::sink())
+        crate::ctl::request(&socket, crate::ctl::WORD_SHUTDOWN, &mut std::io::sink())
     });
     match stopped {
         Ok(_) => text::stopping(name),

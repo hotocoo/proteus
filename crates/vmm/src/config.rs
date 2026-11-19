@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use lexopt::prelude::*;
@@ -98,6 +98,8 @@ pub const BUNDLED_VULKAN_DRIVERS: [(&str, &str); 2] = [
 ];
 /// gfxstream's switch between its driver paths.
 pub const VULKAN_ICD_VARIABLE: &str = "ANDROID_EMU_VK_ICD";
+/// Where gfxstream looks for `lib64/vulkan` besides the program's own folder.
+pub const VULKAN_LAUNCHER_DIR_VARIABLE: &str = "ANDROID_EMULATOR_LAUNCHER_DIR";
 /// Any of these set means the user picked a Vulkan driver, so the bundled ones are left alone.
 pub const VULKAN_DRIVER_VARIABLES: [&str; 3] =
     [VULKAN_ICD_VARIABLE, "VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
@@ -108,16 +110,31 @@ pub const INSTANCE_NAME_MAX: usize = 32;
 /// Longest Unix socket path the system takes (macOS: 104 bytes with the terminating zero).
 pub const SOCKET_PATH_MAX: usize = 103;
 
-/// The guest kernel a release carries: beside the program, or in the app's Resources folder.
+/// Where a release keeps what comes with the program: beside it, or in the app's Resources
+/// folder when it is inside Emu.app.
+pub fn bundle_dirs() -> Vec<PathBuf> {
+    let program = std::env::current_exe().and_then(std::fs::canonicalize);
+    let Some(dir) = program.ok().and_then(|p| p.parent().map(Path::to_path_buf)) else {
+        return Vec::new();
+    };
+    let resources = dir.join(APP_RESOURCES);
+    vec![dir, resources]
+}
+
+/// The first of `bundle_dirs` that holds `name`: that folder, and the path to `name` in it.
+pub fn bundled(name: &str) -> Option<(PathBuf, PathBuf)> {
+    bundle_dirs()
+        .into_iter()
+        .map(|dir| {
+            let path = dir.join(name);
+            (dir, path)
+        })
+        .find(|(_, path)| path.exists())
+}
+
+/// The guest kernel a release carries.
 pub fn bundled_kernel() -> Option<PathBuf> {
-    let program = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let dir = program.parent()?;
-    [
-        dir.join(BUNDLED_KERNEL),
-        dir.join(APP_RESOURCES).join(BUNDLED_KERNEL),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    bundled(BUNDLED_KERNEL).map(|(_, path)| path)
 }
 /// The kernel's file name in a release, and where a macOS app keeps it, from its program's folder.
 pub const BUNDLED_KERNEL: &str = "kernel-arm64";
@@ -214,6 +231,11 @@ pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
 pub const LIST_ROWS: usize = 2;
 /// How often the debug log reports the guest's frame rate.
 pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(5);
+/// How long Android may take to answer the request to shut down, and to finish shutting down,
+/// before the power is cut.
+pub const SHUTDOWN_ASK: Duration = Duration::from_secs(5);
+pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+pub const SHUTDOWN_THREAD: &str = "shutdown";
 pub const WINDOW_SCREEN_SHARE: f64 = 0.85;
 /// Apps a release carries beside the program, installed when a data folder first boots, and the
 /// file in the data folder that notes which were.
