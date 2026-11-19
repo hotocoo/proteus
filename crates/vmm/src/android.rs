@@ -200,6 +200,18 @@ const CONSOLE_ON: &[(&str, &str)] = &[
     ("androidboot.serialconsole", "1"),
 ];
 const CONSOLE_OFF: &[(&str, &str)] = &[("androidboot.serialconsole", "0")];
+/// Drawing through gfxstream on the host's GPU instead of in software: the image's gfxstream Vulkan
+/// driver, ANGLE on top of it, and no CPU Vulkan. These are the values Google's Cuttlefish launcher
+/// uses for its `gfxstream_guest_angle` mode; they replace the software ones in `BOOTCONFIG`. The
+/// launcher also picks a Vulkan APEX variant, but only when the image has several; the prebuilt image
+/// has one, and naming a variant it lacks keeps the APEX from mounting at all.
+const GPU_GFXSTREAM: &[(&str, &str)] = &[
+    ("androidboot.hardware.vulkan", "ranchu"),
+    ("androidboot.hardware.egl", "angle"),
+    ("androidboot.cpuvulkan.version", "0"),
+    ("androidboot.hardware.gltransport", "virtio-gpu-asg"),
+    ("androidboot.hw_timeout_multiplier", "1"),
+];
 /// The first device `virtio_mmio.device=` creates, as init names it: its path under
 /// `/sys/devices/platform/`, where the kernel puts command-line devices under a parent of their own.
 #[cfg(not(target_arch = "aarch64"))]
@@ -295,11 +307,13 @@ fn set(params: &mut Vec<(String, String)>, key: &str, value: &str) {
 }
 
 /// Bootconfig that depends on how this machine is set up rather than on the image.
-pub fn machine_bootconfig(serial: bool, ram_bytes: u64) -> Vec<(String, String)> {
+pub fn machine_bootconfig(serial: bool, ram_bytes: u64, gpu: bool) -> Vec<(String, String)> {
     let console = if serial { CONSOLE_ON } else { CONSOLE_OFF };
+    let graphics = if gpu { GPU_GFXSTREAM } else { &[] };
     let ddr = format!("{}{DDR_SIZE_SUFFIX}", ram_bytes / MIB);
     console
         .iter()
+        .chain(graphics)
         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
         .chain([(DDR_SIZE_KEY.to_owned(), ddr)])
         .collect()
@@ -386,11 +400,18 @@ mod tests {
 
     #[test]
     fn machine_bootconfig_follows_the_serial_port_and_ram_size() {
-        let with = machine_bootconfig(true, 4096 * MIB);
+        let with = machine_bootconfig(true, 4096 * MIB, false);
         assert!(with.contains(&("androidboot.console".to_owned(), "ttyS0".to_owned())));
         assert!(with.contains(&("androidboot.serialconsole".to_owned(), "1".to_owned())));
         assert!(with.contains(&("androidboot.ddr_size".to_owned(), "4096MB".to_owned())));
-        let without = machine_bootconfig(false, 2048 * MIB);
+        let without = machine_bootconfig(false, 2048 * MIB, false);
+        let accelerated = machine_bootconfig(false, 2048 * MIB, true);
+        let value = |key: &str| {
+            let found = accelerated.iter().find(|(k, _)| k == key);
+            found.map(|(_, v)| v.as_str())
+        };
+        assert_eq!(value("androidboot.hardware.vulkan"), Some("ranchu"));
+        assert_eq!(value("androidboot.cpuvulkan.version"), Some("0"));
         assert!(without.contains(&("androidboot.serialconsole".to_owned(), "0".to_owned())));
         assert!(!without.iter().any(|(key, _)| key == "androidboot.console"));
     }

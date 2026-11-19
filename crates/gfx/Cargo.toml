@@ -7,7 +7,7 @@ publish.workspace = true
 [features]
 # Links gfxstream's host renderer, libgfxstream_backend, found through GFXSTREAM_PATH or
 # pkg-config (scripts/build-gfxstream.sh builds it).
-gfxstream = ["dep:rutabaga_gfx"]
+gfxstream = ["dep:rutabaga_gfx", "rutabaga_gfx/gfxstream"]
 
 [dependencies]
 devices.workspace = true

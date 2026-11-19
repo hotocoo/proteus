@@ -81,6 +81,12 @@ pub const ROUTE_DEFAULT_KMH: f64 = 5.0;
 /// Fastest a walk or route may go; anything faster is a typing mistake (this is an airliner).
 pub const MAX_KMH: f64 = 1000.0;
 pub const INSTANCE_SUBCOMMAND: &str = "instance";
+/// Hidden: what `emu` runs itself as to find out whether the GPU renderer starts.
+pub const GPU_CHECK_ARG: &str = "--gpu-check";
+/// How long the renderer may take to start before it is judged not to work.
+pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How often the check is looked at while it runs.
+pub const GPU_CHECK_POLL: Duration = Duration::from_millis(50);
 /// Environment variable naming the emulator's home folder, where instances live.
 pub const EMU_HOME_VARIABLE: &str = "EMU_HOME";
 pub const INSTANCES_DIR: &str = "instances";
@@ -195,6 +201,8 @@ pub struct Config {
     pub mute: bool,
     /// Control sockets of other instances that get this one's input too.
     pub sync: Vec<PathBuf>,
+    /// Draw with the host's GPU through gfxstream, if this build and the host's Vulkan driver can.
+    pub gpu: bool,
     /// Whether the guest gets a gamepad.
     pub gamepad: GamepadMode,
     /// Keys and mouse movements that stand for touches, read from this file.
@@ -230,6 +238,7 @@ impl Config {
             sound: true,
             mute: false,
             sync: Vec::new(),
+            gpu: false,
             gamepad: GamepadMode::Auto,
             keymap: None,
             keymap_dir: None,
@@ -264,6 +273,8 @@ pub enum InstanceCommand {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
+    /// Start and stop the GPU renderer once, to see whether it works here.
+    GpuCheck,
     Instance(InstanceCommand),
     Run(Box<Config>),
     /// Send `command` to the instance listening on `socket`.
@@ -352,6 +363,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             _ => Err(ConfigError(copy::CTL_NEEDS_ARGUMENTS.into())),
         };
     }
+    if args.peek().is_some_and(|first| first == GPU_CHECK_ARG) {
+        return Ok(Parsed::GpuCheck);
+    }
     if args
         .peek()
         .is_some_and(|first| first == INSTANCE_SUBCOMMAND)
@@ -411,6 +425,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("no-sound") => config.sound = false,
             Long("mute") => config.mute = true,
             Long("gamepad") => config.gamepad = GamepadMode::Always,
+            Long("gpu") => config.gpu = true,
             Long("sync") => config.sync.push(parser.value()?.into()),
             Long("no-gamepad") => config.gamepad = GamepadMode::Never,
             Long("logcat") => config.logcat = Some(parser.value()?.into()),

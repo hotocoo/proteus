@@ -10,7 +10,7 @@
 mod gfxstream;
 
 #[cfg(feature = "gfxstream")]
-pub use gfxstream::{Gfxstream, check};
+pub use gfxstream::{CAPSETS, Gfxstream, check};
 
 /// Whether this build can accelerate graphics at all.
 pub const AVAILABLE: bool = cfg!(feature = "gfxstream");

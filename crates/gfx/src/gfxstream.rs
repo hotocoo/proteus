@@ -12,9 +12,13 @@ use rutabaga_gfx::{
     RutabagaIovec, Transfer3D,
 };
 
-/// gfxstream's Vulkan capability set, the only one offered: the guest renders with Vulkan, and
-/// OpenGL ES through ANGLE on top of it (blueprint section 7.1).
+/// gfxstream's capability sets offered: Vulkan, which the guest renders with (and OpenGL ES through
+/// ANGLE on top of it, blueprint section 7.1), and the composer's, which the guest's display
+/// composer and allocator open. These are the two Google's Cuttlefish launcher offers with ANGLE.
 const CAPSET_GFXSTREAM_VULKAN: u32 = 3;
+const CAPSET_GFXSTREAM_COMPOSER: u32 = 9;
+/// How many capability sets that is.
+pub const CAPSETS: u32 = 2;
 
 pub struct Gfxstream(Rutabaga);
 
@@ -64,7 +68,8 @@ impl Gfxstream {
                 timeline,
             });
         });
-        let rutabaga = RutabagaBuilder::new(1 << CAPSET_GFXSTREAM_VULKAN, fences)
+        let capsets = (1 << CAPSET_GFXSTREAM_VULKAN) | (1 << CAPSET_GFXSTREAM_COMPOSER);
+        let rutabaga = RutabagaBuilder::new(capsets, fences)
             .set_default_component(RutabagaComponentType::Gfxstream)
             .set_use_vulkan(true)
             .set_use_gles(false)

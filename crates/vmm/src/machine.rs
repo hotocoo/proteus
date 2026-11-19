@@ -166,7 +166,7 @@ struct Progress {
 }
 
 struct Machine {
-    vm: HostVm,
+    vm: Arc<HostVm>,
     bus: MmioBus,
     vcpus: u32,
     progress: Mutex<Progress>,
@@ -188,7 +188,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Machine {
     fn new(
-        vm: HostVm,
+        vm: Arc<HostVm>,
         bus: MmioBus,
         vcpus: u32,
         #[cfg(target_arch = "x86_64")] ports: Vec<(u16, u16, Arc<dyn MmioDevice>)>,
@@ -537,6 +537,50 @@ fn load_lists(paths: &[PathBuf]) -> Result<DomainSet, VmmError> {
     Ok(domains)
 }
 
+/// Puts renderer memory into the guest, inside the GPU's shared-memory window.
+#[cfg(feature = "gpu")]
+struct WindowMapper(Arc<HostVm>);
+
+#[cfg(feature = "gpu")]
+impl devices::virtio::gpu3d::BlobMapper for WindowMapper {
+    unsafe fn map(&self, offset: u64, host: NonNull<u8>, len: u64) -> Result<(), String> {
+        let len = usize::try_from(len).map_err(|err| err.to_string())?;
+        // SAFETY: the caller keeps the memory valid until `unmap`, as `BlobMapper::map` requires;
+        // the device checked that offset and length are whole host pages inside the window.
+        let mapped = unsafe { self.0.map(layout::SHM_BASE + offset, host, len, Prot::RW) };
+        mapped.map_err(|err| err.to_string())
+    }
+
+    fn unmap(&self, offset: u64, len: u64) -> Result<(), String> {
+        let len = usize::try_from(len).map_err(|err| err.to_string())?;
+        self.0
+            .unmap(layout::SHM_BASE + offset, len)
+            .map_err(|err| err.to_string())
+    }
+}
+
+/// gfxstream behind the display, with its blobs in the shared-memory window.
+#[cfg(feature = "gpu")]
+fn acceleration(vm: &Arc<HostVm>, page: u64) -> devices::virtio::gpu::Acceleration {
+    use devices::virtio::ShmRegion;
+    use devices::virtio::gpu3d::Renderer;
+    /// virtio-gpu's host-visible shared-memory region.
+    const SHM_HOST_VISIBLE: u8 = 1;
+    devices::virtio::gpu::Acceleration {
+        renderer: Arc::new(Box::new(|done| {
+            gfx::Gfxstream::start(done).map(|renderer| Box::new(renderer) as Box<dyn Renderer>)
+        })),
+        mapper: Arc::new(WindowMapper(Arc::clone(vm))),
+        window: ShmRegion {
+            id: SHM_HOST_VISIBLE,
+            gpa: layout::SHM_BASE,
+            len: layout::SHM_SIZE,
+        },
+        page,
+        capsets: gfx::CAPSETS,
+    }
+}
+
 /// With no device tree, an x86_64 guest learns of its virtio-mmio devices from the command line.
 #[cfg(target_arch = "x86_64")]
 fn x86_virtio_cmdline(slots: &[u32]) -> String {
@@ -632,9 +676,9 @@ pub fn run_in(
     // Declared before the VM so that it is still alive when the VM, which maps it, is destroyed.
     let mem = GuestMemoryMmap::<()>::from_ranges(&ranges)
         .map_err(|err| VmmError::Device(err.to_string()))?;
-    let vm = Host::create_vm(&VmConfig {
+    let vm = Arc::new(Host::create_vm(&VmConfig {
         gpa_bits: layout::GPA_BITS,
-    })?;
+    })?);
     for (start, len) in ranges {
         let host_ram = mem
             .get_host_address(start)
@@ -764,6 +808,12 @@ pub fn run_in(
             Some(screen) => Gpu::with_sink(mode, Arc::clone(screen) as Arc<dyn FrameSink>),
             None => Gpu::headless(mode),
         };
+        #[cfg(feature = "gpu")]
+        let gpu = if config.gpu {
+            gpu.accelerated(acceleration(&vm, caps.host_page_size as u64))
+        } else {
+            gpu
+        };
         attach(layout::VIRTIO_GPU_SLOT, Box::new(gpu))?;
         // The host ends of the input devices outlive this machine; a guest that restarted finds no
         // finger on its new touchscreen.
@@ -838,7 +888,10 @@ pub fn run_in(
     let mut parts: Vec<RamdiskPart<'_, File>> = Vec::new();
     if let Some(image) = android_boot.as_mut() {
         bootconfig = std::mem::take(&mut image.bootconfig);
-        bootconfig.extend(android::machine_bootconfig(config.serial, ram_bytes));
+        // A key given twice is an error to the kernel, so the machine's values replace the image's.
+        let machine = android::machine_bootconfig(config.serial, ram_bytes, config.gpu);
+        bootconfig.retain(|(key, _)| !machine.iter().any(|(ours, _)| ours == key));
+        bootconfig.extend(machine);
         image_cmdline = std::mem::take(&mut image.cmdline);
         // The user's parameters replace the image's where both set a key.
         bootconfig.retain(|(key, _)| !config.bootconfig.iter().any(|(theirs, _)| theirs == key));

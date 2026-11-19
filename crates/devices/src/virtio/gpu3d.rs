@@ -53,6 +53,7 @@ const PIPE_BIND_RENDER_TARGET: u32 = 1 << 1;
 /// Limits on what a guest can make the device do in one command.
 const MAX_BACKING_ENTRIES: u32 = 16_384;
 const MAX_SUBMIT: u32 = 16 << 20;
+const MAX_IN_FENCES: u32 = 64;
 const DEBUG_NAME_LEN: usize = 64;
 const SCANOUTS: u32 = 1;
 /// Bytes per pixel of every format a scanout can have.
@@ -521,15 +522,16 @@ impl Gpu3d {
                 Ok(Answer::NoData)
             }
             CMD_SUBMIT_3D => {
-                let (size, _padding) = (body.u32()?, body.u32()?);
-                if size > MAX_SUBMIT {
+                // The commands, then the ids of fences they wait for (`num_in_fences`, which older
+                // drivers leave as zero padding). The command's own fence is not among them.
+                let (size, waits) = (body.u32()?, body.u32()?);
+                if size > MAX_SUBMIT || waits > MAX_IN_FENCES {
                     return Err(RESP_ERR_INVALID_PARAMETER);
                 }
                 let mut commands = body.bytes(size as usize)?;
-                let fences: Vec<u64> = Fence::of(header)
-                    .map(|fence| fence.id)
-                    .into_iter()
-                    .collect();
+                let fences = (0..waits)
+                    .map(|_| body.u64())
+                    .collect::<Result<Vec<_>, _>>()?;
                 let submitted = self.renderer.submit(ctx, &mut commands, &fences);
                 submitted.map_err(renderer_failed("submit"))?;
                 Ok(Answer::NoData)
@@ -924,15 +926,19 @@ mod tests {
             run(&mut gpu, CMD_CTX_CREATE, 7, &create),
             Ok(Answer::NoData)
         );
-        let mut submit = words(&[5, 0]);
+        let mut submit = words(&[5, 1]);
         submit.extend([9; 5]);
+        submit.extend(42u64.to_le_bytes());
         assert_eq!(run(&mut gpu, CMD_SUBMIT_3D, 7, &submit), Ok(Answer::NoData));
         // A submission longer than its body is refused before the renderer sees it.
         assert_eq!(
             run(&mut gpu, CMD_SUBMIT_3D, 7, &words(&[64, 0])),
             Err(RESP_ERR_INVALID_PARAMETER)
         );
-        assert_eq!(*log.0.lock().unwrap(), ["create 7 3 game", "submit 7 5 []"]);
+        assert_eq!(
+            *log.0.lock().unwrap(),
+            ["create 7 3 game", "submit 7 5 [42]"]
+        );
     }
 
     #[test]

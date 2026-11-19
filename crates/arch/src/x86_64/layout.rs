@@ -31,6 +31,9 @@ pub const HIMEM_START: u64 = 0x10_0000;
 /// The device hole below 4 GiB.
 pub const MMIO_GAP_START: u64 = 0xd000_0000;
 pub const MMIO_GAP_END: u64 = 0x1_0000_0000;
+/// virtio-gpu's host-visible shared-memory window (shmid 1), where blobs are mapped at run time.
+pub const SHM_BASE: u64 = 0x10_0000_0000;
+pub const SHM_SIZE: u64 = 8 << 30;
 /// The IOAPIC and the local APICs, at their architectural addresses inside the hole.
 pub const IOAPIC_ADDR: u64 = 0xfec0_0000;
 pub const LAPIC_ADDR: u64 = 0xfee0_0000;
@@ -72,4 +75,5 @@ const _: () = {
     assert!(virtio_mmio_base(VIRTIO_MMIO_SLOTS) <= IOAPIC_ADDR);
     assert!(virtio_irq(VIRTIO_MMIO_SLOTS - 1) < IOAPIC_PINS);
     assert!(VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
+    assert!(SHM_BASE + SHM_SIZE <= 1 << GPA_BITS);
 };

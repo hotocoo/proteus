@@ -193,6 +193,49 @@ fn run(_config: &config::Config, _started: Instant) -> Result<(), VmmError> {
     Err(VmmError::Config(copy::HOST_UNSUPPORTED))
 }
 
+/// `emu --gpu-check`: starts and stops the GPU renderer once. Exits with success if it worked.
+fn gpu_check() -> ExitCode {
+    #[cfg(feature = "gpu")]
+    return match gfx::check() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("{why}");
+            ExitCode::FAILURE
+        }
+    };
+    #[cfg(not(feature = "gpu"))]
+    ExitCode::FAILURE
+}
+
+/// Whether the GPU renderer starts on this machine. It is tried in a child process with a time
+/// limit, because a renderer with no working Vulkan driver never comes back.
+fn gpu_works() -> Result<(), String> {
+    if !gfx::AVAILABLE {
+        return Err(copy::GPU_NOT_BUILT.to_owned());
+    }
+    let program = std::env::current_exe().map_err(|err| err.to_string())?;
+    let mut child = std::process::Command::new(program)
+        .arg(config::GPU_CHECK_ARG)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let deadline = Instant::now() + config::GPU_CHECK_TIMEOUT;
+    loop {
+        match child.try_wait().map_err(|err| err.to_string())? {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => return Err(status.to_string()),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(copy::GPU_CHECK_HUNG.to_owned());
+            }
+            None => std::thread::sleep(config::GPU_CHECK_POLL),
+        }
+    }
+}
+
 /// Carries out `emu instance ...`. Starting one gives back its configuration, to run.
 fn instance_main(command: config::InstanceCommand) -> Result<Option<config::Config>, String> {
     use config::InstanceCommand;
@@ -260,6 +303,7 @@ pub fn cli_main() -> ExitCode {
                 }
             };
         }
+        Ok(config::Parsed::GpuCheck) => return gpu_check(),
         Ok(config::Parsed::Run(config)) => *config,
         Ok(config::Parsed::Instance(command)) => match instance_main(command) {
             Ok(None) => return ExitCode::SUCCESS,
@@ -275,6 +319,16 @@ pub fn cli_main() -> ExitCode {
         }
     };
     logger::init(config.log_level);
+    let mut config = config;
+    if config.gpu {
+        match gpu_works() {
+            Ok(()) => eprintln!("{}", copy::GPU_ACCELERATED),
+            Err(why) => {
+                eprintln!("{}", copy::gpu_unavailable(&why));
+                config.gpu = false;
+            }
+        }
+    }
     match run(&config, started) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

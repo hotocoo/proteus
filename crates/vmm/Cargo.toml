@@ -8,7 +8,13 @@ publish.workspace = true
 name = "emu"
 path = "src/main.rs"
 
+[features]
+# GPU acceleration through gfxstream; needs libgfxstream_backend (scripts/build-gfxstream.sh) at
+# build time, through GFXSTREAM_PATH, and beside the program at run time.
+gpu = ["gfx/gfxstream"]
+
 [dependencies]
+gfx.workspace = true
 arch.workspace = true
 devices.workspace = true
 getrandom.workspace = true

@@ -39,6 +39,8 @@ Usage: emu --kernel <file> [options]
   --logcat <file>         Write Android's system log to this file
   --no-sound              Give the guest no sound card
   --mute                  Keep the sound card but play nothing on this machine
+  --gpu                   Draw with this machine's GPU (gfxstream over Vulkan) if this build has it
+                          and a Vulkan driver works; otherwise the guest draws in software
   --gamepad               Give the guest a gamepad even with no host pad plugged in
   --no-gamepad            No gamepad, even with a host pad plugged in
   --sync <socket or instance>  Send this instance's touches, keys and pad moves to another
@@ -246,6 +248,15 @@ pub const FRAME_DUMP_THREAD: &str = "frame-dump";
 pub const TOUCHSCREEN_NAME: &str = "emu touchscreen";
 pub const KEYBOARD_NAME: &str = "emu keyboard";
 pub const GAMEPAD_NAME: &str = "emu gamepad";
+pub const GPU_NOT_BUILT: &str =
+    "this build of emu has no GPU acceleration; the guest draws in software";
+pub const GPU_ACCELERATED: &str = "emu: the guest draws with this machine's GPU";
+pub const GPU_CHECK_HUNG: &str = "it did not start in time";
+
+pub fn gpu_unavailable(why: &dyn Display) -> String {
+    format!("emu: the GPU renderer does not work here ({why}); the guest draws in software")
+}
+
 pub const GAMEPAD_THREAD: &str = "gamepads";
 
 pub fn gamepads_unavailable(err: &dyn Display) -> String {
