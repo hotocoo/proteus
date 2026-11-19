@@ -741,7 +741,10 @@ mod tests {
 
     struct Fake {
         log: Arc<Log>,
+        /// Page-aligned memory the fake hands out as its blob: offset into `blob`, and length.
         blob: Vec<u8>,
+        at: usize,
+        len: usize,
     }
 
     impl Fake {
@@ -817,9 +820,10 @@ mod tests {
             ))
         }
         fn map_blob(&mut self, _resource: u32) -> Result<Mapping, String> {
+            let host = self.blob[self.at..].as_mut_ptr();
             Ok(Mapping {
-                host: NonNull::new(self.blob.as_mut_ptr()).unwrap(),
-                len: self.blob.len() as u64,
+                host: NonNull::new(host).unwrap(),
+                len: self.len as u64,
                 map_info: 1,
             })
         }
@@ -856,13 +860,13 @@ mod tests {
     fn setup(blob_len: usize) -> (Gpu3d, Arc<Log>, Arc<Window>) {
         let log = Arc::new(Log::default());
         // An over-allocation lets the fake hand out a page-aligned pointer.
-        let mut blob = vec![0u8; blob_len + PAGE as usize];
-        let shift = blob.as_ptr().align_offset(PAGE as usize);
-        blob.drain(..shift);
-        blob.truncate(blob_len);
+        let blob = vec![0u8; blob_len + PAGE as usize];
+        let at = blob.as_ptr().align_offset(PAGE as usize);
         let fake = Fake {
             log: Arc::clone(&log),
             blob,
+            at,
+            len: blob_len,
         };
         let window = Arc::new(Window::default());
         let gpu = Gpu3d::new(
