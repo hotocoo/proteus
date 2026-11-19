@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hv", "crates/arch", "crates/devices", "crates/net", "crates/vmm"]
+members = ["crates/hv", "crates/arch", "crates/devices", "crates/gfx", "crates/net", "crates/vmm"]
 
 [workspace.package]
 version = "0.2.0"
@@ -11,6 +11,7 @@ publish = false
 hv = { path = "crates/hv" }
 arch = { path = "crates/arch" }
 devices = { path = "crates/devices" }
+gfx = { path = "crates/gfx" }
 net = { path = "crates/net" }
 cpal = "0.18"
 getrandom = "0.3"
@@ -22,6 +23,7 @@ libc = "0.2"
 miniz_oxide = "0.9"
 log = "0.4"
 rtrb = "0.4"
+rutabaga_gfx = { version = "0.1.85", default-features = false }
 serde = { version = "1", features = ["derive"] }
 softbuffer = { version = "0.4", default-features = false }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }

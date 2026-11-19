@@ -5,6 +5,9 @@
 //! With a `FrameSink`, the device keeps the guest's 2D resources, copies what the guest transfers out
 //! of guest memory, and presents the scanout each time the guest flushes it.
 //!
+//! With a host renderer (`gpu3d`), the device offers 3D, blob resources and context types instead,
+//! and hands those commands to it.
+//!
 //! Every field of every command comes from the guest and is checked before it sizes or indexes anything.
 
 use std::collections::HashMap;
@@ -37,7 +40,12 @@ use virtio_bindings::virtio_ids::VIRTIO_ID_GPU;
 use virtio_queue::{Queue, QueueT};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
 
-use super::{Activate, DeviceError, VirtioDevice, VirtioInterrupt};
+use virtio_bindings::virtio_gpu::{
+    VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB, VIRTIO_GPU_F_VIRGL,
+};
+
+use super::gpu3d::{BlobMapper, Fence, Gpu3d, Header, PendingFences, RendererFactory};
+use super::{Activate, DeviceError, ShmRegion, VirtioDevice, VirtioInterrupt};
 use crate::copy;
 
 /// Control queue, then cursor queue.
@@ -54,6 +62,7 @@ const DISPLAY_HEIGHT_AT: usize = 12;
 const DISPLAY_ENABLED_AT: usize = 16;
 /// `struct virtio_gpu_config`: events_read, events_clear, num_scanouts, num_capsets.
 const CONFIG_NUM_SCANOUTS_AT: usize = 8;
+const CONFIG_NUM_CAPSETS_AT: usize = 12;
 const CONFIG_LEN: usize = 16;
 const SCANOUTS: u32 = 1;
 /// Every pixel format virtio-gpu defines for 2D resources is four bytes wide.
@@ -362,7 +371,13 @@ fn respond(mode: DisplayMode, request: &[u8; HEADER_LEN], kind: u32) -> Vec<u8> 
     } else {
         0
     };
-    let mut response = vec![0u8; HEADER_LEN + body_len];
+    respond_with(mode, request, kind, &vec![0u8; body_len])
+}
+
+/// Builds the response of the given kind to `request`, with `body` after the header.
+fn respond_with(mode: DisplayMode, request: &[u8; HEADER_LEN], kind: u32, body: &[u8]) -> Vec<u8> {
+    let mut response = vec![0u8; HEADER_LEN];
+    response.extend_from_slice(body);
     response[..size_of::<u32>()].copy_from_slice(&kind.to_le_bytes());
     // A fenced command is complete as soon as it is answered: nothing here runs later.
     let flags = word(request, HEADER_FLAGS_AT);
@@ -381,21 +396,94 @@ fn respond(mode: DisplayMode, request: &[u8; HEADER_LEN], kind: u32) -> Vec<u8> 
     response
 }
 
+/// The 3D side: the renderer's state, where frames go, and answers waiting for their fences.
+struct Accelerated {
+    gpu: Gpu3d,
+    sink: Option<Arc<dyn FrameSink>>,
+    /// Descriptor heads and bytes written, of fenced commands not yet answered.
+    pending: PendingFences<(u16, u32)>,
+}
+
+impl Accelerated {
+    /// The answer to one control command, and the fence it waits for, if any.
+    fn handle(
+        &mut self,
+        mode: DisplayMode,
+        mem: &GuestMemoryMmap,
+        request: &[u8; HEADER_LEN],
+        body: &mut impl Read,
+    ) -> (Vec<u8>, Option<Fence>) {
+        let header = Header {
+            kind: word(request, 0),
+            flags: word(request, HEADER_FLAGS_AT),
+            fence: u64::from(word(request, 8)) | (u64::from(word(request, 12)) << 32),
+            ctx: word(request, 16),
+            ring: request[20],
+        };
+        if header.kind == CMD_GET_DISPLAY_INFO {
+            return (respond(mode, request, RESP_OK_DISPLAY_INFO), None);
+        }
+        let (kind, answer) = match self.gpu.execute(mem, &header, body) {
+            Ok(answer) => {
+                if let (
+                    super::gpu3d::Answer::Frame {
+                        width,
+                        height,
+                        format,
+                        pixels,
+                    },
+                    Some(sink),
+                ) = (&answer, &self.sink)
+                {
+                    sink.present(&Frame {
+                        width: *width,
+                        height: *height,
+                        format: *format,
+                        pixels,
+                    });
+                }
+                answer.response()
+            }
+            Err(error) => (error, Vec::new()),
+        };
+        // The answer waits for the fence, if the renderer takes it; otherwise it goes now.
+        let fence = Fence::of(&header).filter(|fence| match self.gpu.fence(*fence) {
+            Ok(()) => true,
+            Err(why) => {
+                log::debug!("{}", copy::gpu_renderer_refused("fence", &why));
+                false
+            }
+        });
+        (respond_with(mode, request, kind, &answer), fence)
+    }
+}
+
+/// The two ways the display works.
+enum Backend {
+    Plain(Display),
+    Accelerated(Box<Accelerated>),
+}
+
 /// Answers every pending control command. Returns whether anything was used.
 fn drain_control(
     queue: &mut Queue,
     mem: &GuestMemoryMmap,
-    display: &mut Display,
+    backend: &mut Backend,
+    mode: DisplayMode,
 ) -> Result<bool, virtio_queue::Error> {
     let mut used_any = false;
     while let Some(chain) = queue.pop_descriptor_chain(mem) {
         let head = chain.head_index();
         let mut request = [0u8; HEADER_LEN];
         // A chain too short to hold a header, or with no room for an answer, is returned unused.
-        let response = chain.clone().reader(mem).ok().and_then(|mut reader| {
+        let handled = chain.clone().reader(mem).ok().and_then(|mut reader| {
             reader.read_exact(&mut request).ok()?;
-            Some(display.handle(mem, &request, &mut reader))
+            Some(match backend {
+                Backend::Plain(display) => (display.handle(mem, &request, &mut reader), None),
+                Backend::Accelerated(gpu) => gpu.handle(mode, mem, &request, &mut reader),
+            })
         });
+        let (response, fence) = handled.unzip();
         let written = response
             .and_then(|response| {
                 let mut writer = chain.writer(mem).ok()?;
@@ -403,8 +491,17 @@ fn drain_control(
                 Some(writer.bytes_written())
             })
             .unwrap_or(0);
-        queue.add_used(mem, head, written as u32)?;
-        used_any = true;
+        // The answer is in the guest's buffer already; a fenced one is handed back when its fence
+        // is done, which is what tells the guest the fence signalled.
+        match (fence.flatten(), &mut *backend) {
+            (Some(fence), Backend::Accelerated(gpu)) => {
+                gpu.pending.hold(fence, (head, written as u32))
+            }
+            _ => {
+                queue.add_used(mem, head, written as u32)?;
+                used_any = true;
+            }
+        }
     }
     Ok(used_any)
 }
@@ -421,21 +518,98 @@ fn drain_cursor(queue: &mut Queue, mem: &GuestMemoryMmap) -> Result<bool, virtio
 
 enum Wake {
     Queue,
+    /// The renderer finished the work before this fence.
+    Fence(Fence),
     Stop,
 }
 
+/// How the device is accelerated, if it is.
+pub struct Acceleration {
+    pub renderer: Arc<RendererFactory>,
+    pub mapper: Arc<dyn BlobMapper>,
+    /// The host-visible window blobs are mapped into (shmid 1).
+    pub window: ShmRegion,
+    /// Host page size: blob mappings are whole pages.
+    pub page: u64,
+    /// Capability sets the renderer offers; the driver reads the count before the device starts.
+    pub capsets: u32,
+}
+
+/// What the worker needs to start a renderer: how to make one, where blobs go, the window's size
+/// and the host page size.
+type Rendering = (Arc<RendererFactory>, Arc<dyn BlobMapper>, u64, u64);
+
+struct Served {
+    mode: DisplayMode,
+    sink: Option<Arc<dyn FrameSink>>,
+    acceleration: Option<Rendering>,
+}
+
 fn serve(
-    mut display: Display,
+    served: Served,
     mut control: Queue,
     mut cursor: Queue,
     mem: GuestMemoryMmap,
     irq: Arc<VirtioInterrupt>,
     wake: Receiver<Wake>,
+    wakes: Sender<Wake>,
 ) {
-    while let Ok(Wake::Queue) = wake.recv() {
-        let drained = drain_control(&mut control, &mem, &mut display)
-            .and_then(|a| drain_cursor(&mut cursor, &mem).map(|b| a | b));
-        match drained {
+    let Served {
+        mode,
+        sink,
+        acceleration,
+    } = served;
+    let plain = || {
+        Backend::Plain(Display {
+            mode,
+            sink: sink.clone(),
+            resources: HashMap::new(),
+            scanout: None,
+            cropped: Vec::new(),
+        })
+    };
+    // The renderer is made here, on the thread that uses it.
+    let mut backend = match acceleration {
+        Some((factory, mapper, window, page)) => {
+            let fences = std::sync::Mutex::new(wakes);
+            let done = Box::new(move |fence| {
+                let wakes = fences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ = wakes.send(Wake::Fence(fence));
+            });
+            match factory(done) {
+                Ok(renderer) => Backend::Accelerated(Box::new(Accelerated {
+                    gpu: Gpu3d::new(renderer, mapper, window, page),
+                    sink: sink.clone(),
+                    pending: PendingFences::default(),
+                })),
+                Err(why) => {
+                    log::error!("{}", copy::gpu_renderer_failed(&why));
+                    plain()
+                }
+            }
+        }
+        None => plain(),
+    };
+    loop {
+        let used = match wake.recv() {
+            Ok(Wake::Queue) => drain_control(&mut control, &mem, &mut backend, mode)
+                .and_then(|a| drain_cursor(&mut cursor, &mem).map(|b| a | b)),
+            Ok(Wake::Fence(done)) => {
+                let Backend::Accelerated(gpu) = &mut backend else {
+                    continue;
+                };
+                let ready = gpu.pending.release(done);
+                let any = !ready.is_empty();
+                ready
+                    .into_iter()
+                    .try_for_each(|(head, written)| queue_used(&mut control, &mem, head, written))
+                    .map(|()| any)
+            }
+            Ok(Wake::Stop) | Err(_) => return,
+        };
+        match used {
             Ok(true) => irq.signal_used(),
             Ok(false) => {}
             Err(err) => log::warn!("{}", copy::virtio_queue_error(&err)),
@@ -443,9 +617,19 @@ fn serve(
     }
 }
 
+fn queue_used(
+    queue: &mut Queue,
+    mem: &GuestMemoryMmap,
+    head: u16,
+    written: u32,
+) -> Result<(), virtio_queue::Error> {
+    queue.add_used(mem, head, written)
+}
+
 pub struct Gpu {
     mode: DisplayMode,
     sink: Option<Arc<dyn FrameSink>>,
+    acceleration: Option<Acceleration>,
     worker: Option<(Sender<Wake>, JoinHandle<()>)>,
 }
 
@@ -455,6 +639,7 @@ impl Gpu {
         Self {
             mode,
             sink: None,
+            acceleration: None,
             worker: None,
         }
     }
@@ -464,8 +649,15 @@ impl Gpu {
         Self {
             mode,
             sink: Some(sink),
+            acceleration: None,
             worker: None,
         }
+    }
+
+    /// The same display, with its 3D commands done by a host renderer.
+    pub fn accelerated(mut self, acceleration: Acceleration) -> Self {
+        self.acceleration = Some(acceleration);
+        self
     }
 }
 
@@ -479,13 +671,30 @@ impl VirtioDevice for Gpu {
     }
 
     fn features(&self) -> u64 {
-        0
+        let accelerated = [
+            VIRTIO_GPU_F_VIRGL,
+            VIRTIO_GPU_F_RESOURCE_BLOB,
+            VIRTIO_GPU_F_CONTEXT_INIT,
+        ];
+        match self.acceleration {
+            Some(_) => accelerated.iter().map(|bit| 1u64 << bit).sum(),
+            None => 0,
+        }
+    }
+
+    fn shm_regions(&self) -> &[ShmRegion] {
+        self.acceleration.as_ref().map_or(&[], |acceleration| {
+            std::slice::from_ref(&acceleration.window)
+        })
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
         let mut config = [0u8; CONFIG_LEN];
         config[CONFIG_NUM_SCANOUTS_AT..CONFIG_NUM_SCANOUTS_AT + 4]
             .copy_from_slice(&SCANOUTS.to_le_bytes());
+        let capsets = self.acceleration.as_ref().map_or(0, |a| a.capsets);
+        config[CONFIG_NUM_CAPSETS_AT..CONFIG_NUM_CAPSETS_AT + 4]
+            .copy_from_slice(&capsets.to_le_bytes());
         for (at, byte) in (offset..).zip(data.iter_mut()) {
             *byte = usize::try_from(at)
                 .ok()
@@ -506,16 +715,29 @@ impl VirtioDevice for Gpu {
             return Err(DeviceError::MissingQueue);
         };
         let (wake, wakes) = mpsc::channel();
-        let display = Display {
+        // The driver may have turned 3D down; then the device is the plain one.
+        let wanted = 1u64 << VIRTIO_GPU_F_VIRGL;
+        let acceleration = self
+            .acceleration
+            .as_ref()
+            .filter(|_| ctx.features & wanted != 0)
+            .map(|a| {
+                (
+                    Arc::clone(&a.renderer),
+                    Arc::clone(&a.mapper),
+                    a.window.len,
+                    a.page,
+                )
+            });
+        let served = Served {
             mode: self.mode,
             sink: self.sink.clone(),
-            resources: HashMap::new(),
-            scanout: None,
-            cropped: Vec::new(),
+            acceleration,
         };
+        let fences = wake.clone();
         let thread = thread::Builder::new()
             .name(copy::GPU_WORKER_NAME.into())
-            .spawn(move || serve(display, control, cursor, ctx.mem, ctx.irq, wakes))?;
+            .spawn(move || serve(served, control, cursor, ctx.mem, ctx.irq, wakes, fences))?;
         self.worker = Some((wake, thread));
         Ok(())
     }
@@ -1021,9 +1243,9 @@ mod tests {
         ];
         mock.add_desc_chains(&chains, 0).unwrap();
         let mut queue: Queue = mock.create_queue().unwrap();
-        let mut display = display(None);
+        let mut display = Backend::Plain(display(None));
 
-        assert!(drain_control(&mut queue, &mem, &mut display).unwrap());
+        assert!(drain_control(&mut queue, &mem, &mut display, MODE).unwrap());
         let used_len = |index: u64| -> u32 {
             mem.read_obj(mock.used_addr().unchecked_add(4 + index * 8 + 4))
                 .unwrap()
@@ -1044,7 +1266,7 @@ mod tests {
             )
         );
         assert!(
-            !drain_control(&mut queue, &mem, &mut display).unwrap(),
+            !drain_control(&mut queue, &mem, &mut display, MODE).unwrap(),
             "nothing left"
         );
     }

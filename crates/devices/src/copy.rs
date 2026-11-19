@@ -71,3 +71,7 @@ pub fn gpu_blob_misaligned(resource: u32, offset: u64, len: u64) -> String {
         "virtio-gpu: blob {resource} at {offset:#x}, {len:#x} bytes, is not whole host pages inside the window"
     )
 }
+
+pub fn gpu_renderer_failed(why: &dyn std::fmt::Display) -> String {
+    format!("virtio-gpu: the host renderer did not start, so the display is unaccelerated: {why}")
+}

@@ -166,8 +166,10 @@ pub struct Mapping {
     pub map_info: u32,
 }
 
-/// A host renderer. Errors are text for the log; the guest gets a generic error answer.
-pub trait Renderer: Send {
+/// A host renderer. Errors are text for the log; the guest gets a generic error answer. Renderers
+/// need not be `Send` (gfxstream's is not), so the device makes its one on its worker thread, through
+/// a `RendererFactory`.
+pub trait Renderer {
     /// The capability set at `index`: id, highest version, size in bytes.
     fn capset_info(&self, index: u32) -> Option<(u32, u32, u32)>;
     fn capset(&self, id: u32, version: u32) -> Result<Vec<u8>, String>;
@@ -189,6 +191,10 @@ pub trait Renderer: Send {
     /// Reports `fence` through `FenceDone` once the work submitted before it is done.
     fn create_fence(&mut self, fence: Fence) -> Result<(), String>;
 }
+
+/// Makes the renderer, on the thread that will use it, given where to report finished fences.
+pub type RendererFactory =
+    Box<dyn Fn(FenceDone) -> Result<Box<dyn Renderer>, String> + Send + Sync>;
 
 /// Puts renderer memory into the guest's shared-memory window, `offset` bytes into it.
 pub trait BlobMapper: Send + Sync {
