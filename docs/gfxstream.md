@@ -99,12 +99,34 @@ How each is selected matters for packaging:
   (`libvulkan.dylib`) as well.
 - The 16 KiB blob alignment matches the host page size, as blueprint section 7.1 wants.
 
-Nothing has been drawn yet: the comparison the blueprint asks for (a Vulkan and a GLES test app,
-benchmarks against Google's emulator) needs gfxstream wired into virtio-gpu first.
+With `emu --gpu` (built with `--features gpu`), Google's Cuttlefish image draws its lock and home
+screens through gfxstream with either driver, and the screens read back correctly. The comparison
+the blueprint asks for (a Vulkan and a GLES test app, benchmarks against Google's emulator, input
+and frame latency) has not been run.
+
+## Running it
+
+```sh
+cargo build --release -p vmm --features gpu    # with GFXSTREAM_PATH=<folder with libgfxstream_backend.dylib>
+cp <that folder>/libgfxstream_backend.dylib target/release/
+install_name_tool -add_rpath @executable_path target/release/emu
+codesign --sign - --force --entitlements packaging/macos/hv.entitlements target/release/emu
+# KosmicKrisp:  VK_DRIVER_FILES=<its icd.json> emu ... --gpu
+# MoltenVK:     put MoltenVK_icd.json (with an absolute library_path) in target/release/lib64/vulkan/,
+#               then ANDROID_EMU_VK_ICD=moltenvk emu ... --gpu
+```
+
+Both drivers also need the Vulkan loader, `libvulkan.dylib`, where the program finds it (Homebrew's
+`vulkan-loader`, with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`).
+
+Known messages that do not stop it: the guest's `DRM_IOCTL_VIRTGPU_GET_CAPS failed with Invalid
+argument` and `CONTEXT_INIT failed with File exists`; the driver carries on.
 
 ## Not checked yet
 
-- Rendering, on either driver.
+- Performance, on either driver, and against the software path or Google's emulator.
+- The window: frames reach it by reading the scanout back, one copy per frame. The blueprint's
+  present path (gfxstream drawing to a swapchain on the window, no copy) is not built.
 - That the function signatures, not only the names, match `rutabaga_gfx`'s declarations.
 - Whether the Cuttlefish image's guest side (its gfxstream guest drivers) talks to this build.
 - Windows and Linux builds.

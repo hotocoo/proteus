@@ -26,7 +26,7 @@ Early. What works today, on Apple Silicon Macs (macOS 15 or later):
 
 - Several instances at once, with one able to drive the others.
 
-Not there yet: GPU acceleration, a GUI,
+Not there yet: GPU acceleration in the release (it works in a source build, `docs/gfxstream.md`), a GUI,
 a Linux desktop check, Windows hosts, and an Android image of this project's own (stripped, with sign-in). See
 "What is missing" at the end.
 
@@ -195,8 +195,10 @@ The emulator sends nothing anywhere on its own behalf: no analytics, no crash up
 
 Honest list, most important first:
 
-- **GPU acceleration.** Android draws with the guest's CPU. Games need the host's GPU; that work
-  (gfxstream over virtio-gpu) has not started.
+- **GPU acceleration is experimental.** A build with `--features gpu` and `emu --gpu` draws Android
+  with this Mac's GPU through gfxstream (see `docs/gfxstream.md` for building and the Vulkan
+  driver). It has not been measured yet, frames are copied once on their way to the window, and
+  the release does not ship it.
 - **More game controls.** Key maps are written by hand.
 - **Not yet tried for real:** a physical gamepad plugged in at start (the guest pad was checked
   with `--gamepad` and the `pad` command), dropping a file on the window (the same install was
