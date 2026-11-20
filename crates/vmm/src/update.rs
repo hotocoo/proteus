@@ -15,6 +15,8 @@ pub const RELEASE_FILE: &str = "proteus.release";
 const OLD_EXTENSION: &str = "old";
 /// Scratch folder beside the program for the download.
 const WORK_DIR: &str = ".proteus-update";
+/// Releases looked at to find the newest one; GitHub's most per page.
+const RELEASES_LISTED: u32 = 100;
 
 /// The end of this host's release archive name.
 #[cfg(windows)]
@@ -49,8 +51,11 @@ pub fn update() -> Result<Outcome, String> {
 
 /// The newest release's tag.
 fn newest() -> Result<String, String> {
-    let releases = format!("repos/{UPSTREAM}/releases?per_page=1");
-    let tag = gh(&["api", &releases, "--jq", ".[0].tag_name"])?;
+    // The listing is ordered by tag text ("alpha.9" before "alpha.13"), so the newest is the one
+    // published last; drafts have no publish date and are left out.
+    let releases = format!("repos/{UPSTREAM}/releases?per_page={RELEASES_LISTED}");
+    let newest = "map(select(.published_at != null)) | max_by(.published_at) | .tag_name";
+    let tag = gh(&["api", &releases, "--jq", newest])?;
     let tag = tag.trim();
     if tag.is_empty() || tag == "null" {
         return Err(copy::UPDATE_NO_RELEASE.to_owned());
