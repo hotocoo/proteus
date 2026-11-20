@@ -57,6 +57,8 @@ jobs:
           scripts/fetch-apps.sh apps
           # A loader for macOS 15 and later, so older Macs keep the GPU through MoltenVK.
           export VULKAN_LOADER=$(scripts/build-vulkan-loader.sh "$RUNNER_TEMP/vulkan-loader")
+          # KosmicKrisp with this repository's fixes (packaging/mesa), in place of Homebrew's.
+          export KOSMICKRISP=$(scripts/build-kosmickrisp.sh "$RUNNER_TEMP/kosmickrisp")
           scripts/bundle-macos.sh target/release/proteus gfxstream-out "$name" apps
           cp README.md packaging/macos/hv.entitlements "$name/"
           cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"

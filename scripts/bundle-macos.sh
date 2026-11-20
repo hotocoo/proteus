@@ -31,15 +31,22 @@ chmod u+w "$out/lib64/vulkan/"*.dylib
 cp "$repo/packaging/macos/MoltenVK_icd.json" "$out/lib64/vulkan/"
 # KosmicKrisp (Mesa), the preferred driver, with the Homebrew libraries it links, when this Mac's
 # Mesa has it (macOS 26 builds do).
+# KOSMICKRISP names a patched build (scripts/build-kosmickrisp.sh), which releases use.
 kk_icd="$brew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
-if [ -f "$kk_icd" ]; then
-    kk=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ICD"]["library_path"])' "$kk_icd")
+if [ -n "${KOSMICKRISP:-}" ] || [ -f "$kk_icd" ]; then
+    kk=${KOSMICKRISP:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ICD"]["library_path"])' "$kk_icd")}
     for package in $(python3 "$repo/scripts/bundle-dylib.py" "$kk" "$out/lib64/vulkan"); do
         for licence in "$brew/opt/$package"/LICENSE* "$brew/opt/$package"/COPYING* "$brew/opt/$package"/license*; do
             [ -f "$licence" ] && cp "$licence" "$out/licenses/$package-$(basename "$licence")"
         done
     done
     cp "$repo/packaging/macos/libkosmickrisp_icd.json" "$out/lib64/vulkan/"
+    # A patched build is Mesa too; its licence is the same as Homebrew's copy of it.
+    if [ -n "${KOSMICKRISP:-}" ]; then
+        for licence in "$brew/opt/mesa"/LICENSE* "$brew/opt/mesa"/COPYING* "$brew/opt/mesa"/license*; do
+            [ -f "$licence" ] && cp "$licence" "$out/licenses/mesa-$(basename "$licence")"
+        done
+    fi
 fi
 cp "$brew/opt/vulkan-loader/LICENSE.txt" "$out/licenses/Vulkan-Loader.txt"
 cp "$brew/opt/molten-vk/LICENSE" "$out/licenses/MoltenVK.txt"

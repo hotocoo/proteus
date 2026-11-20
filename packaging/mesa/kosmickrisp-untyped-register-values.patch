@@ -1,0 +1,39 @@
+diff --git a/src/kosmickrisp/compiler/msl_type_inference.c b/src/kosmickrisp/compiler/msl_type_inference.c
+index 12e46d595..7a08b84bf 100644
+--- a/src/kosmickrisp/compiler/msl_type_inference.c
++++ b/src/kosmickrisp/compiler/msl_type_inference.c
+@@ -335,7 +335,12 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
+          set_type(types, &instr->def, TYPE_NONE);
+       break;
+    case nir_intrinsic_store_reg:
+-      set_type(types, &instr->src[0], TYPE_NONE);
++      /* Registers are declared as uint (see nir_to_msl.c), so what is stored
++       * in one is plain data. Without a type here, a value only ever stored
++       * to a register (a constant, or a vector built from constants) would
++       * stay untyped and be printed as "UNTYPED!".
++       */
++      set_type(types, &instr->src[0], TYPE_GENERIC_DATA);
+       set_type(types, &instr->src[1], TYPE_NONE);
+       break;
+    case nir_intrinsic_load_reg:
+@@ -827,8 +832,8 @@ emit_src_component(struct nir_to_msl_ctx *ctx, nir_src *src, unsigned comp)
+       P(ctx, "%" PRIu64 "u", nir_src_comp_as_uint(*src, comp));
+       break;
+    case TYPE_NONE:
+-      assert(0);
+-      P(ctx, "UNTYPED!");
++      /* No use constrained this value: print it as plain data. */
++      P(ctx, "uint(%" PRIu64 "u", nir_src_comp_as_uint(*src, comp));
+       break;
+    default:
+       return;
+@@ -840,6 +845,9 @@ void
+ msl_src_as_const(struct nir_to_msl_ctx *ctx, nir_src *src)
+ {
+    ti_type type = get_type(ctx->types, src);
++   /* A constant no use constrained is plain data. */
++   if (type == TYPE_NONE)
++      type = TYPE_GENERIC_DATA;
+    if (src->ssa->num_components == 1) {
+       emit_src_component(ctx, src, 0);
+    } else {
