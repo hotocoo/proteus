@@ -105,40 +105,65 @@ pub fn png(frame: &Frame<'_>) -> Option<Vec<u8>> {
 #[derive(Default)]
 pub struct Screen {
     latest: Mutex<Latest>,
+    /// A frame buffer no reader holds any more, refilled by the next frame instead of a new one.
+    spare: Mutex<Vec<u8>>,
+    /// The frame before the newest. Handed back one frame later than the newest is replaced, by
+    /// when the window has nearly always finished uploading it, so that buffers are reused.
+    previous: Mutex<Arc<Vec<u8>>>,
     /// Called after every new frame, on the thread that delivered it.
     listener: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Which way up the picture is shown, in quarter turns (see `orientation`).
     turns: AtomicU8,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Latest {
     width: u32,
     height: u32,
     format: u32,
-    pixels: Vec<u8>,
+    /// Shared, so readers copy or encode it without holding the lock the device thread needs.
+    pixels: Arc<Vec<u8>>,
     /// Counts frames, so that a reader can tell whether it has seen this one. Zero: none yet.
     serial: u64,
 }
 
 impl FrameSink for Screen {
     fn present(&self, frame: &Frame<'_>) {
-        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
-        latest.width = frame.width;
-        latest.height = frame.height;
-        latest.format = frame.format;
-        latest.pixels.clear();
-        latest.pixels.extend_from_slice(frame.pixels);
-        latest.serial += 1;
-        drop(latest);
-        let listener = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(listener) = listener.as_ref() {
-            listener();
-        }
+        let mut pixels =
+            std::mem::take(&mut *self.spare.lock().unwrap_or_else(PoisonError::into_inner));
+        pixels.clear();
+        pixels.extend_from_slice(frame.pixels);
+        let old = self.keep(frame.width, frame.height, frame.format, pixels);
+        *self.spare.lock().unwrap_or_else(PoisonError::into_inner) = old;
+    }
+
+    fn present_owned(&self, width: u32, height: u32, format: u32, pixels: Vec<u8>) -> Vec<u8> {
+        self.keep(width, height, format, pixels)
     }
 }
 
 impl Screen {
+    /// Makes `pixels` the newest frame and tells the listener. Returns the frame before the one
+    /// it replaces if no reader still holds that one, or else an empty buffer.
+    fn keep(&self, width: u32, height: u32, format: u32, pixels: Vec<u8>) -> Vec<u8> {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        latest.width = width;
+        latest.height = height;
+        latest.format = format;
+        let old = std::mem::replace(&mut latest.pixels, Arc::new(pixels));
+        latest.serial += 1;
+        drop(latest);
+        let older = std::mem::replace(
+            &mut *self.previous.lock().unwrap_or_else(PoisonError::into_inner),
+            old,
+        );
+        let listener = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(listener) = listener.as_ref() {
+            listener();
+        }
+        Arc::try_unwrap(older).unwrap_or_default()
+    }
+
     /// Has `listener` called after every new frame. It runs on a device thread, so it should only
     /// pass the news on.
     pub fn on_frame(&self, listener: impl Fn() + Send + Sync + 'static) {
@@ -156,7 +181,7 @@ impl Screen {
 
     /// Lets `look` see the newest frame, as the panel holds it (not turned upright). `None` if the guest has not shown anything yet.
     pub fn with_latest<R>(&self, look: impl FnOnce(&Frame<'_>) -> R) -> Option<R> {
-        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let latest = self.snapshot();
         (latest.serial != 0).then(|| {
             look(&Frame {
                 width: latest.width,
@@ -171,7 +196,7 @@ impl Screen {
     /// has not shown anything yet.
     fn save_latest(&self, path: &Path) -> std::io::Result<u64> {
         let (image, serial) = {
-            let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+            let latest = self.snapshot();
             let panel = Frame {
                 width: latest.width,
                 height: latest.height,
@@ -201,6 +226,14 @@ impl Screen {
     /// Saves the newest frame as a PNG. `Ok(false)` if the guest has not shown anything yet.
     pub fn save(&self, path: &Path) -> std::io::Result<bool> {
         Ok(self.save_latest(path)? != 0)
+    }
+
+    /// The newest frame, the lock held only long enough to share it.
+    fn snapshot(&self) -> Latest {
+        self.latest
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn serial(&self) -> u64 {

@@ -93,6 +93,18 @@ pub struct Frame<'a> {
 /// Where finished frames go. Called on the display's worker thread, once per guest flush.
 pub trait FrameSink: Send + Sync {
     fn present(&self, frame: &Frame<'_>);
+
+    /// As `present`, for a frame whose buffer the sink may keep instead of copying. Returns a
+    /// buffer the caller can fill with a later frame: this one, or one the sink let go of.
+    fn present_owned(&self, width: u32, height: u32, format: u32, pixels: Vec<u8>) -> Vec<u8> {
+        self.present(&Frame {
+            width,
+            height,
+            format,
+            pixels: &pixels,
+        });
+        pixels
+    }
 }
 
 /// A 2D image the guest created, with the host's copy of its pixels.
@@ -485,26 +497,19 @@ impl Accelerated {
         }
         let (kind, answer) = match self.gpu.execute(mem, &header, body) {
             Ok(answer) => {
-                if let (
-                    super::gpu3d::Answer::Frame {
-                        width,
-                        height,
-                        format,
-                        pixels,
-                    },
-                    Some(sink),
-                ) = (&answer, &self.sink)
-                {
-                    sink.present(&Frame {
-                        width: *width,
-                        height: *height,
-                        format: *format,
-                        pixels,
-                    });
-                }
                 let response = answer.response();
-                if let super::gpu3d::Answer::Frame { pixels, .. } = answer {
-                    self.gpu.recycle(pixels);
+                if let super::gpu3d::Answer::Frame {
+                    width,
+                    height,
+                    format,
+                    pixels,
+                } = answer
+                {
+                    let spare = match &self.sink {
+                        Some(sink) => sink.present_owned(width, height, format, pixels),
+                        None => pixels,
+                    };
+                    self.gpu.recycle(spare);
                 }
                 response
             }

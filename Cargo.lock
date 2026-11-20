@@ -525,6 +525,7 @@ dependencies = [
 name = "devices"
 version = "0.5.0"
 dependencies = [
+ "libc",
  "log",
  "virtio-bindings",
  "virtio-queue",

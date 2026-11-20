@@ -11,6 +11,7 @@ use std::thread::{self, JoinHandle};
 
 use virtio_bindings::virtio_blk::*;
 use virtio_bindings::virtio_ids::VIRTIO_ID_BLOCK;
+use virtio_bindings::virtio_ring::VIRTIO_RING_F_INDIRECT_DESC;
 use virtio_queue::desc::split::Descriptor;
 use virtio_queue::{DescriptorChain, Queue, QueueT};
 use vm_memory::{Bytes, GuestMemoryMmap};
@@ -24,6 +25,12 @@ const SECTOR_SHIFT: u32 = 9;
 const SECTOR_SIZE: u64 = 1 << SECTOR_SHIFT;
 /// One request queue of this many descriptors.
 const QUEUE_SIZES: [u16; 1] = [256];
+/// Data buffers one request may carry. Without this the guest sends one buffer (often one 4 KiB
+/// page) per request; the header and status take the other two descriptors of a full ring.
+const SEG_MAX: u32 = QUEUE_SIZES[0] as u32 - 2;
+/// `struct virtio_blk_config`: capacity (u64), size_max (u32), seg_max (u32), little-endian.
+const CONFIG_SEG_MAX_AT: usize = 12;
+const CONFIG_LEN: usize = CONFIG_SEG_MAX_AT + size_of::<u32>();
 /// `struct virtio_blk_outhdr`: type (u32), priority (u32), sector (u64), little-endian.
 const HEADER_LEN: usize = 16;
 const HEADER_SECTOR_AT: usize = 8;
@@ -272,16 +279,22 @@ impl VirtioDevice for Block {
         } else {
             0
         };
-        1 << VIRTIO_BLK_F_FLUSH | read_only
+        // Indirect tables let one request of many buffers take a single ring slot.
+        1 << VIRTIO_BLK_F_FLUSH
+            | 1 << VIRTIO_BLK_F_SEG_MAX
+            | 1 << VIRTIO_RING_F_INDIRECT_DESC
+            | read_only
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
-        // `struct virtio_blk_config` starts with the capacity in sectors; the fields after it are unused.
-        let capacity = self.capacity_sectors.to_le_bytes();
+        // Capacity in sectors, no size_max (zero), then seg_max; the fields after it are unused.
+        let mut config = [0u8; CONFIG_LEN];
+        config[..size_of::<u64>()].copy_from_slice(&self.capacity_sectors.to_le_bytes());
+        config[CONFIG_SEG_MAX_AT..].copy_from_slice(&SEG_MAX.to_le_bytes());
         for (at, byte) in (offset..).zip(data.iter_mut()) {
             *byte = usize::try_from(at)
                 .ok()
-                .and_then(|at| capacity.get(at))
+                .and_then(|at| config.get(at))
                 .copied()
                 .unwrap_or(0);
         }
@@ -728,6 +741,10 @@ mod tests {
         let mut tail = [0xffu8; 2];
         block.read_config(7, &mut tail);
         assert_eq!(tail, [0, 0]);
+        let mut seg_max = [0u8; 4];
+        block.read_config(CONFIG_SEG_MAX_AT as u64, &mut seg_max);
+        assert_eq!(u32::from_le_bytes(seg_max), SEG_MAX);
+        assert_ne!(block.features() & 1 << VIRTIO_BLK_F_SEG_MAX, 0);
         assert_ne!(block.features() & 1 << VIRTIO_BLK_F_RO, 0);
 
         let writable_disk = Block::new(DiskImage::open(&image.0, false, "").unwrap());

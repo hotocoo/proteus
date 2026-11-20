@@ -259,18 +259,38 @@ impl Disk {
 
     /// Asks the host to make every writable file's data durable.
     pub fn flush(&mut self) -> io::Result<()> {
+        // Pieces often share one file, and one sync covers them all.
+        let mut synced: Vec<*const File> = Vec::new();
         for segment in &self.segments {
             if let Source::File {
                 file,
                 writable: true,
                 ..
             } = &segment.source
+                && !synced.contains(&Arc::as_ptr(file))
             {
-                file.sync_data()?;
+                synced.push(Arc::as_ptr(file));
+                sync(file)?;
             }
         }
         Ok(())
     }
+}
+
+/// Puts a file's writes on the drive in order. On macOS `sync_data` is `F_FULLFSYNC`, which waits
+/// for the drive's cache: 300 guest fsyncs took 2.5 s that way, 0.9 s with a barrier. A barrier
+/// keeps write order, so the guest's filesystem stays consistent; only a host crash or power cut
+/// can lose the last writes. Where a barrier is refused, the full sync runs.
+fn sync(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `fcntl` with `F_BARRIERFSYNC` takes no argument and only reads the open descriptor.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
+            return Ok(());
+        }
+    }
+    file.sync_data()
 }
 
 #[cfg(test)]

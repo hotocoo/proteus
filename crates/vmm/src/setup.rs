@@ -60,6 +60,11 @@ const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
 /// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
 /// so it reaches apps started after setup (every app the user opens).
 const SHARED_MEMORY: &str = "su 0 setprop sys.use_memfd true";
+/// Tells the guest its disks are solid state with no request scheduler. The kernel takes a virtio
+/// disk for a spinning one and queues its requests through mq-deadline, which only delays them:
+/// the host does its own ordering and caching.
+const DISK_QUEUES: &str = "su 0 sh -c 'for queue in /sys/block/vd*/queue; do \
+     echo 0 > $queue/rotational; echo none > $queue/scheduler; done'";
 /// Bundled apps are files with this ending.
 const APK_EXTENSION: &str = "apk";
 
@@ -139,6 +144,7 @@ fn booted(adb_port: &AtomicU16, done: &AtomicBool) -> Option<u16> {
 fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Path>) {
     let mut steps = vec![
         SHARED_MEMORY,
+        DISK_QUEUES,
         BLUETOOTH_OFF,
         UWB_OFF,
         RADIOS_OFF,
