@@ -186,6 +186,20 @@ impl Form {
                 }
             });
             style::hint(ui, text::FRAME_RATE_HINT);
+            style::label(ui, text::SCREEN_SHAPE);
+            ui.horizontal_wrapped(|ui| {
+                for (shape, _) in config::SCREEN_SHAPES {
+                    let label = if shape == config::SCREEN_SHAPE_FREE {
+                        text::SCREEN_SHAPE_FREE
+                    } else {
+                        shape
+                    };
+                    edited |= ui
+                        .radio_value(&mut settings.screen_shape, shape.to_owned(), label)
+                        .changed();
+                }
+            });
+            style::hint(ui, text::SCREEN_SHAPE_HINT);
         });
 
         style::section(ui, text::GRAPHICS_AND_SOUND, |ui| {

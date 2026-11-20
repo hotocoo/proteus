@@ -245,6 +245,8 @@ struct App {
     shown_part: Option<egui::Rect>,
     /// The space the picture had to fit in, in points.
     space: Option<egui::Rect>,
+    /// The shape (long side to short) the picture keeps when the window is resized, if any.
+    screen_shape: Option<f32>,
     /// The logical display size Android has (natural orientation), if any, as it last said.
     logical: Option<(u32, u32)>,
     /// Whether `logical` was read from Android since the window opened, and whether a request
@@ -401,6 +403,22 @@ impl App {
             .then(|| guest_pixel(rect, size, point))?
     }
 
+    /// Resizes the window so that the picture's space, `space` now, is `aspect` wide for each unit
+    /// high, keeping its height.
+    fn snap_to(&self, space: egui::Rect, aspect: f32) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let window = &shown.window;
+        let inner = window.inner_size().to_logical::<f64>(window.scale_factor());
+        let chrome = (
+            inner.width - f64::from(space.width()),
+            inner.height - f64::from(space.height()),
+        );
+        let width = f64::from(space.height()) * f64::from(aspect) + chrome.0;
+        let _ = window.request_inner_size(LogicalSize::new(width, inner.height));
+    }
+
     /// Gives Android the shape of the space the picture has, once the window has stopped
     /// changing size, so the picture fills it.
     fn fill(&mut self) {
@@ -416,8 +434,17 @@ impl App {
             self.resized = Some(retry);
             return;
         }
-        let aspect = space.width() / space.height();
+        let mut aspect = space.width() / space.height();
         let tolerance = crate::config::FILL_TOLERANCE;
+        // A fixed shape: the window is brought to it, keeping its height, and Android gets it.
+        if let Some(ratio) = self.screen_shape {
+            let portrait = full.0 < full.1;
+            let shaped = if portrait { 1.0 / ratio } else { ratio };
+            if (aspect / shaped - 1.0).abs() > tolerance {
+                self.snap_to(space, shaped);
+            }
+            aspect = shaped;
+        }
         if self.synced && (aspect / (part.width() / part.height()) - 1.0).abs() <= tolerance {
             return;
         }
@@ -1204,6 +1231,7 @@ impl WindowLoop {
         keymap: Option<PathBuf>,
         profiles: Option<PathBuf>,
         instance: Option<String>,
+        screen_shape: Option<f32>,
     ) -> Result<crate::Exit, VmmError> {
         let notify = Arc::new(self.notifier());
         let link = self.notifier();
@@ -1231,6 +1259,7 @@ impl WindowLoop {
             shown_part: None,
             space: None,
             logical: None,
+            screen_shape,
             synced: false,
             asking: false,
             // Android may still have a shape from an earlier run; the window finds out once it

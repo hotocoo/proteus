@@ -4,6 +4,7 @@
 
 use crate::config::{
     DEFAULT_DISPLAY, DEFAULT_RAM_MIB, DEFAULT_REFRESH_HZ, DEFAULT_USERDATA_GIB, DEFAULT_VCPUS,
+    SCREEN_SHAPE_FREE,
 };
 use net::config::ADB_PORT as DEFAULT_ADB_PORT;
 
@@ -38,6 +39,8 @@ pub struct Settings {
     pub display: (u32, u32),
     /// Frames per second the guest's display runs at.
     pub refresh_hz: u32,
+    /// The shape the window keeps when resized (a `config::SCREEN_SHAPES` name).
+    pub screen_shape: String,
     pub gpu: bool,
     pub sound: Sound,
     pub gamepad: Gamepad,
@@ -62,6 +65,7 @@ const RAM: &str = "--ram-mib";
 const VCPUS: &str = "--vcpus";
 const DISPLAY: &str = "--display";
 const REFRESH: &str = "--refresh-hz";
+const SHAPE: &str = "--screen-shape";
 const GPU: &str = "--gpu";
 const MUTE: &str = "--mute";
 const NO_SOUND: &str = "--no-sound";
@@ -79,8 +83,8 @@ const SYNC: &str = "--sync";
 const SIZE_SEPARATOR: char = 'x';
 
 /// Options that take a value, of those the panel shows.
-const WITH_VALUE: [&str; 13] = [
-    ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, REFRESH, ADB_PORT, BLOCKLIST, ALLOWLIST,
+const WITH_VALUE: [&str; 14] = [
+    ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, REFRESH, SHAPE, ADB_PORT, BLOCKLIST, ALLOWLIST,
     KEYMAP, KEYMAP_DIR, SYNC,
 ];
 
@@ -112,6 +116,7 @@ impl Settings {
             vcpus: DEFAULT_VCPUS,
             display: DEFAULT_DISPLAY,
             refresh_hz: DEFAULT_REFRESH_HZ,
+            screen_shape: SCREEN_SHAPE_FREE.to_owned(),
             gpu: false,
             sound: Sound::On,
             gamepad: Gamepad::Auto,
@@ -153,6 +158,7 @@ impl Settings {
                 VCPUS => settings.vcpus = value.parse().unwrap_or(settings.vcpus),
                 DISPLAY => settings.display = parse_size(&value).unwrap_or(settings.display),
                 REFRESH => settings.refresh_hz = value.parse().unwrap_or(settings.refresh_hz),
+                SHAPE => settings.screen_shape = value,
                 ADB_PORT => settings.adb_port = value.parse().unwrap_or(settings.adb_port),
                 BLOCKLIST => settings.blocklists.push(value),
                 ALLOWLIST => settings.allowlists.push(value),
@@ -203,6 +209,9 @@ impl Settings {
         }
         if self.refresh_hz != DEFAULT_REFRESH_HZ {
             value(REFRESH, self.refresh_hz.to_string());
+        }
+        if self.screen_shape != SCREEN_SHAPE_FREE {
+            value(SHAPE, self.screen_shape.clone());
         }
         if self.adb_port != DEFAULT_ADB_PORT {
             value(ADB_PORT, self.adb_port.to_string());
@@ -278,8 +287,17 @@ mod tests {
             "/maps",
             "--sync",
             "farm",
+            "--screen-shape",
+            "19.5:9",
         ]);
         let settings = Settings::from_args(&args);
+        assert_eq!(settings.screen_shape, "19.5:9");
+        assert!(
+            settings
+                .to_args()
+                .windows(2)
+                .any(|pair| pair == ["--screen-shape", "19.5:9"])
+        );
         assert_eq!(settings.ram_mib, 2048);
         assert_eq!(settings.display, (1080, 1920));
         assert_eq!(settings.refresh_hz, 120);

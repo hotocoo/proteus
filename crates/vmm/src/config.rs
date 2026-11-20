@@ -21,6 +21,24 @@ pub const DEFAULT_DISPLAY: (u32, u32) = (720, 1280);
 pub const DEFAULT_REFRESH_HZ: u32 = 60;
 /// Refresh rates the settings offer: phone panels' usual ones.
 pub const REFRESH_CHOICES: [u32; 4] = [60, 90, 120, 144];
+/// Screen shapes the window keeps when it is resized, as long side to short side; `free` lets the
+/// window take any shape and Android follow it.
+pub const SCREEN_SHAPES: [(&str, Option<f32>); 6] = [
+    (SCREEN_SHAPE_FREE, None),
+    ("16:9", Some(16.0 / 9.0)),
+    ("18:9", Some(18.0 / 9.0)),
+    ("19:9", Some(19.0 / 9.0)),
+    ("19.5:9", Some(19.5 / 9.0)),
+    ("20:9", Some(20.0 / 9.0)),
+];
+pub const SCREEN_SHAPE_FREE: &str = "free";
+/// The long-to-short ratio a `--screen-shape` name stands for: `Some(None)` for free.
+pub fn screen_shape(name: &str) -> Option<Option<f32>> {
+    SCREEN_SHAPES
+        .iter()
+        .find(|(label, _)| *label == name)
+        .map(|(_, ratio)| *ratio)
+}
 /// Shares of the screen's size a game can be drawn at, then scaled up by Android (game mode).
 /// Only the values Android's `cmd game set --downscale` accepts; 1.0 turns it off.
 pub const RENDER_SCALES: [f32; 4] = [1.0, 0.85, 0.7, 0.5];
@@ -452,6 +470,8 @@ pub struct Config {
     pub display: Option<(u32, u32)>,
     /// Frames per second the guest's display claims (its EDID), which Android draws at.
     pub refresh_hz: u32,
+    /// The name of the shape the window keeps when resized (one of `SCREEN_SHAPES`).
+    pub screen_shape: &'static str,
     /// Keep this PNG file up to date with what the guest's display shows.
     pub frame_dump: Option<PathBuf>,
     /// Show the guest's display in a window.
@@ -497,6 +517,7 @@ impl Config {
             net: Some(NetOptions::default()),
             display: Some(DEFAULT_DISPLAY),
             refresh_hz: DEFAULT_REFRESH_HZ,
+            screen_shape: SCREEN_SHAPE_FREE,
             frame_dump: None,
             window: true,
             sound: true,
@@ -715,6 +736,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                 );
             }
             Long("refresh-hz") => config.refresh_hz = positive(&mut parser, "refresh-hz")?,
+            Long("screen-shape") => {
+                let name = parser.value()?.string()?;
+                config.screen_shape = SCREEN_SHAPES
+                    .iter()
+                    .map(|(label, _)| *label)
+                    .find(|label| *label == name)
+                    .ok_or_else(|| ConfigError(copy::bad_screen_shape(&name)))?;
+            }
             Long("blocklist") => net.blocklists.push(parser.value()?.into()),
             Long("allowlist") => net.allowlists.push(parser.value()?.into()),
             Long("adb-port") => {
@@ -791,6 +820,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_shapes_are_named_long_side_to_short() {
+        assert_eq!(screen_shape("free"), Some(None));
+        assert_eq!(screen_shape("18:9"), Some(Some(2.0)));
+        assert_eq!(screen_shape("19.5:9"), Some(Some(19.5 / 9.0)));
+        assert_eq!(screen_shape("21:9"), None);
+    }
 
     #[test]
     fn renamed_moves_the_old_folder_once() {

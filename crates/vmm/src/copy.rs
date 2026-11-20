@@ -32,6 +32,8 @@ Usage: proteus --kernel <file> [options]
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 720x1280, a phone held upright)
   --refresh-hz <n>        Frames per second the display runs at: 60 (default), 90, 120, 144
+  --screen-shape <shape>  Shape the window keeps when resized: free (default), 16:9, 18:9, 19:9,
+                          19.5:9 or 20:9
   --no-display            Give the guest no display device
   --headless              Open no window; the display can still be captured
   --keymap <file>         Keys and mouse movements that stand for touches (see the README)
@@ -429,6 +431,9 @@ pub fn frame_path(shared: bool) -> &'static str {
         "frames are uploaded to the window"
     }
 }
+pub fn bad_screen_shape(name: &str) -> String {
+    format!("--screen-shape: unknown shape `{name}`; use free, 16:9, 18:9, 19:9, 19.5:9 or 20:9")
+}
 pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
 pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
 pub const INSTANCE_KEPT: &str = "nothing was deleted";
@@ -778,6 +783,11 @@ pub mod gui {
     pub const PRESET_LOW_END: &str = "Low-end";
     pub const PRESETS_HINT: &str =
         "Sets memory, CPUs, frame rate and GPU in one click; change any of them after.";
+    pub const SCREEN_SHAPE: &str = "Screen shape";
+    pub const SCREEN_SHAPE_FREE: &str = "Free";
+    pub const SCREEN_SHAPE_HINT: &str = "The window snaps to this shape when you stop resizing it, \
+        and Android takes the same shape, so nothing is stretched. Free lets the window take any \
+        shape. Used from the next start.";
     pub const FRAME_RATE: &str = "Frame rate";
     pub const FRAME_RATE_HINT: &str = "Android and games run up to this many frames per second. \
         Higher feels smoother and responds faster to touches, and uses more of the computer.";

@@ -187,6 +187,7 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
             config.keymap.clone(),
             config.keymap_dir.clone(),
             config.instance.clone(),
+            config::screen_shape(config.screen_shape).flatten(),
         );
         // However the window ended, the machine does not outlive it.
         session.controller.power.off();
