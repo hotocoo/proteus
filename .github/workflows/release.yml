@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: gfxstream-out
-          key: gfxstream-macos-arm64-${{ hashFiles('scripts/build-gfxstream.sh') }}
+          key: gfxstream-macos-arm64-${{ hashFiles('scripts/build-gfxstream.sh', 'packaging/gfxstream/**') }}
       - name: Build gfxstream
         if: steps.gfxstream.outputs.cache-hit != 'true'
         run: scripts/build-gfxstream.sh "$RUNNER_TEMP/gfxstream" gfxstream-out

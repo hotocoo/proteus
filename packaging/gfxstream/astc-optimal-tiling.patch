@@ -1,0 +1,18 @@
+diff --git a/host/vulkan/vk_decoder_global_state.cpp b/host/vulkan/vk_decoder_global_state.cpp
+index 0ac4480..c8460ac 100644
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -11816,9 +11816,10 @@ class VkDecoderGlobalState::Impl {
+             VkFormatProperties props;
+             vk->vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
+ 
+-            if ((props.linearTilingFeatures & requiredTilingFeatures) != requiredTilingFeatures ||
+-                (props.optimalTilingFeatures & requiredTilingFeatures) != requiredTilingFeatures) {
+-                // Linear tiling is not supported, emulate
++            // Only optimal tiling is required: guests sample compressed textures from optimally
++            // tiled images, and Metal (MoltenVK, KosmicKrisp) has no linear tiling for compressed
++            // formats at all, so requiring it would decompress every texture of every game.
++            if ((props.optimalTilingFeatures & requiredTilingFeatures) != requiredTilingFeatures) {
+                 return true;
+             }
+         }

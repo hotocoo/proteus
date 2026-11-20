@@ -29,6 +29,11 @@ if [ ! -d "$work/gfxstream" ]; then
     git init -q "$work/gfxstream"
     git -C "$work/gfxstream" fetch -q --depth 1 "$repository" "$revision"
     git -C "$work/gfxstream" checkout -q FETCH_HEAD
+    # This repository's fixes (packaging/gfxstream), applied once to the fresh checkout.
+    repo=$(cd "$(dirname "$0")/.." && pwd)
+    for patch in "$repo"/packaging/gfxstream/*.patch; do
+        git -C "$work/gfxstream" apply "$patch"
+    done
 fi
 
 if [ -n "$windows" ]; then
