@@ -1,5 +1,6 @@
 # Wuthering Waves (com.kurogame.wutheringwaves.global), landscape, game's "Static Joystick" mode.
-# Keys follow the PC version. The mouse turns the camera; hold Left Alt (Option) for the pointer.
+# Keys follow the PC version. The mouse turns the camera; Left Alt (Option) switches to the
+# pointer and back.
 # Menu keys (Esc, M, C, J, Enter) also free the pointer; pressing one again, or moving (WASD) or
 # acting, gives it back.
 # A gamepad needs no map: the game supports controllers itself.
@@ -22,7 +23,7 @@ center = [1500, 450]
 radius = 300
 sensitivity = 1.0
 start = true
-hold = true
+hold = false             # Left Alt switches pointer on and off
 
 [[tap]]                   # basic attack
 key = "MouseLeft"
