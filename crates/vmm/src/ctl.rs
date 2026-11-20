@@ -101,6 +101,7 @@ const WORD_WINDOW_SHOT: &str = "window-screenshot";
 const WORD_WINDOW_CLICK: &str = "window-click";
 const WORD_WINDOW_SCROLL: &str = "window-scroll";
 const WORD_WINDOW_RESIZE: &str = "window-resize";
+const WORD_WINDOW_FULLSCREEN: &str = "window-fullscreen";
 /// Starts each line of what a `shell` command printed, so the answer line after them stands out.
 pub const SHELL_LINE: &str = "| ";
 const MACRO_COMMENT: char = '#';
@@ -190,6 +191,8 @@ pub enum Command {
         width: f64,
         height: f64,
     },
+    /// Put the window in full screen, or take it out.
+    WindowFullscreen,
     /// Turn the machine off without asking the guest.
     Stop,
     /// Shut Android down, then turn the machine off.
@@ -275,6 +278,7 @@ impl std::fmt::Display for Command {
             Self::WindowResize { width, height } => {
                 write!(f, "{WORD_WINDOW_RESIZE} {width} {height}")
             }
+            Self::WindowFullscreen => f.write_str(WORD_WINDOW_FULLSCREEN),
             Self::Stop => f.write_str(WORD_STOP),
             Self::Shutdown => f.write_str(WORD_SHUTDOWN),
             Self::Wait(duration) => write!(f, "{WORD_WAIT} {}", duration.as_millis()),
@@ -337,6 +341,7 @@ pub fn parse(line: &str) -> Option<Command> {
             });
         }
         (WORD_SHAKE, Some(&[])) => return Some(Command::Shake),
+        (WORD_WINDOW_FULLSCREEN, Some(&[])) => return Some(Command::WindowFullscreen),
         (WORD_STOP, Some(&[])) => return Some(Command::Stop),
         (WORD_SHUTDOWN, Some(&[])) => return Some(Command::Shutdown),
         (WORD_WALK, None) if rest == WORD_STOP => return Some(Command::Walk(None)),
@@ -560,6 +565,9 @@ pub enum WindowRequest {
     Resize {
         width: f64,
         height: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Fullscreen {
         reply: mpsc::Sender<Result<(), String>>,
     },
 }
@@ -828,6 +836,9 @@ impl Controller {
                     height,
                     reply,
                 })
+            }
+            Command::WindowFullscreen => {
+                self.ask_window(|reply| WindowRequest::Fullscreen { reply })
             }
             Command::Install(ref path) => {
                 let port = self.adb_port.load(Ordering::SeqCst);
@@ -1372,6 +1383,7 @@ mod tests {
             Command::Shutdown,
             Command::WindowShot("w.png".into()),
             Command::WindowClick { x: 1.5, y: 2.0 },
+            Command::WindowFullscreen,
             Command::WindowResize {
                 width: 800.0,
                 height: 450.5,

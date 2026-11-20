@@ -17,8 +17,45 @@ pub const DEFAULT_VCPUS: u32 = 4;
 /// Size of the guest's display, in pixels.
 /// A phone held upright: the shape Google's phone image is made for. Landscape apps turn it.
 pub const DEFAULT_DISPLAY: (u32, u32) = (720, 1280);
-/// Frames per second the guest's display runs at unless told otherwise.
-pub const DEFAULT_REFRESH_HZ: u32 = 60;
+/// `--refresh-hz native`: the guest's display runs as fast as this computer's screen.
+pub const NATIVE_REFRESH: u32 = 0;
+pub const NATIVE_REFRESH_WORD: &str = "native";
+/// Frames per second the guest's display runs at unless told otherwise: the screen's own.
+pub const DEFAULT_REFRESH_HZ: u32 = NATIVE_REFRESH;
+/// The rate `native` means when the screen's cannot be read.
+pub const FALLBACK_REFRESH_HZ: u32 = 60;
+/// Games cap at 30 or 60 frames a second, and Android gives an app only whole fractions of the
+/// display's one mode (its composer here uses no other), so `native` is the screen's fastest
+/// multiple of this: a 144 Hz screen gets 120, where a 60 fps game runs at 60 rather than 48.
+pub const GAME_FRAME_RATE: u32 = 60;
+
+/// The display rate `native` stands for on a screen that shows `screen_hz` frames a second.
+pub fn native_refresh(screen_hz: u32) -> u32 {
+    (screen_hz - screen_hz % GAME_FRAME_RATE).max(GAME_FRAME_RATE)
+}
+
+/// How many frames per second this computer's main screen shows at most, if it can be read.
+pub fn host_refresh_hz() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        // SAFETY: `+[NSScreen mainScreen]` returns an autoreleased screen or nil, and
+        // `maximumFramesPerSecond` (macOS 12+) is a plain NSInteger property of it.
+        let hz: isize = unsafe {
+            let screen: *mut AnyObject = msg_send![class!(NSScreen), mainScreen];
+            if screen.is_null() {
+                return None;
+            }
+            msg_send![screen, maximumFramesPerSecond]
+        };
+        u32::try_from(hz).ok().filter(|hz| *hz > 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
 /// Refresh rates the settings offer: phone panels' usual ones.
 pub const REFRESH_CHOICES: [u32; 4] = [60, 90, 120, 144];
 /// Screen shapes the window keeps when it is resized, as long side to short side; `free` lets the
@@ -255,6 +292,10 @@ pub const STATUS_SHOWN: Duration = Duration::from_secs(4);
 pub const STATUS_OFFSET: [f32; 2] = [0.0, -16.0];
 /// Where the button that brings the hidden toolbar back sits, from the window's top-right corner.
 pub const SHOW_TOOLBAR_OFFSET: [f32; 2] = [-8.0, 8.0];
+/// Whether the toolbar starts out (hidden, the picture gets the whole window), and how long it
+/// stays out once the pointer leaves it and no panel is open, before it folds away by itself.
+pub const TOOLBAR_SHOWN_AT_START: bool = false;
+pub const TOOLBAR_AUTO_HIDE: Duration = Duration::from_secs(3);
 pub const TOOLBAR_MARGIN: f32 = 6.0;
 pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
 pub const PANEL_WIDTH: f32 = 340.0;
@@ -292,7 +333,7 @@ pub struct Preset {
 pub const PRESET_GAMING: Preset = Preset {
     ram_mib: 8192,
     vcpus: 8,
-    refresh_hz: 120,
+    refresh_hz: NATIVE_REFRESH,
     gpu: true,
 };
 /// Everyday apps without spending the Mac's battery.
@@ -338,6 +379,8 @@ pub const CHECK_DATA_DIR: &str = "check";
 /// What the settings' storage slider allows, in GiB, and how tall the list fields are.
 pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
 pub const LIST_ROWS: usize = 2;
+/// The `--log-level` values the settings form offers, quietest first.
+pub const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
 /// How often the toolbar's frame counter (and the trace log) counts the guest's frame rate.
 pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
 /// Frames the toolbar's 1% low is worked out over: about 7 s at 144 fps, 17 s at 60 fps.
@@ -382,6 +425,8 @@ pub const FILL_ASPECT_RANGE: std::ops::RangeInclusive<f32> = (1.0 / 3.0)..=3.0;
 /// Apps a release carries beside the program, installed when a data folder first boots, and the
 /// file in the data folder that notes which were.
 pub const BUNDLED_APPS_DIR: &str = "apps";
+/// Key maps for particular games a release carries, copied into an instance's key map folder.
+pub const BUNDLED_KEYMAPS_DIR: &str = "keymaps";
 pub const INSTALLED_APPS_FILE: &str = "bundled-apps-installed";
 /// How often the guest is asked whether it has booted, and how long it may take to answer.
 pub const SETUP_POLL: Duration = Duration::from_secs(2);
@@ -745,7 +790,17 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                         .ok_or_else(|| ConfigError(copy::BAD_DISPLAY.into()))?,
                 );
             }
-            Long("refresh-hz") => config.refresh_hz = positive(&mut parser, "refresh-hz")?,
+            Long("refresh-hz") => {
+                let text = parser.value()?.string()?;
+                config.refresh_hz = if text == NATIVE_REFRESH_WORD {
+                    NATIVE_REFRESH
+                } else {
+                    text.parse()
+                        .ok()
+                        .filter(|hz| *hz > 0)
+                        .ok_or_else(|| ConfigError(copy::bad_number("refresh-hz")))?
+                };
+            }
             Long("screen-shape") => {
                 let name = parser.value()?.string()?;
                 config.screen_shape = SCREEN_SHAPES
@@ -783,6 +838,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
 
     if let Some((width, height)) = config.display {
         let most = devices::virtio::edid::max_refresh(width, height);
+        if config.refresh_hz == NATIVE_REFRESH {
+            let native = native_refresh(host_refresh_hz().unwrap_or(FALLBACK_REFRESH_HZ));
+            config.refresh_hz = native.min(most);
+        }
         if config.refresh_hz > most {
             return Err(ConfigError(copy::refresh_too_fast(most)));
         }
@@ -872,7 +931,24 @@ mod tests {
     fn kernel_alone_gets_every_default() {
         assert_eq!(
             run(&["--kernel", "Image"]),
-            Config::new(PathBuf::from("Image"))
+            Config {
+                // The display runs as fast as this computer's screen.
+                refresh_hz: native_refresh(host_refresh_hz().unwrap_or(FALLBACK_REFRESH_HZ)),
+                ..Config::new(PathBuf::from("Image"))
+            }
+        );
+        assert_eq!(
+            run(&["--kernel", "Image", "--refresh-hz", "native"]).refresh_hz,
+            native_refresh(host_refresh_hz().unwrap_or(FALLBACK_REFRESH_HZ))
+        );
+        assert_eq!(
+            run(&["--kernel", "Image", "--refresh-hz", "90"]).refresh_hz,
+            90
+        );
+        assert!(parse_str(&["--kernel", "Image", "--refresh-hz", "0"]).is_err());
+        assert_eq!(
+            [60, 75, 90, 120, 144, 165, 240].map(native_refresh),
+            [60, 60, 60, 120, 120, 120, 240]
         );
     }
 

@@ -54,6 +54,11 @@ pub struct Settings {
     pub keymap_dir: String,
     /// Instances (or sockets) that get this one's touches, keys and pad moves too.
     pub sync: Vec<String>,
+    /// Android's system partitions are copied into the instance so they can be changed (root,
+    /// Google apps).
+    pub writable_system: bool,
+    /// How much the emulator logs; empty for its default.
+    pub log_level: String,
     /// Every other option, in order, values included.
     pub other: Vec<String>,
 }
@@ -80,17 +85,19 @@ const ALLOWLIST: &str = "--allowlist";
 const KEYMAP: &str = "--keymap";
 const KEYMAP_DIR: &str = "--keymap-dir";
 const SYNC: &str = "--sync";
+const WRITABLE_SYSTEM: &str = "--writable-system";
+const LOG_LEVEL: &str = "--log-level";
 const SIZE_SEPARATOR: char = 'x';
 
 /// Options that take a value, of those the panel shows.
-const WITH_VALUE: [&str; 14] = [
+const WITH_VALUE: [&str; 15] = [
     ANDROID, KERNEL, USERDATA, RAM, VCPUS, DISPLAY, REFRESH, SHAPE, ADB_PORT, BLOCKLIST, ALLOWLIST,
-    KEYMAP, KEYMAP_DIR, SYNC,
+    KEYMAP, KEYMAP_DIR, SYNC, LOG_LEVEL,
 ];
 
 /// Options that take a value, of those the panel does not show. Their value is kept with them, so
 /// that it is not mistaken for an option.
-const OTHER_WITH_VALUE: [&str; 11] = [
+const OTHER_WITH_VALUE: [&str; 10] = [
     "--initrd",
     "--cmdline",
     "--disk",
@@ -101,7 +108,6 @@ const OTHER_WITH_VALUE: [&str; 11] = [
     "--data-dir",
     "--logcat",
     "--boot-marker",
-    "--log-level",
 ];
 
 impl Settings {
@@ -129,6 +135,8 @@ impl Settings {
             keymap: String::new(),
             keymap_dir: String::new(),
             sync: Vec::new(),
+            writable_system: false,
+            log_level: String::new(),
             other: Vec::new(),
         };
         let mut iter = args.iter();
@@ -165,6 +173,8 @@ impl Settings {
                 KEYMAP => settings.keymap = value,
                 KEYMAP_DIR => settings.keymap_dir = value,
                 SYNC => settings.sync.push(value),
+                LOG_LEVEL => settings.log_level = value,
+                WRITABLE_SYSTEM => settings.writable_system = true,
                 GPU => settings.gpu = true,
                 MUTE => settings.sound = Sound::Muted,
                 NO_SOUND => settings.sound = Sound::Off,
@@ -231,6 +241,9 @@ impl Settings {
         for target in self.sync.iter().filter(|target| !target.is_empty()) {
             value(SYNC, target.clone());
         }
+        if !self.log_level.is_empty() {
+            value(LOG_LEVEL, self.log_level.clone());
+        }
         let flags = [
             (self.gpu, GPU),
             (self.sound == Sound::Muted, MUTE),
@@ -240,6 +253,7 @@ impl Settings {
             (!self.network, NO_NET),
             (self.allow_quic, ALLOW_QUIC),
             (self.host_loopback, HOST_LOOPBACK),
+            (self.writable_system, WRITABLE_SYSTEM),
         ];
         args.extend(
             flags
@@ -289,6 +303,9 @@ mod tests {
             "farm",
             "--screen-shape",
             "19.5:9",
+            "--writable-system",
+            "--log-level",
+            "info",
         ]);
         let settings = Settings::from_args(&args);
         assert_eq!(settings.screen_shape, "19.5:9");

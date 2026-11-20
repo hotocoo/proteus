@@ -1,0 +1,39 @@
+diff --git a/host/vulkan/vk_decoder_internal_structs.h b/host/vulkan/vk_decoder_internal_structs.h
+index b2f396d..75326a1 100644
+--- a/host/vulkan/vk_decoder_internal_structs.h
++++ b/host/vulkan/vk_decoder_internal_structs.h
+@@ -717,14 +717,27 @@ struct CommandBufferInfo {
+         firstSet = 0;
+         descriptorLayout = VK_NULL_HANDLE;
+         currentDescriptorSets.clear();
+-        allDescriptorSets.clear();
++        emptyHashed(allDescriptorSets);
+         dynamicOffsets.clear();
+-        acquiredColorBuffers.clear();
+-        releasedColorBuffers.clear();
+-        renderedShadowImages.clear();
+-        cbLayouts.clear();
+-        imageLayouts.clear();
+-        shadowLinearImageLayouts.clear();
++        emptyHashed(acquiredColorBuffers);
++        emptyHashed(releasedColorBuffers);
++        emptyHashed(renderedShadowImages);
++        emptyHashed(cbLayouts);
++        emptyHashed(imageLayouts);
++        emptyHashed(shadowLinearImageLayouts);
++    }
++
++    // clear() keeps a hash table's buckets and zeroes all of them, so a table that was once
++    // large makes every later reset (one per vkBeginCommandBuffer) cost a big memset. A large
++    // table is swapped for a new one instead.
++    template <typename Table>
++    static void emptyHashed(Table& table) {
++        constexpr size_t kKeptBuckets = 64;
++        if (table.bucket_count() > kKeptBuckets) {
++            Table().swap(table);
++        } else {
++            table.clear();
++        }
+     }
+ };
+ 

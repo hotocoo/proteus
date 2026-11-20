@@ -36,6 +36,7 @@ pub struct Form {
     blocklists: String,
     allowlists: String,
     sync: String,
+    other: String,
     /// What the host has, as the form says it; read once, when the form opens.
     host_hint: String,
     /// The size of the instance's data disk now; read when the form opens and after a save.
@@ -66,6 +67,7 @@ impl Form {
             blocklists: settings.blocklists.join("\n"),
             allowlists: settings.allowlists.join("\n"),
             sync: settings.sync.join("\n"),
+            other: settings.other.join("\n"),
             settings,
             saved: true,
             confirm_reset: false,
@@ -88,6 +90,7 @@ impl Form {
         self.settings.blocklists = lines(&self.blocklists);
         self.settings.allowlists = lines(&self.allowlists);
         self.settings.sync = lines(&self.sync);
+        self.settings.other = lines(&self.other);
         let args = self.settings.to_args();
         // Checked as the emulator will read them, so a mistake shows now and not at start.
         let mut check: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
@@ -179,7 +182,7 @@ impl Form {
             style::hint(ui, text::SCREEN_HINT);
             style::label(ui, text::FRAME_RATE);
             ui.horizontal_wrapped(|ui| {
-                for rate in config::REFRESH_CHOICES {
+                for rate in std::iter::once(config::NATIVE_REFRESH).chain(config::REFRESH_CHOICES) {
                     edited |= ui
                         .radio_value(&mut settings.refresh_hz, rate, text::hz(rate))
                         .changed();
@@ -313,6 +316,10 @@ impl Form {
                 }
                 None => style::hint(ui, text::DATA_SIZE_HINT),
             }
+            edited |= ui
+                .checkbox(&mut settings.writable_system, text::WRITABLE_SYSTEM)
+                .changed();
+            style::hint(ui, text::WRITABLE_SYSTEM_HINT);
             ui.add_space(tune::GAP);
             if self.confirm_reset {
                 ui.label(text::RESET_SURE);
@@ -328,6 +335,30 @@ impl Form {
             } else if style::danger(ui, text::FACTORY_RESET) {
                 self.confirm_reset = true;
             }
+        });
+
+        style::section(ui, text::ADVANCED, |ui| {
+            style::label(ui, text::LOG_LEVEL);
+            ui.horizontal_wrapped(|ui| {
+                edited |= ui
+                    .radio_value(&mut settings.log_level, String::new(), text::LOG_DEFAULT)
+                    .changed();
+                for level in config::LOG_LEVELS {
+                    edited |= ui
+                        .radio_value(&mut settings.log_level, level.to_owned(), level)
+                        .changed();
+                }
+            });
+            style::label(ui, text::OTHER_OPTIONS);
+            edited |= ui
+                .add(
+                    egui::TextEdit::multiline(&mut self.other)
+                        .desired_rows(config::LIST_ROWS)
+                        .desired_width(f32::INFINITY),
+                )
+                .accessible_name(text::OTHER_OPTIONS)
+                .changed();
+            style::hint(ui, text::OTHER_OPTIONS_HINT);
         });
 
         if edited {
@@ -438,7 +469,7 @@ mod tests {
         let form = Form::open_in(root.clone(), "phone").unwrap();
         // Laid out as the window's Settings panel lays it out.
         let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1200.0, 1600.0))
+            .with_size(egui::vec2(1200.0, 2400.0))
             .build_ui_state(
                 |ui, (form, inner, content): &mut (Form, f32, f32)| {
                     egui::Panel::right("panel")
@@ -459,6 +490,8 @@ mod tests {
         harness.get_by_label(text::USE_GPU).click();
         harness.run();
         harness.state_mut().0.sync = "farm".to_owned();
+        harness.get_by_label(text::WRITABLE_SYSTEM).click();
+        harness.run();
         harness.get_by_label(text::SAVE).click();
         harness.run();
         assert_eq!(harness.state().0.status, text::SETTINGS_SAVED);
@@ -466,6 +499,7 @@ mod tests {
         assert!(harness.query_by_label(text::DATA_SIZE_HINT).is_some());
         let saved = instance::args(&root, "phone").unwrap();
         assert!(saved.contains(&"--gpu".to_owned()), "{saved:?}");
+        assert!(saved.contains(&"--writable-system".to_owned()), "{saved:?}");
         assert!(
             saved.windows(2).any(|pair| pair == ["--sync", "farm"]),
             "{saved:?}"

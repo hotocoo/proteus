@@ -45,6 +45,27 @@ pub fn map_for(dir: &Path, package: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Copies the maps in `presets` that `dir` has no map of its own for, so that a game with a
+/// preset works at once and the copy is the user's to change. Returns how many were copied.
+/// shortcut: a preset updated in a later release does not replace an earlier copy; compare
+/// contents (or keep a record of copies) if presets start changing.
+pub fn seed(dir: &Path, presets: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dir)?;
+    let mut copied = 0;
+    for entry in std::fs::read_dir(presets)? {
+        let from = entry?.path();
+        let Some(name) = from.file_name() else {
+            continue;
+        };
+        let to = dir.join(name);
+        if from.extension().is_some_and(|ext| ext == MAP_EXTENSION) && !to.exists() {
+            std::fs::copy(&from, &to)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
 /// Asks the guest which app is in front every `FOREGROUND_POLL`, and calls `changed` with its
 /// package name whenever that changes, until `done` is set.
 pub fn watch(
@@ -102,5 +123,29 @@ mod tests {
         std::fs::write(dir.join("com.game.toml"), "").unwrap();
         assert_eq!(map_for(&dir, "com.game"), Some(dir.join("com.game.toml")));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn presets_fill_in_missing_maps_and_never_replace_the_users() {
+        let root = std::env::temp_dir().join(format!("proteus-seed-test-{}", std::process::id()));
+        let (presets, dir) = (root.join("presets"), root.join("maps"));
+        std::fs::create_dir_all(&presets).unwrap();
+        std::fs::write(presets.join("com.a.toml"), "preset").unwrap();
+        std::fs::write(presets.join("com.b.toml"), "preset").unwrap();
+        std::fs::write(presets.join("notes.txt"), "").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("com.b.toml"), "mine").unwrap();
+        assert_eq!(seed(&dir, &presets).unwrap(), 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("com.a.toml")).unwrap(),
+            "preset"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("com.b.toml")).unwrap(),
+            "mine"
+        );
+        assert!(!dir.join("notes.txt").exists());
+        assert_eq!(seed(&dir, &presets).unwrap(), 0);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -136,6 +136,8 @@ enum Shortcut {
     Screenshot,
     /// Hide or show the toolbar.
     Toolbar,
+    /// Full screen, where macOS turns on Game Mode, or back to a window.
+    Fullscreen,
 }
 
 /// Whether the shortcut modifier is held: ⌘ on a Mac, Ctrl+Alt elsewhere (the Windows/Super key
@@ -165,6 +167,7 @@ fn shortcut(key: KeyCode, shift: bool) -> Option<Shortcut> {
         KeyCode::ArrowRight => Shortcut::Turn(true),
         KeyCode::KeyS => Shortcut::Screenshot,
         KeyCode::Backslash => Shortcut::Toolbar,
+        KeyCode::KeyF => Shortcut::Fullscreen,
         _ => return None,
     })
 }
@@ -189,6 +192,33 @@ pub fn key_name(key: KeyCode) -> String {
 
 /// The window's `size` without a side panel of `panel` points, which may be open or shut when the
 /// size comes back. `None` for a window too small to mean anything (minimized).
+/// The window sizes kept between runs, one line per way up ("width height", or "-" for none),
+/// in the instance's folder.
+const WINDOW_SIZES_FILE: &str = "window";
+const NO_SIZE: &str = "-";
+
+/// The sizes in a `WINDOW_SIZES_FILE`; anything unreadable is no size.
+fn parse_sizes(text: &str) -> [Option<LogicalSize<f64>>; 2] {
+    let mut lines = text.lines();
+    [(); 2].map(|()| {
+        let mut numbers = lines.next()?.split_whitespace().map(str::parse::<f64>);
+        let (Some(Ok(width)), Some(Ok(height))) = (numbers.next(), numbers.next()) else {
+            return None;
+        };
+        remembered_size(LogicalSize::new(width, height), 0.0)
+    })
+}
+
+fn format_sizes(sizes: &[Option<LogicalSize<f64>>; 2]) -> String {
+    sizes
+        .iter()
+        .map(|size| match size {
+            Some(size) => format!("{} {}\n", size.width.round(), size.height.round()),
+            None => format!("{NO_SIZE}\n"),
+        })
+        .collect()
+}
+
 fn remembered_size(size: LogicalSize<f64>, panel: f64) -> Option<LogicalSize<f64>> {
     let size = LogicalSize::new(size.width - panel, size.height);
     (size.width > MIN_REMEMBERED_SIDE && size.height > MIN_REMEMBERED_SIDE).then_some(size)
@@ -212,17 +242,9 @@ fn turned_size(
 }
 
 /// The window's first size, in logical pixels: the guest's picture, made smaller if needed so it
-/// fits a share of the monitor (`None` when the monitor is not known), and the toolbar beside it.
+/// fits a share of the monitor (`None` when the monitor is not known). The toolbar floats over it.
 fn initial_size(picture: (u32, u32), monitor: Option<(f64, f64)>) -> (f64, f64) {
-    let toolbar = f64::from(TOOLBAR_WIDTH);
-    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
-    let scale = monitor.map_or(1.0, |(monitor_w, monitor_h)| {
-        let share = crate::config::WINDOW_SCREEN_SHARE;
-        ((monitor_w * share - toolbar) / width)
-            .min(monitor_h * share / height)
-            .min(1.0)
-    });
-    (width * scale + toolbar, height * scale)
+    turned_size(picture, 1.0, 0.0, monitor)
 }
 
 struct Shown {
@@ -292,8 +314,10 @@ struct App {
     gaps: crate::usage::FrameGaps,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
-    /// Whether the toolbar is out; hidden, the picture takes its room.
+    /// Whether the toolbar is out, over the picture's right edge.
     toolbar_shown: bool,
+    /// When the pointer left the shown toolbar, to fold it away a little later.
+    toolbar_left: Option<Instant>,
     /// Whether the window has the keyboard and mouse.
     focused: bool,
     /// Android's screen turn, in quarter turns, as last reported.
@@ -301,6 +325,8 @@ struct App {
     /// The window's last size (logical pixels) with the screen upright and turned sideways, so
     /// turning back restores the size the user gave it. The width is without a side panel.
     sizes: [Option<LogicalSize<f64>>; 2],
+    /// Where `sizes` are kept between runs: the instance's folder, if this is an instance.
+    sizes_file: Option<PathBuf>,
     /// This process's cost at the last count, for the CPU meter.
     usage: crate::usage::Reading,
 }
@@ -553,6 +579,7 @@ impl App {
         };
         let mut effects = Vec::new();
         let toolbar_shown = &mut self.toolbar_shown;
+        let toolbar_left = &mut self.toolbar_left;
         let gui = &mut self.gui;
         let texture = &self.picture_texture;
         let editor = &mut self.editor;
@@ -562,22 +589,49 @@ impl App {
         let logical = self.logical;
         shown.painter.paint(&shown.window, |ui| {
             if *toolbar_shown {
-                egui::Panel::right(copy::TOOLBAR_ID)
-                    .resizable(false)
-                    .exact_size(TOOLBAR_WIDTH)
-                    // Scrolls when the window is shorter than the buttons.
-                    .show(ui, |ui| {
-                        let hide = ui
-                            .add_sized(
-                                [ui.available_width(), crate::config::TOOLBAR_BUTTON_HEIGHT],
-                                egui::Button::new(copy::gui::HIDE_TOOLBAR),
-                            )
-                            .on_hover_text(copy::gui::HIDE_TOOLBAR_HINT);
-                        if hide.clicked() {
+                // Over the picture rather than beside it, so showing and hiding it never moves or
+                // reshapes the picture; left of an open panel.
+                let beside = if gui.open.is_some() || editor.is_some() {
+                    PANEL_WIDTH
+                } else {
+                    0.0
+                };
+                let height = ui.max_rect().height();
+                let bar = egui::Area::new(ui.scope_id().with(copy::TOOLBAR_ID))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_TOP, [-beside, 0.0])
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::side_top_panel(ui.style()).show(ui, |ui| {
+                            ui.set_width(TOOLBAR_WIDTH);
+                            ui.set_max_height(height);
+                            let hide = ui
+                                .add_sized(
+                                    [ui.available_width(), crate::config::TOOLBAR_BUTTON_HEIGHT],
+                                    egui::Button::new(copy::gui::HIDE_TOOLBAR),
+                                )
+                                .on_hover_text(copy::gui::HIDE_TOOLBAR_HINT);
+                            if hide.clicked() {
+                                *toolbar_shown = false;
+                            }
+                            // Scrolls when the window is shorter than the buttons.
+                            egui::ScrollArea::vertical()
+                                .show(ui, |ui| gui.toolbar(ui, &mut effects))
+                        })
+                    })
+                    .response;
+                // Folds away by itself once the pointer has left it, unless a panel is open.
+                if bar.contains_pointer() || gui.open.is_some() || editor.is_some() {
+                    *toolbar_left = None;
+                } else {
+                    let left = *toolbar_left.get_or_insert_with(Instant::now);
+                    match crate::config::TOOLBAR_AUTO_HIDE.checked_sub(left.elapsed()) {
+                        Some(wait) if !wait.is_zero() => ui.ctx().request_repaint_after(wait),
+                        _ => {
                             *toolbar_shown = false;
+                            *toolbar_left = None;
                         }
-                        egui::ScrollArea::vertical().show(ui, |ui| gui.toolbar(ui, &mut effects))
-                    });
+                    }
+                }
             } else {
                 // Only a small button over the picture's corner, to bring the toolbar back.
                 egui::Area::new(ui.scope_id().with(copy::TOOLBAR_ID))
@@ -781,7 +835,23 @@ impl App {
                 };
                 let _ = reply.send(answer);
             }
+            WindowRequest::Fullscreen { reply } => {
+                let _ = reply.send(self.toggle_fullscreen());
+            }
         }
+    }
+
+    /// Puts the window in the system's own full screen (on a Mac its own Space, where Game Mode
+    /// gives the game first claim on the GPU and CPU), or takes it out.
+    fn toggle_fullscreen(&self) -> Result<(), String> {
+        let shown = self.shown.as_ref().ok_or(copy::CTL_NO_PICTURE)?;
+        let window = &shown.window;
+        let next = match window.fullscreen() {
+            Some(_) => None,
+            None => Some(winit::window::Fullscreen::Borderless(None)),
+        };
+        window.set_fullscreen(next);
+        Ok(())
     }
 
     /// Clicks the window at `(x, y)` points through the same path the mouse takes: egui sees
@@ -879,8 +949,12 @@ impl App {
                 self.send(Command::Rotate([0.0, 0.0, degrees]));
             }
             Shortcut::Screenshot => self.gui.screenshot(),
+            Shortcut::Fullscreen => {
+                let _ = self.toggle_fullscreen();
+            }
             Shortcut::Toolbar => {
                 self.toolbar_shown = !self.toolbar_shown;
+                self.toolbar_left = None;
                 self.draw();
             }
         }
@@ -1043,7 +1117,11 @@ impl ApplicationHandler<Notice> for App {
             let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
             (size.width, size.height)
         });
-        let (width, height) = initial_size(self.upright(), monitor);
+        // The size the user last gave the window, else one that suits the screen.
+        let (width, height) = match self.sizes[0] {
+            Some(size) => (size.width + self.panel_width(), size.height),
+            None => initial_size(self.upright(), monitor),
+        };
         let attributes = Window::default_attributes()
             .with_title(copy::WINDOW_TITLE)
             .with_window_icon(crate::app_icon())
@@ -1324,6 +1402,18 @@ impl WindowLoop {
             .transpose()
             .map_err(VmmError::Device)?;
         let fill_notify: Arc<dyn Fn(Notice) + Send + Sync> = Arc::new(self.notifier());
+        let sizes_file = instance.as_deref().and_then(|name| {
+            let root = crate::instance::root().ok()?;
+            Some(
+                crate::instance::dir(&root, name)
+                    .ok()?
+                    .join(WINDOW_SIZES_FILE),
+            )
+        });
+        let sizes = sizes_file
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map_or([None; 2], |text| parse_sizes(&text));
         let gui = Gui::new(Arc::clone(&controller), notify, instance, keymap.as_deref());
         let mut app = App {
             controller,
@@ -1356,10 +1446,12 @@ impl WindowLoop {
             device_turns: 0,
             exit: crate::Exit::Closed,
             panel_shown: false,
-            toolbar_shown: true,
+            toolbar_shown: crate::config::TOOLBAR_SHOWN_AT_START,
+            toolbar_left: None,
             focused: true,
             turns: 0,
-            sizes: [None; 2],
+            sizes,
+            sizes_file,
             usage: crate::usage::read(),
             shutting_down: false,
             frames: 0,
@@ -1368,6 +1460,11 @@ impl WindowLoop {
         };
         let ran = self.0.run_app(&mut app);
         unguard_quit();
+        if let Some(path) = &app.sizes_file
+            && let Err(why) = crate::instance::write_atomic(path, format_sizes(&app.sizes))
+        {
+            log::warn!("{}", copy::window_sizes_not_saved(&why));
+        }
         // The GPU objects go before the window they draw into.
         let render = app
             .shown
@@ -1392,6 +1489,19 @@ impl WindowLoop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_sizes_survive_a_round_trip_and_bad_lines_are_no_size() {
+        let sizes = [Some(LogicalSize::new(800.0, 1600.0)), None];
+        assert_eq!(parse_sizes(&format_sizes(&sizes)), sizes);
+        assert_eq!(
+            parse_sizes("abc\n1300 585\n"),
+            [None, Some(LogicalSize::new(1300.0, 585.0))]
+        );
+        assert_eq!(parse_sizes(""), [None, None]);
+        // Too small to be a size someone chose.
+        assert_eq!(parse_sizes("1 1\n"), [None, None]);
+    }
+
     use super::*;
 
     const FORMAT_BGRX: u32 = 2;
@@ -1476,13 +1586,12 @@ mod tests {
     #[test]
     fn first_window_fits_the_monitor_and_never_grows_the_picture() {
         let share = crate::config::WINDOW_SCREEN_SHARE;
-        let toolbar = f64::from(TOOLBAR_WIDTH);
         let (width, height) = initial_size((720, 1280), Some((1440.0, 900.0)));
         assert!((height - 900.0 * share).abs() < 1e-6);
-        assert!(((width - toolbar) / height - 720.0 / 1280.0).abs() < 1e-6);
+        assert!((width / height - 720.0 / 1280.0).abs() < 1e-6);
         assert_eq!(
             initial_size((720, 1280), Some((4000.0, 4000.0))),
-            (720.0 + toolbar, 1280.0)
+            (720.0, 1280.0)
         );
     }
 

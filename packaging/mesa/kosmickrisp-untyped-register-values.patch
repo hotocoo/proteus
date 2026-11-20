@@ -1,5 +1,5 @@
 diff --git a/src/kosmickrisp/compiler/msl_type_inference.c b/src/kosmickrisp/compiler/msl_type_inference.c
-index 12e46d595..7a08b84bf 100644
+index 12e46d595..507ae6720 100644
 --- a/src/kosmickrisp/compiler/msl_type_inference.c
 +++ b/src/kosmickrisp/compiler/msl_type_inference.c
 @@ -335,7 +335,12 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
@@ -37,3 +37,27 @@ index 12e46d595..7a08b84bf 100644
     if (src->ssa->num_components == 1) {
        emit_src_component(ctx, src, 0);
     } else {
+@@ -869,6 +877,11 @@ msl_infer_types(nir_shader *shader)
+       }
+    }
+ 
++   /* Types flow both ways, to uses and back to the values used, and a pass
++    * in one direction moves them only one step the other way. Passes go
++    * forward and back in turn, so long chains settle in a few passes instead
++    * of one pass per step; the result is the same.
++    */
+    do {
+       progress = false;
+       nir_foreach_function_impl(impl, shader) {
+@@ -877,6 +890,11 @@ msl_infer_types(nir_shader *shader)
+                progress |= propagate_types(types, instr);
+             }
+          }
++         nir_foreach_block_reverse(block, impl) {
++            nir_foreach_instr_reverse(instr, block) {
++               progress |= propagate_types(types, instr);
++            }
++         }
+       }
+    } while (progress);
+    return types;

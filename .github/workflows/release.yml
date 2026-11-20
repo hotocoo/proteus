@@ -106,6 +106,7 @@ jobs:
           name="proteus-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir "$name"
           cp target/release/proteus README.md "$name/"
+          cp -R assets/keymaps/presets "$name/keymaps"
           # The launcher's Update button compares this with the newest release.
           echo "$GITHUB_REF_NAME" > "$name/proteus.release"
           cp kernel/kernel-x86_64 kernel/kernel-x86_64.config kernel/kernel-x86_64.source.txt "$name/"
@@ -143,6 +144,7 @@ jobs:
           $name = "proteus-$env:GITHUB_REF_NAME-windows-x86_64"
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/release/proteus.exe, README.md $name
+          Copy-Item -Recurse assets/keymaps/presets "$name/keymaps"
           Copy-Item kernel/kernel-x86_64, kernel/kernel-x86_64.config, kernel/kernel-x86_64.source.txt $name
           Copy-Item guest/kernel/README.md "$name/KERNEL.md"
           # The launcher's Update button compares this with the newest release.

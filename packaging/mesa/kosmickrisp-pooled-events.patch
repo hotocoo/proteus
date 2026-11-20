@@ -1,0 +1,158 @@
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 9950b192c..2fce4f22c 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -306,6 +306,10 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+    if (dev->residency_set.handle == NULL)
+       goto fail_compiler;
+ 
++   simple_mtx_init(&dev->events.lock, mtx_plain);
++   util_dynarray_init(&dev->events.bos, NULL);
++   util_dynarray_init(&dev->events.free, NULL);
++
+    if (pCreateInfo->queueCreateInfoCount > 0) {
+       result =
+          kk_queue_init(dev, &dev->queue, &pCreateInfo->pQueueCreateInfos[0], 0);
+@@ -353,6 +357,9 @@ fail_mem_cache:
+       dev->has_queue = false;
+    }
+ fail_vab_memory:
++   util_dynarray_fini(&dev->events.free);
++   util_dynarray_fini(&dev->events.bos);
++   simple_mtx_destroy(&dev->events.lock);
+    mtl_release(dev->residency_set.handle);
+    simple_mtx_destroy(&dev->residency_set.mutex);
+ fail_compiler:
+@@ -389,6 +396,12 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+    if (dev->heap)
+       kk_destroy_bo(dev, dev->heap);
+ 
++   util_dynarray_foreach(&dev->events.bos, struct kk_bo *, bo)
++      kk_destroy_bo(dev, *bo);
++   util_dynarray_fini(&dev->events.bos);
++   util_dynarray_fini(&dev->events.free);
++   simple_mtx_destroy(&dev->events.lock);
++
+    if (dev->has_queue) {
+       kk_queue_finish(dev, &dev->queue);
+       dev->has_queue = false;
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index e3795ba54..7350beae5 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -72,6 +72,19 @@ struct kk_sampler_heap {
+    struct hash_table *ht;
+ };
+ 
++/* Events live in shared buffers: one Metal heap per 4-byte event made every
++ * vkCreateEvent a kernel call, and ANGLE creates events all the time. */
++struct kk_event_slot {
++   struct kk_bo *bo;
++   uint32_t offset_B;
++};
++
++struct kk_event_pool {
++   simple_mtx_t lock;
++   struct util_dynarray bos;  /* struct kk_bo * */
++   struct util_dynarray free; /* struct kk_event_slot */
++};
++
+ struct kk_precompiled_cache {
+    struct kk_precompiled_shader shaders[LIBKK_NUM_PROGRAMS];
+ };
+@@ -93,6 +106,8 @@ struct kk_device {
+     * recording as required by Metal. */
+    struct kk_residency_set residency_set;
+ 
++   struct kk_event_pool events;
++
+    struct kk_precompiled_cache precompiled_cache;
+ 
+    bool has_queue;
+diff --git a/src/kosmickrisp/vulkan/kk_event.c b/src/kosmickrisp/vulkan/kk_event.c
+index 3e6db3133..5984f68cc 100644
+--- a/src/kosmickrisp/vulkan/kk_event.c
++++ b/src/kosmickrisp/vulkan/kk_event.c
+@@ -16,6 +16,33 @@
+ 
+ static_assert(sizeof(uint32_t) == KK_EVENT_MEM_SIZE, "Events are 32 bits");
+ 
++/* One buffer holds this many bytes of events. */
++#define KK_EVENT_SLAB_SIZE 16384
++
++static VkResult
++kk_event_slot_take(struct kk_device *dev, struct kk_event_slot *slot)
++{
++   VkResult result = VK_SUCCESS;
++   simple_mtx_lock(&dev->events.lock);
++   if (!util_dynarray_num_elements(&dev->events.free, struct kk_event_slot)) {
++      struct kk_bo *bo;
++      result = kk_alloc_bo(dev, &dev->vk.base, KK_EVENT_SLAB_SIZE,
++                           KK_EVENT_MEM_SIZE, &bo);
++      if (result == VK_SUCCESS) {
++         util_dynarray_append(&dev->events.bos, bo);
++         for (uint32_t off = 0; off + KK_EVENT_MEM_SIZE <= bo->size_B;
++              off += KK_EVENT_MEM_SIZE) {
++            struct kk_event_slot s = {bo, off};
++            util_dynarray_append(&dev->events.free, s);
++         }
++      }
++   }
++   if (result == VK_SUCCESS)
++      *slot = util_dynarray_pop(&dev->events.free, struct kk_event_slot);
++   simple_mtx_unlock(&dev->events.lock);
++   return result;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_CreateEvent(VkDevice device, const VkEventCreateInfo *pCreateInfo,
+                const VkAllocationCallbacks *pAllocator, VkEvent *pEvent)
+@@ -29,16 +56,17 @@ kk_CreateEvent(VkDevice device, const VkEventCreateInfo *pCreateInfo,
+    if (!event)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   /* TODO_KOSMICKRISP Bring back the heap. */
+-   result = kk_alloc_bo(dev, &dev->vk.base, KK_EVENT_MEM_SIZE,
+-                        KK_EVENT_MEM_SIZE, &event->bo);
++   struct kk_event_slot slot;
++   result = kk_event_slot_take(dev, &slot);
+    if (result != VK_SUCCESS) {
+       vk_object_free(&dev->vk, pAllocator, event);
+       return result;
+    }
+ 
+-   event->status = event->bo->cpu;
+-   event->addr = event->bo->gpu;
++   event->bo = slot.bo;
++   event->offset_B = slot.offset_B;
++   event->status = (VkResult *)((uint8_t *)slot.bo->cpu + slot.offset_B);
++   event->addr = slot.bo->gpu + slot.offset_B;
+    *event->status = VK_EVENT_RESET;
+ 
+    *pEvent = kk_event_to_handle(event);
+@@ -56,7 +84,10 @@ kk_DestroyEvent(VkDevice device, VkEvent _event,
+    if (!event)
+       return;
+ 
+-   kk_destroy_bo(dev, event->bo);
++   struct kk_event_slot slot = {event->bo, event->offset_B};
++   simple_mtx_lock(&dev->events.lock);
++   util_dynarray_append(&dev->events.free, slot);
++   simple_mtx_unlock(&dev->events.lock);
+ 
+    vk_object_free(&dev->vk, pAllocator, event);
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_event.h b/src/kosmickrisp/vulkan/kk_event.h
+index ec845753d..c92262a05 100644
+--- a/src/kosmickrisp/vulkan/kk_event.h
++++ b/src/kosmickrisp/vulkan/kk_event.h
+@@ -16,7 +16,8 @@ struct kk_bo;
+ 
+ struct kk_event {
+    struct vk_object_base base;
+-   struct kk_bo *bo;
++   struct kk_bo *bo; /* shared with other events, owned by the device */
++   uint32_t offset_B;
+ 
+    uint64_t addr;
+    VkResult *status;

@@ -88,6 +88,12 @@ fn cache_trim() -> String {
 /// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
 /// so it reaches apps started after setup (every app the user opens).
 const SHARED_MEMORY: &str = "su 0 setprop sys.use_memfd true";
+/// Keeps ANGLE (Android's GL on Vulkan) from making a Vulkan event for every image and buffer
+/// barrier. Each vkCreateEvent is a guest-to-host round trip that waits for the reply; in a game
+/// (Wuthering Waves) they took 62% of the render thread's time and froze frames for up to a
+/// second. Pipeline barriers do the same job with no round trip. Read by each app at its start.
+const ANGLE_NO_EVENTS: &str = "su 0 setprop debug.angle.feature_overrides_disabled \
+     useVkEventForImageBarrier:useVkEventForBufferBarrier";
 /// Tells the guest its disks are solid state with no request scheduler. The kernel takes a virtio
 /// disk for a spinning one and queues its requests through mq-deadline, which only delays them:
 /// the host does its own ordering and caching.
@@ -182,6 +188,7 @@ fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Pat
     let mut steps = vec![
         DIRTY_LIMITS,
         SHARED_MEMORY,
+        ANGLE_NO_EVENTS,
         DISK_QUEUES,
         BLUETOOTH_OFF,
         UWB_OFF,

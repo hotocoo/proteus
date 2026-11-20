@@ -169,7 +169,14 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
             rotated(Notice::Rotated(turns));
         })?;
         let watching = match &config.keymap_dir {
-            Some(_) => {
+            Some(dir) => {
+                if let Some((_, presets)) = config::bundled(config::BUNDLED_KEYMAPS_DIR) {
+                    match profiles::seed(dir, &presets) {
+                        Ok(0) => {}
+                        Ok(copied) => eprintln!("{}", copy::keymap_presets_added(copied, dir)),
+                        Err(why) => eprintln!("{}", copy::keymap_presets_failed(&why)),
+                    }
+                }
                 let notify = notify.clone();
                 let watch = profiles::watch(
                     std::sync::Arc::clone(&session.controller.adb_port),

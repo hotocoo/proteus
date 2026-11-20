@@ -1,0 +1,70 @@
+# Wuthering Waves (com.kurogame.wutheringwaves.global), landscape, game's "Static Joystick" mode.
+# Keys follow the PC version. The mouse turns the camera; hold Left Alt (Option) for the pointer.
+# Menu keys (Esc, M, C, J, Enter) also free the pointer; pressing one again, or moving (WASD) or
+# acting, gives it back.
+# A gamepad needs no map: the game supports controllers itself.
+# Positions measured on a 2400x1080 screen. Not yet here: Q (echo), R (liberation), F (interact)
+# and 1-3 (switch character); the game shows those buttons only later in the story.
+size = [2400, 1080]
+toggle = "F12"            # whole map off, for typing
+
+[[stick]]                 # movement joystick: centre of its ring
+up = "KeyW"
+left = "KeyA"
+down = "KeyS"
+right = "KeyD"
+center = [375, 807]
+radius = 160
+
+[look]                    # camera: free screen area right of centre
+key = "AltLeft"
+center = [1500, 450]
+radius = 300
+sensitivity = 1.0
+start = true
+hold = true
+
+[[tap]]                   # basic attack
+key = "MouseLeft"
+at = [1951, 828]
+
+[[tap]]                   # resonance skill
+key = "KeyE"
+at = [1781, 941]
+
+[[tap]]                   # jump / climb (upper runner button)
+key = "Space"
+at = [2112, 751]
+
+[[tap]]                   # dodge / sprint (lower runner button)
+key = "MouseRight"
+at = [2112, 931]
+
+[[tap]]                   # dodge / sprint, the PC key too
+key = "ShiftLeft"
+at = [2112, 931]
+
+[[tap]]                   # terminal (main menu)
+key = "Escape"
+at = [2213, 65]
+pointer = true
+
+[[tap]]                   # map (minimap)
+key = "KeyM"
+at = [264, 137]
+pointer = true
+
+[[tap]]                   # resonators
+key = "KeyC"
+at = [2102, 65]
+pointer = true
+
+[[tap]]                   # quests
+key = "KeyJ"
+at = [144, 257]
+pointer = true
+
+[[tap]]                   # chat
+key = "Enter"
+at = [154, 974]
+pointer = true

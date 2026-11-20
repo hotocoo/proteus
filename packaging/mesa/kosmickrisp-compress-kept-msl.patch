@@ -1,17 +1,24 @@
 diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
-index f5dd74862..6e2860fc3 100644
+index f5dd74862..b737cfc4e 100644
 --- a/src/kosmickrisp/vulkan/kk_shader.c
 +++ b/src/kosmickrisp/vulkan/kk_shader.c
-@@ -21,6 +21,8 @@
+@@ -21,6 +21,15 @@
  #include "kosmickrisp/bridge/vk_to_mtl_map.h"
  #include "kosmickrisp/compiler/nir_to_msl.h"
  
 +#include "util/compress.h"
++#ifdef HAVE_ZSTD
++#include <zstd.h>
++/* Shaders are compiled while a game waits for them, so their kept text is packed at zstd's
++ * fastest setting: Mesa's default (3) took 43% of a pipeline's compile time, and the text still
++ * shrinks several times over. */
++#define KK_MSL_ZSTD_LEVEL -3
++#endif
 +
  #include "nir_builder.h"
  #include "nir_lower_blend.h"
  
-@@ -32,6 +34,47 @@
+@@ -32,6 +41,56 @@
  #include "vk_nir_convert_ycbcr.h"
  #include "vk_pipeline.h"
  
@@ -22,9 +29,18 @@ index f5dd74862..6e2860fc3 100644
 +   const size_t length = strlen(text) + 1u;
 +   const size_t max = util_compress_max_compressed_len(length);
 +   uint8_t *packed = ralloc_size(NULL, max);
++#ifdef HAVE_ZSTD
++   size_t size = 0u;
++   if (packed) {
++      size = ZSTD_compress(packed, max, text, length, KK_MSL_ZSTD_LEVEL);
++      if (ZSTD_isError(size))
++         size = 0u;
++   }
++#else
 +   size_t size = packed ? util_compress_deflate((const uint8_t *)text, length,
 +                                                packed, max)
 +                        : 0u;
++#endif
 +   data->code_length = length;
 +   if (size == 0u) {
 +      /* Kept as plain text if it cannot be compressed. */
@@ -59,7 +75,7 @@ index f5dd74862..6e2860fc3 100644
  static const nir_shader_compiler_options *
  kk_get_nir_options(struct vk_physical_device *vk_pdev, mesa_shader_stage stage,
                     UNUSED const struct vk_pipeline_robustness_state *rs)
-@@ -1096,7 +1139,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+@@ -1096,7 +1155,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
     }
  
     struct msl_compile_data *data = &shader->msl_data[stage];
@@ -68,7 +84,7 @@ index f5dd74862..6e2860fc3 100644
     const char *entrypoint_name = nir_shader_get_entrypoint(nir)->function->name;
  
     /* We need to steal so it doesn't get destroyed with the nir. Needs to happen
-@@ -1106,7 +1149,8 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+@@ -1106,7 +1165,8 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
     data->entrypoint_name = (char *)entrypoint_name;
  
     if (KK_DEBUG(MSL))
@@ -78,7 +94,7 @@ index f5dd74862..6e2860fc3 100644
  
     ralloc_free(nir);
  
-@@ -1214,9 +1258,13 @@ kk_compile_compute_pipeline(struct kk_device *device,
+@@ -1214,9 +1274,13 @@ kk_compile_compute_pipeline(struct kk_device *device,
  {
     struct kk_physical_device *pdev = kk_device_physical(device);
  
@@ -93,7 +109,7 @@ index f5dd74862..6e2860fc3 100644
     if (library == NULL)
        return VK_ERROR_INVALID_SHADER_NV;
  
-@@ -1394,9 +1442,12 @@ gather_graphics_pipeline_create_info(
+@@ -1394,9 +1458,12 @@ gather_graphics_pipeline_create_info(
        mesa_shader_stage stage = s->info.stage;
        struct msl_compile_data *src_data = &s->msl_data[stage];
        struct msl_compile_data *dst_data = &vs->msl_data[stage];
@@ -107,7 +123,7 @@ index f5dd74862..6e2860fc3 100644
  
        length = strlen(src_data->entrypoint_name) + 1;
        dst_data->entrypoint_name = ralloc_size(NULL, length);
-@@ -1459,9 +1510,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+@@ -1459,9 +1526,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
     }
  
     const struct msl_compile_data *vs_data = &vs->msl_data[vs_stage];
@@ -124,7 +140,7 @@ index f5dd74862..6e2860fc3 100644
     if (vertex_library == NULL)
        return VK_ERROR_INVALID_SHADER_NV;
  
-@@ -1470,9 +1525,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+@@ -1470,9 +1541,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
                                            vs_data->entrypoint_name);
  
     const struct msl_compile_data *fs_data = &vs->msl_data[MESA_SHADER_FRAGMENT];
@@ -141,7 +157,7 @@ index f5dd74862..6e2860fc3 100644
     if (fragment_library == NULL) {
        result = VK_ERROR_INVALID_SHADER_NV;
        goto destroy_vertex;
-@@ -1664,12 +1723,18 @@ kk_msl_serialize(struct kk_shader *shader, mesa_shader_stage stage,
+@@ -1664,12 +1739,18 @@ kk_msl_serialize(struct kk_shader *shader, mesa_shader_stage stage,
                   struct blob *blob)
  {
     struct msl_compile_data *data = &shader->msl_data[stage];
@@ -162,7 +178,7 @@ index f5dd74862..6e2860fc3 100644
  }
  
  static bool
-@@ -1700,16 +1765,19 @@ kk_msl_deserialize(struct blob_reader *blob, mesa_shader_stage stage,
+@@ -1700,16 +1781,19 @@ kk_msl_deserialize(struct blob_reader *blob, mesa_shader_stage stage,
     if (data->entrypoint_name == NULL)
        return VK_ERROR_OUT_OF_HOST_MEMORY;
  

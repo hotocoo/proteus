@@ -33,7 +33,10 @@ center = [200, 550]
 radius = 100
 
 # Press the key to give the mouse to a finger that drags the view around; press it again to get the
-# pointer back.
+# pointer back. While the pointer is free, mouse buttons click the screen. `start = true` gives the
+# view the mouse from the start, and `hold = true` frees the pointer only while the key is held, as
+# Alt does in many PC games. A `[[tap]]` with `pointer = true` (a menu key) frees the pointer too;
+# pressing it again, or any stick or other tap key (play resumed), gives the view the mouse back.
 [look]
 key = "Backquote"
 center = [860, 300]

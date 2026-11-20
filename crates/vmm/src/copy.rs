@@ -31,7 +31,8 @@ Usage: proteus --kernel <file> [options]
   --bootconfig <k=v>      Add a bootconfig parameter, such as androidboot.hardware=emu (repeatable)
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 720x1280, a phone held upright)
-  --refresh-hz <n>        Frames per second the display runs at: 60 (default), 90, 120, 144
+  --refresh-hz <n>        Frames per second the display runs at: native (default: the fastest
+                          multiple of 60 this screen shows), or 60, 90, 120, 144
   --writable-system       Give this Android its own writable copy of the system partitions, made
                           once in its data folder (for Google apps); otherwise they are read-only
   --screen-shape <shape>  Shape the window keeps when resized: free (default), 16:9, 18:9, 19:9,
@@ -87,6 +88,7 @@ Usage: proteus --kernel <file> [options]
   window-screenshot <file>               Save what the window shows, controls included, as a PNG
   window-click <x> <y>                   Click the window at a point, in points from its top left
   window-resize <w> <h>                  Resize the window, in points, as dragging its edge would
+  window-fullscreen                      Full screen (Game Mode on a Mac) or back to a window
   window-scroll <x> <y> <lines>          Turn the mouse wheel there (negative scrolls down)
   shutdown                               Shut Android down, then turn the machine off
   stop                                   Turn the machine off at once, like pulling the plug
@@ -196,6 +198,28 @@ pub fn keymap_key_twice(name: &str) -> String {
 
 pub fn keymap_off_screen(x: u32, y: u32) -> String {
     format!("key map: position {x}, {y} is not on the guest's screen")
+}
+
+pub fn window_sizes_not_saved(why: &std::io::Error) -> String {
+    format!("the window's size could not be kept for next time: {why}")
+}
+
+pub fn keymap_presets_added(copied: usize, dir: &std::path::Path) -> String {
+    format!(
+        "key maps: {copied} game preset(s) added to {}",
+        dir.display()
+    )
+}
+
+pub fn keymap_presets_failed(why: &std::io::Error) -> String {
+    format!("key maps: the game presets could not be added: {why}")
+}
+
+pub fn keymap_other_size(width: u32, height: u32, display: (u32, u32)) -> String {
+    format!(
+        "key map: made for a {width}x{height} screen, but the guest's long side is {}",
+        display.0.max(display.1)
+    )
 }
 
 pub fn keymap_circle_off_screen(x: u32, y: u32, radius: u32) -> String {
@@ -607,6 +631,15 @@ pub mod gui {
         erases this instance's apps and data: Android's data storage is encrypted and cannot be \
         grown in place.";
 
+    pub const WRITABLE_SYSTEM: &str = "Writable system";
+    pub const WRITABLE_SYSTEM_HINT: &str = "Copies Android's system into this instance (about \
+        8 GB) so it can be changed: needed to install Google apps or root.";
+    pub const ADVANCED: &str = "Advanced";
+    pub const LOG_LEVEL: &str = "Log";
+    pub const LOG_DEFAULT: &str = "default";
+    pub const OTHER_OPTIONS: &str = "Other options";
+    pub const OTHER_OPTIONS_HINT: &str = "Any other command-line option, one word per line \
+        (proteus --help lists them).";
     pub fn data_size_now(gib: u64) -> String {
         format!("This instance's storage is {gib} GB now.")
     }
@@ -804,8 +837,13 @@ pub mod gui {
     pub const FRAME_RATE_HINT: &str = "Android and games run up to this many frames per second. \
         Higher feels smoother and responds faster to touches, and uses more of the computer.";
     pub fn hz(rate: u32) -> String {
-        format!("{rate} Hz")
+        if rate == crate::config::NATIVE_REFRESH {
+            NATIVE_HZ.to_owned()
+        } else {
+            format!("{rate} Hz")
+        }
     }
+    pub const NATIVE_HZ: &str = "Same as this screen";
     pub const SCREEN: &str = "Screen";
     pub const DISPLAY_PHONE: &str = "Phone";
     pub const DISPLAY_PHONE_HD: &str = "Phone, full HD";

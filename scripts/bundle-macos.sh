@@ -48,6 +48,9 @@ if [ -n "${KOSMICKRISP:-}" ] || [ -f "$kk_icd" ]; then
         done
     fi
 fi
+# Key maps for particular games, copied into an instance's key map folder when it has none.
+mkdir -p "$out/keymaps"
+cp "$repo/assets/keymaps/presets/"*.toml "$out/keymaps/"
 cp "$brew/opt/vulkan-loader/LICENSE.txt" "$out/licenses/Vulkan-Loader.txt"
 cp "$brew/opt/molten-vk/LICENSE" "$out/licenses/MoltenVK.txt"
 if [ -n "$apps" ]; then

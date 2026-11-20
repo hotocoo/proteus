@@ -63,8 +63,9 @@ games' logins and purchases) do not work, because the image has none (see "What 
 split sets and `.apks`/`.xapk` files can also be dropped on the window.
 
 **The window:** Android's own Back, Home and Recents are at the bottom of the screen (or the
-gesture bar: swipe up for Home, in from a side edge for Back), and also on the toolbar beside the
-screen with Power, volume, turning and screenshots. The toolbar's panels do the rest: **Apps**
+gesture bar: swipe up for Home, in from a side edge for Back), and also on the toolbar (hidden at
+start and folding itself away when the pointer leaves it; ⌘\ or the corner button shows it) with
+Power, volume, turning and screenshots. The toolbar's panels do the rest: **Apps**
 (install, open, force stop, clear data, uninstall, close background apps), **Location** (coordinates,
 map links, saved places, GPX routes, walking), **Sensors** (tilt, shake), **Macros** (record, edit,
 play), **Key map** (load, or place taps and sticks on the screen), **Capture** (screenshots and
@@ -126,6 +127,7 @@ Window shortcuts (⌘ on a Mac, Ctrl+Alt on Linux):
 | ⌘↑ / ⌘↓ | Volume up / down |
 | ⌘← / ⌘→ | Turn the device a quarter turn (Android follows when auto-rotate is on) |
 | ⌘S | Screenshot, saved on the Desktop |
+| ⌘F | Full screen and back; on a Mac full screen turns on Game Mode, which puts the game first for the GPU and CPU |
 
 Useful options (`proteus --help` lists all of them):
 
@@ -194,6 +196,11 @@ map does not use still reach Android as a keyboard.
 To have the map follow the app in front, put maps in a folder named after the apps' package names
 (`com.example.game.toml`), optionally with a `default.toml` for every other app, and start with
 `--keymap-dir <folder>`. The emulator checks which app is in front once a second.
+
+Releases carry ready-made maps for some games (`assets/keymaps/presets`, so far Wuthering Waves
+on a 2400x1080 screen). Each start copies the ones a `--keymap-dir` folder has no map for into it;
+your own map for a game is never replaced. A map may hold more keys than the touchscreen has
+fingers: a key borrows a finger while it is down.
 
 ### Several instances
 
@@ -330,7 +337,8 @@ Honest list, most important first:
   Store froze on its first tap), which is why KosmicKrisp is tried first; on Macs where KosmicKrisp
   does not load (older than macOS 26), MoltenVK is what runs.
 - **No Bluetooth or phone network.** The board has neither, so Bluetooth is switched off at boot.
-- **More game controls.** Key maps are written by hand.
+- **More game controls.** Key maps are written by hand; few games have a preset yet, since
+  every position is measured on the game's own screen.
 - **Not yet tried for real:** a physical gamepad plugged in at start (the guest pad was checked
   with `--gamepad` and the `pad` command), dropping a file on the window (the same install was
   checked through `proteus ctl ... install`), and a split set of several APKs of one app (one-APK
