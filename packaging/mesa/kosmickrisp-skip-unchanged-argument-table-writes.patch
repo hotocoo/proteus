@@ -1,0 +1,54 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 22f4bf7f3..933c7b8e8 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -387,6 +387,12 @@ cs_end(struct kk_cmd_buffer *cmd)
+ void
+ kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd, uint64_t addr)
+ {
++   /* Setting the same address again still marks the table changed, and Metal then binds every
++    * buffer again at the next draw: a third of the encoding time in a game. Every other writer of
++    * slot 0 puts root_addr back before returning.
++    */
++   if (addr == cmd->state.root_addr)
++      return;
+    mtl_set_address(cmd->argument_table, addr, 0u);
+    cmd->state.root_addr = addr;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 46dfa33f6..1c82e6c2a 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -141,6 +141,9 @@ struct kk_graphics_state {
+    struct kk_rendering_state render;
+    struct kk_descriptor_state descriptors;
+    struct kk_per_draw_data per_draw_data;
++   /* The last per-draw data uploaded, and where; a draw with the same data reuses it. */
++   struct kk_per_draw_data uploaded_per_draw_data;
++   uint64_t uploaded_per_draw_addr;
+ 
+    mtl_depth_stencil_state *depth_stencil_state;
+    mtl_render_pass_descriptor *render_pass_descriptor;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 8f627aa0d..2c9fde4cc 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1906,12 +1906,18 @@ kk_upload_per_draw_data(struct kk_cmd_buffer *cmd, uint32_t upload_mask,
+       }
+    }
+ 
++   if (gfx->uploaded_per_draw_addr &&
++       !memcmp(&gfx->uploaded_per_draw_data, &gfx->per_draw_data, sizeof(gfx->per_draw_data)))
++      return;
++
+    struct kk_ptr shader_data_gpu =
+       kk_pool_upload(cmd, &gfx->per_draw_data, sizeof(gfx->per_draw_data), 8u);
+    if (unlikely(!shader_data_gpu.gpu))
+       return;
+ 
+    mtl_set_address(cmd->argument_table, shader_data_gpu.gpu, 2u);
++   gfx->uploaded_per_draw_data = gfx->per_draw_data;
++   gfx->uploaded_per_draw_addr = shader_data_gpu.gpu;
+ }
+ 
+ static void

@@ -94,6 +94,12 @@ const SHARED_MEMORY: &str = "su 0 setprop sys.use_memfd true";
 /// second. Pipeline barriers do the same job with no round trip. Read by each app at its start.
 const ANGLE_NO_EVENTS: &str = "su 0 setprop debug.angle.feature_overrides_disabled \
      useVkEventForImageBarrier:useVkEventForBufferBarrier";
+/// Has the guest hand back free memory in pieces of 128 KiB (order 5) rather than 2 MiB. Free
+/// memory in a running game is too fragmented for 2 MiB pieces (none were free in Wuthering
+/// Waves), so freed memory stayed counted against this Mac; dropping 500 MB of cache then gave
+/// 640 MB back within seconds.
+const REPORT_SMALL_FREES: &str =
+    "su 0 sh -c 'echo 5 > /sys/module/page_reporting/parameters/page_reporting_order'";
 /// Tells the guest its disks are solid state with no request scheduler. The kernel takes a virtio
 /// disk for a spinning one and queues its requests through mq-deadline, which only delays them:
 /// the host does its own ordering and caching.
@@ -190,6 +196,7 @@ fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Pat
         SHARED_MEMORY,
         ANGLE_NO_EVENTS,
         DISK_QUEUES,
+        REPORT_SMALL_FREES,
         BLUETOOTH_OFF,
         UWB_OFF,
         RADIOS_OFF,

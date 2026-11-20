@@ -436,7 +436,8 @@ pub const SETUP_POLL: Duration = Duration::from_secs(2);
 /// How often Android's file cache is checked and, when too big, dropped.
 pub const CACHE_TRIM_PERIOD: Duration = Duration::from_secs(60);
 /// Android's file cache is dropped once it holds more than one part in this many of guest RAM.
-pub const CACHE_TRIM_SHARE: u64 = 4;
+/// One eighth: the host already caches the disk images, so the guest's copy mostly doubles it.
+pub const CACHE_TRIM_SHARE: u64 = 8;
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);

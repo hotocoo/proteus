@@ -1,0 +1,20 @@
+diff --git a/src/kosmickrisp/vulkan/kk_sync.c b/src/kosmickrisp/vulkan/kk_sync.c
+index f44200c37..746371155 100644
+--- a/src/kosmickrisp/vulkan/kk_sync.c
++++ b/src/kosmickrisp/vulkan/kk_sync.c
+@@ -60,6 +60,15 @@ kk_timeline_wait(struct vk_device *device, struct vk_sync *sync,
+    struct kk_sync_timeline *timeline =
+       container_of(sync, struct kk_sync_timeline, base);
+ 
++   /* Polls (vkGetFenceStatus, zero timeouts) are answered from the event's value: a wait call
++    * enters the kernel even with no time to wait, and games poll fences thousands of times a
++    * second.
++    */
++   if (mtl_shared_event_get_signaled_value(timeline->mtl_handle) >= wait_value)
++      return VK_SUCCESS;
++   if (abs_timeout_ns != OS_TIMEOUT_INFINITE && abs_timeout_ns <= os_time_get_nano())
++      return VK_TIMEOUT;
++
+    /* abs_timeout_ns is the point in time when we should stop waiting, not the
+     * absolute time in ns. Therefore, we need to compute the delta from now to
+     * when we should stop waiting and convert to ms for Metal to be happy
