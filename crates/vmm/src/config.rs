@@ -296,6 +296,9 @@ pub const SHOW_TOOLBAR_OFFSET: [f32; 2] = [-8.0, 8.0];
 /// stays out once the pointer leaves it and no panel is open, before it folds away by itself.
 pub const TOOLBAR_SHOWN_AT_START: bool = false;
 pub const TOOLBAR_AUTO_HIDE: Duration = Duration::from_secs(3);
+/// Whether a fullscreen window moves its monitor to a refresh rate whole game frames fit (144 Hz
+/// to 120 Hz), for even motion; the user's rate comes back on leaving fullscreen.
+pub const MATCH_REFRESH_IN_FULLSCREEN: bool = true;
 pub const TOOLBAR_MARGIN: f32 = 6.0;
 pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
 pub const PANEL_WIDTH: f32 = 340.0;

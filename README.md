@@ -127,7 +127,7 @@ Window shortcuts (⌘ on a Mac, Ctrl+Alt on Linux):
 | ⌘↑ / ⌘↓ | Volume up / down |
 | ⌘← / ⌘→ | Turn the device a quarter turn (Android follows when auto-rotate is on) |
 | ⌘S | Screenshot, saved on the Desktop |
-| ⌘F | Full screen and back; on a Mac full screen turns on Game Mode, which puts the game first for the GPU and CPU |
+| ⌘F | Full screen and back; on a Mac full screen turns on Game Mode, which puts the game first for the GPU and CPU, and a 144 Hz monitor runs at 120 Hz so 60 fps moves evenly |
 
 Useful options (`proteus --help` lists all of them):
 
@@ -305,9 +305,9 @@ otherwise. Its network test binds loopback ports on the host.
 ## Privacy
 
 The emulator sends nothing anywhere on its own behalf: no analytics, no crash upload, no update check.
-The launcher's **Update Proteus** button (Windows and Linux) fetches the newest release only when pressed,
-through the GitHub CLI (`gh`, logged in with `gh auth login`), and replaces the program and the
-kernel beside it; restart Proteus afterwards.
+The launcher's **Update Proteus** button fetches the newest public release only when pressed, with
+the system's own `curl` (no GitHub CLI or login needed), and replaces the program (the whole app on
+macOS) and the kernel beside it; restart Proteus afterwards.
 `deny.toml` bans analytics, crash-upload and HTTP client crates from the dependency tree, and CI enforces it.
 
 ## Layout

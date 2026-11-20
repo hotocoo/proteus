@@ -1,7 +1,7 @@
 //! The launcher's Update button: replaces this program and the files that ship
 //! beside it with the newest release of the upstream repository. Only when asked: the emulator never
-//! looks for updates on its own. The release is fetched with the GitHub CLI (`gh`), so a private
-//! repository works with the user's own login and the program itself makes no HTTP requests.
+//! looks for updates on its own. The public release is fetched over HTTPS with the system's `curl`
+//! (built into macOS, Windows 10+ and Linux distributions), so nothing needs installing or a login.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,6 +17,18 @@ const OLD_EXTENSION: &str = "old";
 const WORK_DIR: &str = ".proteus-update";
 /// Releases looked at to find the newest one; GitHub's most per page.
 const RELEASES_LISTED: u32 = 100;
+const GITHUB_API: &str = "https://api.github.com";
+const GITHUB_JSON: &str = "Accept: application/vnd.github+json";
+/// `curl`; on Windows the built-in `curl.exe`, not PowerShell's alias of the same name.
+#[cfg(windows)]
+const CURL: &str = "curl.exe";
+#[cfg(not(windows))]
+const CURL: &str = "curl";
+/// Quiet but for errors, fail on HTTP errors, follow redirects (assets live on another host),
+/// retry brief failures, and name no one in the User-Agent.
+const CURL_ARGS: [&str; 7] = ["-sS", "-f", "-L", "--retry", "3", "-A", "proteus-updater"];
+/// What the downloaded package is called in the scratch folder, before its suffix.
+const DOWNLOAD_NAME: &str = "proteus";
 
 /// The end of this host's release archive name.
 #[cfg(windows)]
@@ -49,35 +61,52 @@ pub fn update() -> Result<Outcome, String> {
     update_folder(&program, suffix)
 }
 
-/// The newest release's tag.
-fn newest() -> Result<String, String> {
-    // The listing is ordered by tag text ("alpha.9" before "alpha.13"), so the newest is the one
-    // published last; drafts have no publish date and are left out.
-    let releases = format!("repos/{UPSTREAM}/releases?per_page={RELEASES_LISTED}");
-    let newest = "map(select(.published_at != null)) | max_by(.published_at) | .tag_name";
-    let tag = gh(&["api", &releases, "--jq", newest])?;
-    let tag = tag.trim();
-    if tag.is_empty() || tag == "null" {
-        return Err(copy::UPDATE_NO_RELEASE.to_owned());
-    }
-    Ok(tag.to_owned())
+#[derive(serde::Deserialize)]
+struct Release {
+    tag_name: String,
+    /// Absent on drafts.
+    published_at: Option<String>,
+    assets: Vec<Asset>,
 }
 
-/// Downloads this host's package of release `tag` into `work`, which it empties first.
-fn download(tag: &str, suffix: &str, work: &Path) -> Result<PathBuf, String> {
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// The newest release: its tag and the address of this host's package in it.
+fn newest(suffix: &str) -> Result<(String, String), String> {
+    let url = format!("{GITHUB_API}/repos/{UPSTREAM}/releases?per_page={RELEASES_LISTED}");
+    let listing = fetch(&["-H", GITHUB_JSON, &url])?;
+    let releases: Vec<Release> = serde_json::from_slice(&listing)
+        .map_err(|err| copy::update_bad_listing(&err.to_string()))?;
+    pick(releases, suffix)
+}
+
+/// Of `releases`, the one published last (GitHub lists them by tag text, "alpha.9" before
+/// "alpha.13"), and its package ending in `suffix`.
+fn pick(releases: Vec<Release>, suffix: &str) -> Result<(String, String), String> {
+    let release = releases
+        .into_iter()
+        .filter(|release| release.published_at.is_some())
+        .max_by(|a, b| a.published_at.cmp(&b.published_at))
+        .ok_or(copy::UPDATE_NO_RELEASE)?;
+    let asset = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name.ends_with(suffix))
+        .ok_or(copy::UPDATE_NO_ASSET)?;
+    Ok((release.tag_name, asset.browser_download_url))
+}
+
+/// Downloads the package at `url` into `work`, which it empties first.
+fn download(url: &str, suffix: &str, work: &Path) -> Result<PathBuf, String> {
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work).map_err(|err| err.to_string())?;
-    let pattern = format!("*{suffix}");
-    let work_arg = work.to_string_lossy();
-    gh(&[
-        "release", "download", tag, "-R", UPSTREAM, "-p", &pattern, "-D", &work_arg,
-    ])?;
-    std::fs::read_dir(work)
-        .map_err(|err| err.to_string())?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.to_string_lossy().ends_with(suffix))
-        .ok_or_else(|| copy::UPDATE_NO_ASSET.to_owned())
+    let file = work.join(format!("{DOWNLOAD_NAME}{suffix}"));
+    fetch(&["-o", &file.to_string_lossy(), url])?;
+    Ok(file)
 }
 
 /// The app bundle `program` runs from.
@@ -94,13 +123,13 @@ fn bundle_of(program: &Path) -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn update_bundle(program: &Path, suffix: &str) -> Result<Outcome, String> {
     let bundle = bundle_of(program).ok_or(copy::UPDATE_UNSUPPORTED)?;
-    let tag = newest()?;
+    let (tag, url) = newest(suffix)?;
     if installed(&bundle.join(BUNDLE_RESOURCES)).as_deref() == Some(tag.as_str()) {
         return Ok(Outcome::UpToDate(tag));
     }
     let parent = bundle.parent().ok_or(copy::UPDATE_UNSUPPORTED)?;
     let work = parent.join(WORK_DIR);
-    let done = download(&tag, suffix, &work).and_then(|archive| {
+    let done = download(&url, suffix, &work).and_then(|archive| {
         // `ditto` keeps the bundle's signature and links as they were packed.
         let unpacked = Command::new("ditto")
             .arg("-x")
@@ -144,12 +173,12 @@ fn update_folder(program: &Path, suffix: &str) -> Result<Outcome, String> {
         .parent()
         .ok_or(copy::UPDATE_UNSUPPORTED)?
         .to_path_buf();
-    let tag = newest()?;
+    let (tag, url) = newest(suffix)?;
     if installed(&dir).as_deref() == Some(tag.as_str()) {
         return Ok(Outcome::UpToDate(tag));
     }
     let work = dir.join(WORK_DIR);
-    let done = download(&tag, suffix, &work)
+    let done = download(&url, suffix, &work)
         .and_then(|archive| download_and_install(&tag, &archive, &work, &dir));
     let _ = std::fs::remove_dir_all(&work);
     done.map(|()| Outcome::Updated(tag))
@@ -245,22 +274,24 @@ pub fn remove_leftovers() {
     }
 }
 
-fn gh(args: &[&str]) -> Result<String, String> {
-    let output = crate::no_console_window(&mut Command::new("gh"))
+/// Runs `curl` with `args` (redirects followed, failures as errors) and returns what it printed.
+fn fetch(args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = crate::no_console_window(&mut Command::new(CURL))
+        .args(CURL_ARGS)
         .args(args)
         .output()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                copy::UPDATE_NEEDS_GH.to_owned()
+                copy::UPDATE_NEEDS_CURL.to_owned()
             } else {
                 err.to_string()
             }
         })?;
     if !output.status.success() {
         let why = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(copy::update_gh_failed(&why));
+        return Err(copy::update_fetch_failed(&why));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -320,6 +351,28 @@ mod tests {
             "old"
         );
         assert!(!new.exists());
+    }
+
+    #[test]
+    fn the_release_published_last_is_newest_and_its_package_for_this_host_is_picked() {
+        let listing = r#"[
+            {"tag_name": "v1-alpha.9", "published_at": "2026-01-02T00:00:00Z",
+             "assets": [{"name": "p-macos-arm64-app.zip", "browser_download_url": "https://x/9"}]},
+            {"tag_name": "v1-alpha.13", "published_at": "2026-01-05T00:00:00Z",
+             "assets": [{"name": "p-linux-x86_64.tar.gz", "browser_download_url": "https://x/l"},
+                        {"name": "p-macos-arm64-app.zip", "browser_download_url": "https://x/13"}]},
+            {"tag_name": "draft", "published_at": null, "assets": []}
+        ]"#;
+        let releases: Vec<Release> = serde_json::from_str(listing).unwrap();
+        assert_eq!(
+            pick(releases, "-macos-arm64-app.zip").unwrap(),
+            ("v1-alpha.13".to_owned(), "https://x/13".to_owned())
+        );
+        let releases: Vec<Release> = serde_json::from_str(listing).unwrap();
+        assert_eq!(
+            pick(releases, "-windows-x86_64.zip"),
+            Err(copy::UPDATE_NO_ASSET.to_owned())
+        );
     }
 
     #[test]

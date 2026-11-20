@@ -2988,6 +2988,7 @@ dependencies = [
  "rfd",
  "rtrb",
  "serde",
+ "serde_json",
  "toml",
  "uds_windows",
  "vm-memory",

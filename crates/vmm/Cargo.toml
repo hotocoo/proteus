@@ -26,6 +26,7 @@ miniz_oxide.workspace = true
 net.workspace = true
 serde.workspace = true
 toml.workspace = true
+serde_json.workspace = true
 vm-memory.workspace = true
 
 # The window, the sound output and host gamepads. Only hosts that have a hypervisor backend build them.

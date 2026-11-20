@@ -38,6 +38,8 @@ mod painter;
 #[cfg(host_board)]
 mod picture;
 pub mod profiles;
+#[cfg(all(host_board, target_os = "macos"))]
+mod refresh;
 pub mod sensors;
 pub mod session;
 pub mod settings;

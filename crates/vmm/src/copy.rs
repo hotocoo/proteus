@@ -137,6 +137,11 @@ pub fn refresh_too_fast(most: u32) -> String {
     format!("--refresh-hz is too fast for this display size; at most {most}")
 }
 pub const BAD_ADB_PORT: &str = "--adb-port needs a port number from 0 to 65535";
+/// The monitor was moved to a refresh rate whole frames fit, for fullscreen.
+#[cfg(target_os = "macos")]
+pub fn refresh_matched(hz: f64) -> String {
+    format!("fullscreen: monitor runs at {hz:.0} Hz while fullscreen, so frames move evenly")
+}
 pub const BAD_LOG_LEVEL: &str = "--log-level needs one of off, error, warn, info, debug, trace";
 pub const BOOT_MARKER_NEEDS_SERIAL: &str =
     "--boot-timing needs --serial, because the marker is read from the console";
@@ -471,15 +476,19 @@ pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
 pub const INSTANCE_KEPT: &str = "nothing was deleted";
 pub const UPDATE_UNSUPPORTED: &str =
     "this build cannot update itself; download the newest release instead";
-pub const UPDATE_NEEDS_GH: &str =
-    "updating needs the GitHub CLI: install it (winget install GitHub.cli) and run `gh auth login`";
+pub const UPDATE_NEEDS_CURL: &str =
+    "updating needs curl, which comes with this system; it was not found";
 pub const UPDATE_STOPPED: &str = "the update stopped unexpectedly";
 pub const UPDATE_NO_RELEASE: &str = "the repository has no release yet";
 pub const UPDATE_NO_ASSET: &str = "the newest release has no package for this system";
 pub const UPDATE_UNPACK_FAILED: &str = "the downloaded package could not be unpacked";
 
-pub fn update_gh_failed(why: &str) -> String {
-    format!("the GitHub CLI failed: {why}")
+pub fn update_bad_listing(why: &str) -> String {
+    format!("GitHub's list of releases could not be read: {why}")
+}
+
+pub fn update_fetch_failed(why: &str) -> String {
+    format!("could not reach GitHub: {why}")
 }
 
 pub fn up_to_date(tag: &str) -> String {
@@ -545,7 +554,7 @@ pub mod gui {
 
     pub const LAUNCHER_TITLE: &str = "Android emulator";
     pub const UPDATE: &str = "Update Proteus";
-    pub const UPDATE_HINT: &str = "Install the newest release from GitHub, through the GitHub CLI";
+    pub const UPDATE_HINT: &str = "Install the newest release from GitHub";
     pub const UPDATING: &str = "Updating…";
     pub const LAUNCHER_SUBTITLE: &str =
         "Each instance is a phone of its own: its own apps, data and settings.";

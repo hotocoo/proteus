@@ -321,6 +321,9 @@ struct App {
     /// Where the toolbar (or the button that shows it) was last drawn over the picture, in points:
     /// presses there are the toolbar's, not the guest's.
     toolbar_rect: Option<egui::Rect>,
+    #[cfg(target_os = "macos")]
+    /// Whether the monitor's refresh rate was changed for fullscreen, to be put back after.
+    refresh_matched: bool,
     /// Whether the window has the keyboard and mouse.
     focused: bool,
     /// Android's screen turn, in quarter turns, as last reported.
@@ -853,6 +856,35 @@ impl App {
 
     /// Puts the window in the system's own full screen (on a Mac its own Space, where Game Mode
     /// gives the game first claim on the GPU and CPU), or takes it out.
+    /// Moves the monitor to a refresh rate whole frames fit while the window is fullscreen, and
+    /// back when it is not.
+    fn match_refresh(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::MonitorHandleExtMacOS;
+            let Some(shown) = self.shown.as_ref() else {
+                return;
+            };
+            let fullscreen = shown.window.fullscreen().is_some();
+            if fullscreen == self.refresh_matched || !crate::config::MATCH_REFRESH_IN_FULLSCREEN {
+                return;
+            }
+            if !fullscreen {
+                crate::refresh::leave();
+                self.refresh_matched = false;
+                return;
+            }
+            let display = shown
+                .window
+                .current_monitor()
+                .map(|monitor| monitor.native_id());
+            if let Some(hz) = display.and_then(crate::refresh::enter) {
+                log::info!("{}", copy::refresh_matched(hz));
+                self.refresh_matched = true;
+            }
+        }
+    }
+
     fn toggle_fullscreen(&self) -> Result<(), String> {
         let shown = self.shown.as_ref().ok_or(copy::CTL_NO_PICTURE)?;
         let window = &shown.window;
@@ -1240,6 +1272,7 @@ impl ApplicationHandler<Notice> for App {
             WindowEvent::RedrawRequested => self.draw(),
             // The picture moves when the window changes; draw now so clicks use where it is.
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.match_refresh();
                 if let Some(shown) = &self.shown {
                     let window = &shown.window;
                     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
@@ -1459,6 +1492,8 @@ impl WindowLoop {
             toolbar_shown: crate::config::TOOLBAR_SHOWN_AT_START,
             toolbar_left: None,
             toolbar_rect: None,
+            #[cfg(target_os = "macos")]
+            refresh_matched: false,
             focused: true,
             turns: 0,
             sizes,
