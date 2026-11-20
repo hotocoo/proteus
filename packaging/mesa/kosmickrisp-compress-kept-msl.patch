@@ -1,0 +1,208 @@
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index f5dd74862..6e2860fc3 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -21,6 +21,8 @@
+ #include "kosmickrisp/bridge/vk_to_mtl_map.h"
+ #include "kosmickrisp/compiler/nir_to_msl.h"
+ 
++#include "util/compress.h"
++
+ #include "nir_builder.h"
+ #include "nir_lower_blend.h"
+ 
+@@ -32,6 +34,47 @@
+ #include "vk_nir_convert_ycbcr.h"
+ #include "vk_pipeline.h"
+ 
++/* Takes ownership of the ralloc'd MSL text and keeps it compressed in data. */
++static void
++kk_msl_store(struct msl_compile_data *data, char *text)
++{
++   const size_t length = strlen(text) + 1u;
++   const size_t max = util_compress_max_compressed_len(length);
++   uint8_t *packed = ralloc_size(NULL, max);
++   size_t size = packed ? util_compress_deflate((const uint8_t *)text, length,
++                                                packed, max)
++                        : 0u;
++   data->code_length = length;
++   if (size == 0u) {
++      /* Kept as plain text if it cannot be compressed. */
++      ralloc_free(packed);
++      data->code = (uint8_t *)text;
++      data->code_size = 0u;
++      return;
++   }
++   data->code = reralloc_size(NULL, packed, size);
++   if (data->code == NULL)
++      data->code = packed;
++   data->code_size = size;
++   ralloc_free(text);
++}
++
++/* The MSL text, as a new ralloc'd string for the caller to free. */
++static char *
++kk_msl_text(const struct msl_compile_data *data)
++{
++   if (data->code_size == 0u)
++      return ralloc_strdup(NULL, (const char *)data->code);
++   char *text = ralloc_size(NULL, data->code_length);
++   if (text != NULL &&
++       !util_compress_inflate(data->code, data->code_size, (uint8_t *)text,
++                              data->code_length)) {
++      ralloc_free(text);
++      return NULL;
++   }
++   return text;
++}
++
+ static const nir_shader_compiler_options *
+ kk_get_nir_options(struct vk_physical_device *vk_pdev, mesa_shader_stage stage,
+                    UNUSED const struct vk_pipeline_robustness_state *rs)
+@@ -1096,7 +1139,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+    }
+ 
+    struct msl_compile_data *data = &shader->msl_data[stage];
+-   data->code = nir_to_msl(nir, &translate_options);
++   char *msl = nir_to_msl(nir, &translate_options);
+    const char *entrypoint_name = nir_shader_get_entrypoint(nir)->function->name;
+ 
+    /* We need to steal so it doesn't get destroyed with the nir. Needs to happen
+@@ -1106,7 +1149,8 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+    data->entrypoint_name = (char *)entrypoint_name;
+ 
+    if (KK_DEBUG(MSL))
+-      mesa_logi("%s\n", data->code);
++      mesa_logi("%s\n", msl);
++   kk_msl_store(data, msl);
+ 
+    ralloc_free(nir);
+ 
+@@ -1214,9 +1258,13 @@ kk_compile_compute_pipeline(struct kk_device *device,
+ {
+    struct kk_physical_device *pdev = kk_device_physical(device);
+ 
++   char *code = kk_msl_text(data);
++   if (code == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
+    mtl_library *library = mtl_new_library(
+-      device->mtl_compiler_handle, data->code, pdev->info.msl_version,
++      device->mtl_compiler_handle, code, pdev->info.msl_version,
+       MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
++   ralloc_free(code);
+    if (library == NULL)
+       return VK_ERROR_INVALID_SHADER_NV;
+ 
+@@ -1394,9 +1442,12 @@ gather_graphics_pipeline_create_info(
+       mesa_shader_stage stage = s->info.stage;
+       struct msl_compile_data *src_data = &s->msl_data[stage];
+       struct msl_compile_data *dst_data = &vs->msl_data[stage];
+-      uint32_t length = strlen(src_data->code) + 1u;
++      uint32_t length =
++         src_data->code_size ? src_data->code_size : src_data->code_length;
+       dst_data->code = ralloc_size(NULL, length);
+       memcpy(dst_data->code, src_data->code, length);
++      dst_data->code_size = src_data->code_size;
++      dst_data->code_length = src_data->code_length;
+ 
+       length = strlen(src_data->entrypoint_name) + 1;
+       dst_data->entrypoint_name = ralloc_size(NULL, length);
+@@ -1459,9 +1510,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+    }
+ 
+    const struct msl_compile_data *vs_data = &vs->msl_data[vs_stage];
+-   mtl_library *vertex_library = mtl_new_library(
+-      device->mtl_compiler_handle, vs_data->code, pdev->info.msl_version,
+-      MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
++   char *vs_code = kk_msl_text(vs_data);
++   mtl_library *vertex_library =
++      vs_code ? mtl_new_library(device->mtl_compiler_handle, vs_code,
++                                    pdev->info.msl_version, MTL_MATH_MODE_FAST,
++                                    MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST)
++                  : NULL;
++   ralloc_free(vs_code);
+    if (vertex_library == NULL)
+       return VK_ERROR_INVALID_SHADER_NV;
+ 
+@@ -1470,9 +1525,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+                                           vs_data->entrypoint_name);
+ 
+    const struct msl_compile_data *fs_data = &vs->msl_data[MESA_SHADER_FRAGMENT];
+-   mtl_library *fragment_library = mtl_new_library(
+-      device->mtl_compiler_handle, fs_data->code, pdev->info.msl_version,
+-      MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
++   char *fs_code = kk_msl_text(fs_data);
++   mtl_library *fragment_library =
++      fs_code ? mtl_new_library(device->mtl_compiler_handle, fs_code,
++                                    pdev->info.msl_version, MTL_MATH_MODE_FAST,
++                                    MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST)
++                  : NULL;
++   ralloc_free(fs_code);
+    if (fragment_library == NULL) {
+       result = VK_ERROR_INVALID_SHADER_NV;
+       goto destroy_vertex;
+@@ -1664,12 +1723,18 @@ kk_msl_serialize(struct kk_shader *shader, mesa_shader_stage stage,
+                  struct blob *blob)
+ {
+    struct msl_compile_data *data = &shader->msl_data[stage];
++   char *code = kk_msl_text(data);
++   if (code == NULL) {
++      blob->out_of_memory = true;
++      return;
++   }
+    uint32_t entrypoint_length = strlen(data->entrypoint_name) + 1;
+-   uint32_t code_length = strlen(data->code) + 1;
++   uint32_t code_length = strlen(code) + 1;
+    blob_write_uint32(blob, entrypoint_length);
+    blob_write_uint32(blob, code_length);
+    blob_write_bytes(blob, data->entrypoint_name, entrypoint_length);
+-   blob_write_bytes(blob, data->code, code_length);
++   blob_write_bytes(blob, code, code_length);
++   ralloc_free(code);
+ }
+ 
+ static bool
+@@ -1700,16 +1765,19 @@ kk_msl_deserialize(struct blob_reader *blob, mesa_shader_stage stage,
+    if (data->entrypoint_name == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   data->code = ralloc_array(NULL, char, code_length);
+-   if (data->code == NULL)
++   char *code = ralloc_array(NULL, char, code_length);
++   if (code == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+    blob_copy_bytes(blob, (void *)data->entrypoint_name, entrypoint_length);
+-   blob_copy_bytes(blob, (void *)data->code, code_length);
++   blob_copy_bytes(blob, code, code_length);
+ 
+-   if (blob->overrun)
++   if (blob->overrun || code_length == 0u || code[code_length - 1u] != '\0') {
++      ralloc_free(code);
+       return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++   }
+ 
++   kk_msl_store(data, code);
+    return VK_SUCCESS;
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index dc5e06013..b3f8fa41b 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -122,7 +122,14 @@ struct kk_pipeline_handles {
+ };
+ 
+ struct msl_compile_data {
+-   char *code;
++   /* The MSL source, kept compressed: a game holds thousands of shaders, and
++    * as plain text they took gigabytes. Read it with kk_msl_text().
++    * code_size is the compressed size, or 0 when code holds the plain text.
++    */
++   uint8_t *code;
++   uint32_t code_size;
++   /* Length of the plain text, terminating NUL included. */
++   uint32_t code_length;
+    char *entrypoint_name;
+ };
+ 
