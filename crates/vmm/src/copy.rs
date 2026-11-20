@@ -421,6 +421,13 @@ pub const INSTANCE_BAD_ARGUMENT: &str = "an option of an instance cannot contain
 pub const INSTANCE_PATH_TOO_LONG: &str =
     "the instance's control socket path would be too long; use a shorter name or PROTEUS_HOME";
 pub const INSTANCE_EXISTS: &str = "there is already an instance with that name";
+pub fn frame_path(shared: bool) -> &'static str {
+    if shared {
+        "frames reach the window without an upload"
+    } else {
+        "frames are uploaded to the window"
+    }
+}
 pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
 pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";
 pub const INSTANCE_KEPT: &str = "nothing was deleted";

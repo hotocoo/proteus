@@ -134,6 +134,8 @@ pub struct Picture {
     shared: Vec<SharedTexture>,
     /// The shared buffer on screen, held so that it is not read into again while it is.
     holding: Option<Arc<SharedBuffer>>,
+    /// Whether the last frame was shown from its shared buffer, for the debug log.
+    was_shared: bool,
 }
 
 impl Picture {
@@ -171,7 +173,13 @@ impl Picture {
         match native_format(frame.format) {
             Some(format) => {
                 let size = (frame.width, frame.height);
-                if !buffer.is_some_and(|buffer| self.show_shared(buffer, size, format, render)) {
+                let shared =
+                    buffer.is_some_and(|buffer| self.show_shared(buffer, size, format, render));
+                if shared != self.was_shared {
+                    self.was_shared = shared;
+                    log::debug!("{}", crate::copy::frame_path(shared));
+                }
+                if !shared {
                     self.holding = None;
                     self.upload(frame, format, render);
                 }
