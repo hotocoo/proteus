@@ -60,7 +60,7 @@ jobs:
           # KosmicKrisp with this repository's fixes (packaging/mesa), in place of Homebrew's.
           export KOSMICKRISP=$(scripts/build-kosmickrisp.sh "$RUNNER_TEMP/kosmickrisp")
           scripts/bundle-macos.sh target/release/proteus gfxstream-out "$name" apps
-          cp README.md packaging/macos/hv.entitlements "$name/"
+          cp README.md packaging/macos/hv.entitlements scripts/install-google.sh "$name/"
           cp kernel/kernel-arm64 kernel/kernel-arm64.config kernel/kernel-arm64.source.txt "$name/"
           cp guest/kernel/README.md "$name/KERNEL.md"
           tar -czf "$name.tar.gz" "$name"
