@@ -8,10 +8,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use devices::disk::gpt::crc32;
-use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame, FrameSink};
+use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame, FrameSink, FrameSlot};
 
 use crate::config::FRAME_DUMP_INTERVAL;
 use crate::copy;
+use crate::shared::{SharedBuffer, SharedPool, lock};
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 /// Eight bits per channel, colour type 2 (RGB), default compression and filter methods, no interlace.
@@ -109,11 +110,50 @@ pub struct Screen {
     spare: Mutex<Vec<u8>>,
     /// The frame before the newest. Handed back one frame later than the newest is replaced, by
     /// when the window has nearly always finished uploading it, so that buffers are reused.
-    previous: Mutex<Arc<Vec<u8>>>,
+    previous: Mutex<Pixels>,
+    /// Memory frames can be read into where the GPU samples it, once the window has a GPU.
+    shared: Mutex<Option<Arc<SharedPool>>>,
     /// Called after every new frame, on the thread that delivered it.
     listener: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Which way up the picture is shown, in quarter turns (see `orientation`).
     turns: AtomicU8,
+}
+
+/// A frame's bytes: in a `Vec`, or in memory the GPU reads where it lies.
+#[derive(Clone)]
+enum Pixels {
+    Owned(Arc<Vec<u8>>),
+    Shared(Arc<SharedBuffer>),
+}
+
+impl Default for Pixels {
+    fn default() -> Self {
+        Self::Owned(Arc::default())
+    }
+}
+
+impl Pixels {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(pixels) => pixels,
+            Self::Shared(buffer) => buffer.bytes(),
+        }
+    }
+}
+
+/// A shared buffer on loan to the device, to be read into and then shown.
+struct Lent {
+    buffer: Arc<SharedBuffer>,
+    width: u32,
+    height: u32,
+}
+
+impl FrameSlot for Lent {
+    fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: the pool lent this buffer to no one else, and it is shown only after the read
+        // that fills it is done (`present_slot`), so this is its only holder but the pool.
+        unsafe { self.buffer.bytes_mut() }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -122,7 +162,7 @@ struct Latest {
     height: u32,
     format: u32,
     /// Shared, so readers copy or encode it without holding the lock the device thread needs.
-    pixels: Arc<Vec<u8>>,
+    pixels: Pixels,
     /// Counts frames, so that a reader can tell whether it has seen this one. Zero: none yet.
     serial: u64,
 }
@@ -133,24 +173,52 @@ impl FrameSink for Screen {
             std::mem::take(&mut *self.spare.lock().unwrap_or_else(PoisonError::into_inner));
         pixels.clear();
         pixels.extend_from_slice(frame.pixels);
-        let old = self.keep(frame.width, frame.height, frame.format, pixels);
+        let old = self.keep(
+            frame.width,
+            frame.height,
+            frame.format,
+            Pixels::Owned(Arc::new(pixels)),
+        );
         *self.spare.lock().unwrap_or_else(PoisonError::into_inner) = old;
     }
 
     fn present_owned(&self, width: u32, height: u32, format: u32, pixels: Vec<u8>) -> Vec<u8> {
-        self.keep(width, height, format, pixels)
+        self.keep(width, height, format, Pixels::Owned(Arc::new(pixels)))
+    }
+
+    fn slot(&self, width: u32, height: u32) -> Option<Box<dyn FrameSlot>> {
+        let pool = lock(&self.shared).clone()?;
+        let buffer = pool.acquire(width, height)?;
+        Some(Box::new(Lent {
+            buffer,
+            width,
+            height,
+        }))
+    }
+
+    fn present_slot(&self, slot: Box<dyn FrameSlot>, format: u32) {
+        let slot: Box<dyn std::any::Any> = slot;
+        let Ok(lent) = slot.downcast::<Lent>() else {
+            return;
+        };
+        let Lent {
+            buffer,
+            width,
+            height,
+        } = *lent;
+        self.keep(width, height, format, Pixels::Shared(buffer));
     }
 }
 
 impl Screen {
     /// Makes `pixels` the newest frame and tells the listener. Returns the frame before the one
     /// it replaces if no reader still holds that one, or else an empty buffer.
-    fn keep(&self, width: u32, height: u32, format: u32, pixels: Vec<u8>) -> Vec<u8> {
+    fn keep(&self, width: u32, height: u32, format: u32, pixels: Pixels) -> Vec<u8> {
         let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
         latest.width = width;
         latest.height = height;
         latest.format = format;
-        let old = std::mem::replace(&mut latest.pixels, Arc::new(pixels));
+        let old = std::mem::replace(&mut latest.pixels, pixels);
         latest.serial += 1;
         drop(latest);
         let older = std::mem::replace(
@@ -161,7 +229,10 @@ impl Screen {
         if let Some(listener) = listener.as_ref() {
             listener();
         }
-        Arc::try_unwrap(older).unwrap_or_default()
+        match older {
+            Pixels::Owned(pixels) => Arc::try_unwrap(pixels).unwrap_or_default(),
+            Pixels::Shared(_) => Vec::new(),
+        }
     }
 
     /// Has `listener` called after every new frame. It runs on a device thread, so it should only
@@ -187,9 +258,37 @@ impl Screen {
                 width: latest.width,
                 height: latest.height,
                 format: latest.format,
-                pixels: &latest.pixels,
+                pixels: latest.pixels.bytes(),
             })
         })
+    }
+
+    /// As `with_latest`, and the buffer the frame lies in when it was read into shared memory.
+    pub fn with_latest_buffer<R>(
+        &self,
+        look: impl FnOnce(&Frame<'_>, Option<&Arc<SharedBuffer>>) -> R,
+    ) -> Option<R> {
+        let latest = self.snapshot();
+        (latest.serial != 0).then(|| {
+            let buffer = match &latest.pixels {
+                Pixels::Shared(buffer) => Some(buffer),
+                Pixels::Owned(_) => None,
+            };
+            look(
+                &Frame {
+                    width: latest.width,
+                    height: latest.height,
+                    format: latest.format,
+                    pixels: latest.pixels.bytes(),
+                },
+                buffer,
+            )
+        })
+    }
+
+    /// Lets frames be read into memory the GPU samples as it lies, from `pool`; `None` stops it.
+    pub fn set_shared(&self, pool: Option<Arc<SharedPool>>) {
+        *lock(&self.shared) = pool;
     }
 
     /// Saves the newest frame as a PNG and returns its number, or zero, saving nothing, if the guest
@@ -201,7 +300,7 @@ impl Screen {
                 width: latest.width,
                 height: latest.height,
                 format: latest.format,
-                pixels: &latest.pixels,
+                pixels: latest.pixels.bytes(),
             };
             // Saved upright, as the window shows it.
             let (width, height, pixels) = crate::orientation::upright(&panel, self.turns());
@@ -304,6 +403,58 @@ mod tests {
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(saved, png(&frame(FORMAT_RGBA, 1, 1, &last)).unwrap());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn frames_read_into_shared_memory_are_shown_and_left_alone_while_held() {
+        use crate::config::SHARED_FRAME_SLOTS;
+
+        let screen = Screen::default();
+        let Some(pool) = SharedPool::new() else {
+            eprintln!("no GPU; test skipped");
+            return;
+        };
+        assert!(screen.slot(64, 32).is_none(), "no pool offered yet");
+        screen.set_shared(Some(Arc::new(pool)));
+        let show = |fill: u8| {
+            let mut slot = screen.slot(64, 32).unwrap();
+            slot.bytes().fill(fill);
+            screen.present_slot(slot, FORMAT_BGRX);
+        };
+        show(7);
+        let seen = screen.with_latest(|frame| {
+            (
+                frame.width,
+                frame.height,
+                frame.format,
+                frame.pixels.to_vec(),
+            )
+        });
+        assert_eq!(seen, Some((64, 32, FORMAT_BGRX, vec![7; 64 * 32 * 4])));
+        // A reader holding the frame keeps it intact however many frames follow.
+        let held = screen
+            .with_latest_buffer(|_, buffer| buffer.cloned())
+            .unwrap()
+            .expect("the frame is in shared memory");
+        for _ in 0..SHARED_FRAME_SLOTS * 2 {
+            show(9);
+        }
+        assert!(held.bytes().iter().all(|byte| *byte == 7));
+        assert_eq!(screen.serial(), 1 + SHARED_FRAME_SLOTS as u64 * 2);
+        // When every buffer is held, the device falls back to a `Vec` instead of waiting.
+        let lent: Vec<_> = std::iter::from_fn(|| screen.slot(64, 32)).collect();
+        assert!(
+            lent.len() < SHARED_FRAME_SLOTS,
+            "the shown frames are not lent"
+        );
+        drop(lent);
+        assert!(
+            screen.slot(64, 32).is_some(),
+            "an unshown slot is lent again"
+        );
+        screen.set_shared(None);
+        assert!(screen.slot(64, 32).is_none());
     }
 
     #[test]

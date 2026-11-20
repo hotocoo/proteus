@@ -158,3 +158,24 @@ argument` and `CONTEXT_INIT failed with File exists`; the driver carries on.
 - With `--gpu` the x86_64 Cuttlefish image (build 16968706) switches to it: SurfaceFlinger reports
   `ANGLE (NVIDIA, Vulkan 1.4.341 (NVIDIA Virtio-GPU GFXStream (NVIDIA GeForce RTX 5070)))`, OpenGL
   ES 3.2, and boots to the lock screen. The guest encoders and this host revision handshake.
+
+## Copy-free frames (2026-11-20)
+
+True zero-copy (gfxstream's colour buffer as a `MTLTexture` in wgpu) was checked and is not
+possible with the preferred driver. A C program against each driver (Apple M4 Max, macOS 26.5):
+
+| | MoltenVK 1.4.2 | KosmicKrisp (Mesa 26.3.0) |
+|---|---|---|
+| `VK_EXT_external_memory_metal` | yes | yes (a heap handle only) |
+| `VK_EXT_metal_objects` (`vkExportMetalObjectsEXT`, texture export) | yes, same `MTLDevice` as wgpu | no |
+
+gfxstream asks for an `MTLHeap`, which is not sampleable, and exposes no C call for the texture;
+`stream_renderer_export_blob` hands back a descriptor, not a Metal object. A patched gfxstream
+would work under MoltenVK only, the fallback driver.
+
+What ships instead: the frame is read straight into a shared-storage Metal buffer that wgpu
+samples as a linear texture (`crates/vmm/src/shared.rs`), so the window's per-frame upload (about
+1.2 ms for 1080x2400) is gone. gfxstream still copies twice inside itself (colour buffer to its
+own linear buffer, then to the buffer given); it ignores the transfer's stride and writes rows
+tightly packed, which is why the buffer-backed texture, and not an IOSurface (rows padded to 64
+bytes), is used.

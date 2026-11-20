@@ -16,7 +16,7 @@ const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 /// Runs a future to its end on this thread. wgpu's native futures are ready at once or after a
 /// short wait for the driver, so polling is enough and no async runtime is needed.
-fn block_on<F: Future>(future: F) -> F::Output {
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     let mut context = Context::from_waker(Waker::noop());
     loop {
@@ -83,6 +83,16 @@ impl Painter {
     /// The GPU device, queue and egui's renderer, once the window has a surface.
     pub fn render_state(&self) -> Option<egui_wgpu::RenderState> {
         self.painter.render_state()
+    }
+
+    /// Keeps `held` alive until the GPU has finished what is submitted so far, which is the
+    /// frame just drawn. Memory that frame reads is then not written meanwhile.
+    pub fn hold_until_done(&self, held: impl Send + 'static) {
+        if let Some(render) = self.painter.render_state() {
+            render.queue.on_submitted_work_done(move || drop(held));
+            // Finished work is noticed here; nothing else would look.
+            let _ = render.device.poll(wgpu::PollType::Poll);
+        }
     }
 
     /// Takes a screenshot of the window with the next frame. It is drawn to a texture of its own,

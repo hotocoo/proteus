@@ -39,6 +39,12 @@ egui-winit.workspace = true
 egui-wgpu.workspace = true
 wgpu.workspace = true
 
+# Frames the renderer reads into memory the GPU samples as it lies (see `shared`). The same
+# versions wgpu's Metal backend uses, so its textures and these are one type.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+
 [dev-dependencies]
 net.workspace = true
 # Clicks the window's controls by their labels in tests, without a screen.

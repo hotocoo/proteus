@@ -105,6 +105,22 @@ pub trait FrameSink: Send + Sync {
         });
         pixels
     }
+
+    /// Memory of the sink's own that the next `width` by `height` frame can be read into, so the
+    /// renderer's copy is the only one. `None`: use `present_owned`. The slot comes back through
+    /// `present_slot` once filled, or is dropped, unshown, if the read failed.
+    fn slot(&self, _width: u32, _height: u32) -> Option<Box<dyn FrameSlot>> {
+        None
+    }
+
+    /// Shows a slot from `slot`, filled with a frame of `format`.
+    fn present_slot(&self, _slot: Box<dyn FrameSlot>, _format: u32) {}
+}
+
+/// Memory a sink lends the device to read one frame into, `width * height * BYTES_PER_PIXEL`
+/// bytes, rows tightly packed.
+pub trait FrameSlot: std::any::Any + Send {
+    fn bytes(&mut self) -> &mut [u8];
 }
 
 /// A 2D image the guest created, with the host's copy of its pixels.
@@ -476,6 +492,9 @@ struct Accelerated {
 impl Accelerated {
     /// Reads back and presents the frame the guest flushed, if one waits.
     fn present_due(&mut self) {
+        if self.present_due_into_slot() {
+            return;
+        }
         match self.gpu.read_back() {
             Some(Ok(super::gpu3d::Answer::Frame {
                 width,
@@ -492,6 +511,26 @@ impl Accelerated {
             Some(Err(code)) => log::debug!("{}", copy::gpu_readback_failed(code)),
             Some(Ok(_)) | None => {}
         }
+    }
+
+    /// Reads the due frame straight into a slot the sink lends, if it lends one. False: nothing
+    /// was read, and the frame is still due.
+    fn present_due_into_slot(&mut self) -> bool {
+        let Some(sink) = &self.sink else {
+            return false;
+        };
+        let Some((width, height)) = self.gpu.due_size() else {
+            return false;
+        };
+        let Some(mut slot) = sink.slot(width, height) else {
+            return false;
+        };
+        match self.gpu.read_back_into(slot.bytes()) {
+            Some(Ok(format)) => sink.present_slot(slot, format),
+            Some(Err(code)) => log::debug!("{}", copy::gpu_readback_failed(code)),
+            None => {}
+        }
+        true
     }
 
     /// The answer to one control command, and the fence it waits for, if any.

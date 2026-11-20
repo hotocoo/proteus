@@ -44,6 +44,7 @@ pub mod settings;
 #[cfg(host_board)]
 mod settings_ui;
 mod setup;
+pub mod shared;
 #[cfg(host_board)]
 mod style;
 #[cfg(host_board)]

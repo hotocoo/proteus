@@ -752,35 +752,64 @@ impl Gpu3d {
         Some(self.read(shown))
     }
 
-    fn read(&mut self, shown: Scanout) -> Result<Answer, u32> {
-        let stride = shown.width.checked_mul(BYTES_PER_PIXEL);
-        let len = stride.and_then(|stride| (stride as usize).checked_mul(shown.height as usize));
-        let (Some(stride), Some(len)) = (stride, len) else {
+    /// Width and height of the frame that waits to be read back, if one does.
+    pub fn due_size(&self) -> Option<(u32, u32)> {
+        self.due.map(|shown| (shown.width, shown.height))
+    }
+
+    /// As `read_back`, into `into`, which must be exactly the frame's size (see `due_size`), so
+    /// the renderer's copy is the only one. Returns the frame's format.
+    pub fn read_back_into(&mut self, into: &mut [u8]) -> Option<Result<u32, u32>> {
+        let shown = self.due.take()?;
+        Some(self.read_into(shown, into).map(|()| shown.format))
+    }
+
+    fn read_into(&mut self, shown: Scanout, into: &mut [u8]) -> Result<(), u32> {
+        let (stride, len) = frame_size(&shown)?;
+        if into.len() != len {
             return Err(RESP_ERR_INVALID_PARAMETER);
-        };
+        }
+        let started = std::time::Instant::now();
+        let read = self
+            .renderer
+            .transfer_read(frame_transfer(&shown, stride), Some(into));
+        read.map_err(renderer_failed("read back"))?;
+        self.count_readback(started.elapsed());
+        Ok(())
+    }
+
+    fn read(&mut self, shown: Scanout) -> Result<Answer, u32> {
+        let (_, len) = frame_size(&shown)?;
         // Every byte is overwritten by the read; the buffer is only reused, not cleared.
         let mut pixels = std::mem::take(&mut self.spare);
         pixels.resize(len, 0);
-        let transfer = Transfer {
-            resource: shown.resource,
-            x: shown.x,
-            y: shown.y,
-            width: shown.width,
-            height: shown.height,
-            depth: 1,
-            stride,
-            ..Transfer::default()
-        };
-        let started = std::time::Instant::now();
-        let read = self.renderer.transfer_read(transfer, Some(&mut pixels));
-        read.map_err(renderer_failed("read back"))?;
-        self.count_readback(started.elapsed());
+        self.read_into(shown, &mut pixels)?;
         Ok(Answer::Frame {
             width: shown.width,
             height: shown.height,
             format: shown.format,
             pixels,
         })
+    }
+}
+
+/// A shown frame's row length and total length in bytes.
+fn frame_size(shown: &Scanout) -> Result<(u32, usize), u32> {
+    let stride = shown.width.checked_mul(BYTES_PER_PIXEL);
+    let len = stride.and_then(|stride| (stride as usize).checked_mul(shown.height as usize));
+    stride.zip(len).ok_or(RESP_ERR_INVALID_PARAMETER)
+}
+
+fn frame_transfer(shown: &Scanout, stride: u32) -> Transfer {
+    Transfer {
+        resource: shown.resource,
+        x: shown.x,
+        y: shown.y,
+        width: shown.width,
+        height: shown.height,
+        depth: 1,
+        stride,
+        ..Transfer::default()
     }
 }
 
@@ -1103,6 +1132,27 @@ mod tests {
                 "{rect:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_flushed_scanout_is_read_straight_into_the_memory_given() {
+        let (mut gpu, _, _) = setup(PAGE as usize);
+        run(&mut gpu, CMD_CREATE_2D, 0, &words(&[5, 2, 64, 32])).unwrap();
+        run(&mut gpu, CMD_SET_SCANOUT, 0, &words(&[0, 0, 64, 32, 0, 5])).unwrap();
+        assert_eq!(gpu.due_size(), None);
+        run(&mut gpu, CMD_FLUSH, 0, &words(&[0, 0, 64, 32, 5, 0])).unwrap();
+        assert_eq!(gpu.due_size(), Some((64, 32)));
+        // A slot of the wrong size is refused, and the frame is not kept due for it.
+        assert_eq!(
+            gpu.read_back_into(&mut [0; 16]),
+            Some(Err(RESP_ERR_INVALID_PARAMETER))
+        );
+        assert!(!gpu.frame_due());
+        run(&mut gpu, CMD_FLUSH, 0, &words(&[0, 0, 64, 32, 5, 0])).unwrap();
+        let mut slot = vec![0; 64 * 32 * BYTES_PER_PIXEL as usize];
+        assert_eq!(gpu.read_back_into(&mut slot), Some(Ok(2)));
+        assert!(slot.iter().all(|byte| *byte == 0x7f));
+        assert_eq!(gpu.read_back_into(&mut slot), None);
     }
 
     #[test]

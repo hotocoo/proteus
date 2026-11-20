@@ -29,6 +29,7 @@ use crate::keyedit::Editor;
 use crate::keymap::{self, Mapper, Scroll, Touch};
 use crate::painter::Painter;
 use crate::picture::Picture;
+use crate::shared::SharedPool;
 use crate::{VmmError, copy, orientation, profiles};
 
 /// Quarter turns in a whole turn, and degrees in a quarter turn.
@@ -235,6 +236,8 @@ struct App {
     /// The guest's picture, as last uploaded, and whether a newer frame has come since.
     picture_texture: Picture,
     frame_waiting: bool,
+    /// Whether frames have been offered shared memory to be read into (once the GPU is up).
+    shared_offered: bool,
     /// Where the whole panel was drawn last, in points (it may reach past what is shown), and its
     /// upright size in guest pixels.
     picture: Option<(egui::Rect, (u32, u32))>,
@@ -488,10 +491,25 @@ impl App {
             && let Some(render) = shown.painter.render_state()
         {
             self.frame_waiting = false;
+            if !self.shared_offered {
+                self.shared_offered = true;
+                let pool = SharedPool::new().map(Arc::new);
+                log::debug!(
+                    "{}",
+                    if pool.is_some() {
+                        copy::SHARED_FRAMES_ON
+                    } else {
+                        copy::SHARED_FRAMES_OFF
+                    }
+                );
+                screen.set_shared(pool);
+            }
             let turns = screen.turns();
             let picture = &mut self.picture_texture;
             let ctx = &shown.painter.ctx;
-            screen.with_latest(|frame| picture.update(frame, turns, &render, ctx));
+            screen.with_latest_buffer(|frame, buffer| {
+                picture.update(frame, buffer, turns, &render, ctx);
+            });
         }
         // The picture's shape is the one of the frame on screen, so clicks match what is seen.
         let upright = self
@@ -564,6 +582,10 @@ impl App {
                 }
             });
         });
+        // The GPU reads a shared frame buffer as it is: it is not written again before it is done.
+        if let Some(buffer) = self.picture_texture.sampled() {
+            shown.painter.hold_until_done(buffer);
+        }
         self.picture = picture;
         self.shown_part = shown_part;
         self.space = seen_space;
@@ -1204,6 +1226,7 @@ impl WindowLoop {
             gui,
             picture_texture: Picture::default(),
             frame_waiting: true,
+            shared_offered: false,
             picture: None,
             shown_part: None,
             space: None,
@@ -1241,6 +1264,9 @@ impl WindowLoop {
             .shown
             .as_ref()
             .and_then(|shown| shown.painter.render_state());
+        if let Some(screen) = &app.controller.screen {
+            screen.set_shared(None);
+        }
         app.picture_texture.release(render.as_ref());
         app.shown = None;
         *app.controller

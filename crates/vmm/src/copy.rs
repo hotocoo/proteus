@@ -243,6 +243,10 @@ pub fn audio_failed(err: &dyn Display) -> String {
 pub const WINDOW_TITLE: &str = "Proteus";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
+pub const SHARED_FRAMES_ON: &str =
+    "guest frames are read straight into GPU-visible memory, with no second copy";
+pub const SHARED_FRAMES_OFF: &str =
+    "the GPU cannot read the guest's frames where they are; each one is copied to it";
 
 pub fn frame_rate(frames: u32, over: std::time::Duration) -> String {
     format!(

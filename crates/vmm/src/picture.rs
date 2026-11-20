@@ -2,11 +2,14 @@
 //! to it as they are, once; turning the picture upright is done by where the corners sample from,
 //! not by moving pixels. Other layouts are converted on the CPU first.
 
+use std::sync::Arc;
+
 use devices::virtio::gpu::{BYTES_PER_PIXEL, Frame};
 use egui::{Color32, Pos2, Rect, TextureId};
 
 use crate::frames::{FORMATS_BGRX, FORMATS_RGBX};
 use crate::orientation;
+use crate::shared::SharedBuffer;
 
 /// The GPU's name for a frame layout it can read as it is, if there is one. The fourth byte may
 /// be padding rather than alpha; the picture is drawn over black, so either way it shows as it is.
@@ -36,6 +39,85 @@ struct Native {
     texture: wgpu::Texture,
     size: (u32, u32),
     format: wgpu::TextureFormat,
+    /// The texture is a view of a shared buffer the renderer fills, which the CPU cannot upload to.
+    shared: bool,
+}
+
+/// A shared buffer's texture, kept so it is made once.
+struct SharedTexture {
+    /// The buffer, the layout of its bytes and the picture's size.
+    key: (u64, wgpu::TextureFormat, (u32, u32)),
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// A texture over the bytes of `buffer`, which the renderer writes as they lie. `None` where the
+/// GPU is not Metal or refuses it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn shared_texture(
+    device: &wgpu::Device,
+    buffer: &SharedBuffer,
+    format: wgpu::TextureFormat,
+    size: (u32, u32),
+) -> Option<wgpu::Texture> {
+    use objc2_metal::{MTLPixelFormat, MTLTextureType};
+    use wgpu::hal::api::Metal;
+
+    let pixel = match format {
+        wgpu::TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
+        _ => return None,
+    };
+    // SAFETY: only asks whether the device is a Metal one.
+    unsafe { device.as_hal::<Metal>() }?;
+    let raw = buffer.texture(pixel, size.0, size.1)?;
+    let extent = wgpu::hal::CopyExtent {
+        width: size.0,
+        height: size.1,
+        depth: 1,
+    };
+    // SAFETY: `raw` is a 2D, single-level, single-layer texture of `format` and `size`, made
+    // for the system's GPU, which a Metal wgpu device on Apple silicon is; shader reads only.
+    let hal = unsafe {
+        wgpu::hal::metal::Device::texture_from_raw(
+            raw,
+            format,
+            MTLTextureType::Type2D,
+            1,
+            1,
+            extent,
+            None,
+        )
+    };
+    let descriptor = wgpu::TextureDescriptor {
+        label: Some(crate::copy::GUEST_TEXTURE),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        // Drawn from, and copied from by tests and screenshots of the texture.
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    };
+    // SAFETY: `hal` was just made for this device's backend, and matches `descriptor`.
+    Some(unsafe {
+        device.create_texture_from_hal::<Metal>(hal, &descriptor, wgpu::wgt::TextureUses::RESOURCE)
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn shared_texture(
+    _device: &wgpu::Device,
+    buffer: &SharedBuffer,
+    _format: wgpu::TextureFormat,
+    _size: (u32, u32),
+) -> Option<wgpu::Texture> {
+    match *buffer {}
 }
 
 /// The newest frame, on the GPU.
@@ -48,6 +130,10 @@ pub struct Picture {
     /// Quarter turns the texture needs to stand upright, and the panel's size.
     turns: u8,
     panel: (u32, u32),
+    /// Textures of the shared buffers frames came in.
+    shared: Vec<SharedTexture>,
+    /// The shared buffer on screen, held so that it is not read into again while it is.
+    holding: Option<Arc<SharedBuffer>>,
 }
 
 impl Picture {
@@ -62,10 +148,18 @@ impl Picture {
         self.turns
     }
 
-    /// Puts `frame`, turned by `turns`, on the GPU.
+    /// The shared buffer the picture is drawn from, if it is: it must stay unwritten until the
+    /// GPU has finished the frame drawn with it.
+    pub fn sampled(&self) -> Option<Arc<SharedBuffer>> {
+        self.holding.clone()
+    }
+
+    /// Puts `frame`, turned by `turns`, on the GPU. `buffer` is the shared buffer it lies in, if
+    /// it does, which the GPU then reads as it is.
     pub fn update(
         &mut self,
         frame: &Frame<'_>,
+        buffer: Option<&Arc<SharedBuffer>>,
         turns: u8,
         render: &egui_wgpu::RenderState,
         ctx: &egui::Context,
@@ -75,8 +169,15 @@ impl Picture {
             return;
         }
         match native_format(frame.format) {
-            Some(format) => self.upload(frame, format, render),
+            Some(format) => {
+                let size = (frame.width, frame.height);
+                if !buffer.is_some_and(|buffer| self.show_shared(buffer, size, format, render)) {
+                    self.holding = None;
+                    self.upload(frame, format, render);
+                }
+            }
             None => {
+                self.holding = None;
                 let Some(image) = crate::window::color_image(frame, turns) else {
                     return;
                 };
@@ -96,6 +197,56 @@ impl Picture {
         self.panel = (frame.width, frame.height);
     }
 
+    /// Shows `buffer` as it is. False if the GPU cannot, and the frame must be uploaded.
+    fn show_shared(
+        &mut self,
+        buffer: &Arc<SharedBuffer>,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+        render: &egui_wgpu::RenderState,
+    ) -> bool {
+        let key = (buffer.id(), format, size);
+        let at = match self.shared.iter().position(|made| made.key == key) {
+            Some(at) => at,
+            None => {
+                let Some(texture) = shared_texture(&render.device, buffer, format, size) else {
+                    return false;
+                };
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                // Buffers of another size are gone: the guest's screen changed.
+                self.shared.retain(|made| made.key.2 == size);
+                self.shared.push(SharedTexture { key, texture, view });
+                self.shared.len() - 1
+            }
+        };
+        let made = &self.shared[at];
+        let (texture, view) = (made.texture.clone(), made.view.clone());
+        self.bind(&view, render);
+        self.native = Some(Native {
+            texture,
+            size,
+            format,
+            shared: true,
+        });
+        self.converted = None;
+        self.holding = Some(Arc::clone(buffer));
+        true
+    }
+
+    /// Has egui draw `view`, as the picture's texture.
+    fn bind(&mut self, view: &wgpu::TextureView, render: &egui_wgpu::RenderState) {
+        let mut renderer = render.renderer.write();
+        let filter = wgpu::FilterMode::Linear;
+        match self.id.filter(|_| self.native.is_some()) {
+            Some(id) => {
+                renderer.update_egui_texture_from_wgpu_texture(&render.device, view, filter, id);
+            }
+            None => {
+                self.id = Some(renderer.register_native_texture(&render.device, view, filter));
+            }
+        }
+    }
+
     fn upload(
         &mut self,
         frame: &Frame<'_>,
@@ -111,7 +262,7 @@ impl Picture {
         let fits = self
             .native
             .as_ref()
-            .is_some_and(|native| native.size == size && native.format == format);
+            .is_some_and(|native| native.size == size && native.format == format && !native.shared);
         if !fits {
             let texture = render.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(crate::copy::GUEST_TEXTURE),
@@ -124,25 +275,12 @@ impl Picture {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut renderer = render.renderer.write();
-            let filter = wgpu::FilterMode::Linear;
-            match self.id.filter(|_| self.native.is_some()) {
-                Some(id) => {
-                    renderer.update_egui_texture_from_wgpu_texture(
-                        &render.device,
-                        &view,
-                        filter,
-                        id,
-                    );
-                }
-                None => {
-                    self.id = Some(renderer.register_native_texture(&render.device, &view, filter));
-                }
-            }
+            self.bind(&view, render);
             self.native = Some(Native {
                 texture,
                 size,
                 format,
+                shared: false,
             });
             self.converted = None;
         }
@@ -198,6 +336,7 @@ impl Picture {
         if let (Some(id), Some(render), Some(_)) = (self.id, render, &self.native) {
             render.renderer.write().free_texture(&id);
         }
+        self.shared.clear();
         *self = Self::default();
     }
 }
@@ -241,5 +380,166 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba8Unorm)
         );
         assert_eq!(native_format(3), None);
+    }
+
+    /// A real GPU: frames read into a shared buffer reach a texture the GPU samples with no upload.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mod shared_on_the_gpu {
+        use std::time::Instant;
+
+        use super::super::*;
+        use crate::painter::block_on;
+        use crate::shared::SharedPool;
+
+        const WIDTH: u32 = 1080;
+        const HEIGHT: u32 = 2400;
+        /// Frames timed, to show what an upload costs against what sharing does.
+        const TIMED_FRAMES: u32 = 30;
+
+        fn pattern(len: usize) -> Vec<u8> {
+            (0..len).map(|at| (at % 251) as u8).collect()
+        }
+
+        fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+            let instance = wgpu::Instance::default();
+            let adapter =
+                block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        }
+
+        /// Copies `texture` into a buffer and returns its bytes, rows packed.
+        fn read_texture(
+            device: &wgpu::Device,
+            queue: &wgpu::Queue,
+            texture: &wgpu::Texture,
+            (width, height): (u32, u32),
+        ) -> Vec<u8> {
+            let row = width * BYTES_PER_PIXEL as u32;
+            let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let out = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(padded * height),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &out,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            out.slice(..)
+                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let data = out.slice(..).get_mapped_range().unwrap();
+            data.chunks(padded as usize)
+                .flat_map(|line| &line[..row as usize])
+                .copied()
+                .collect()
+        }
+
+        #[test]
+        fn a_shared_buffer_is_sampled_as_the_renderer_wrote_it() {
+            let (Some((device, queue)), Some(pool)) = (device(), SharedPool::new()) else {
+                eprintln!("no GPU; test skipped");
+                return;
+            };
+            let (width, height) = (64, 32);
+            let buffer = pool.acquire(width, height).unwrap();
+            let image = pattern((width * height) as usize * BYTES_PER_PIXEL);
+            // SAFETY: the only holder besides the pool.
+            unsafe { buffer.bytes_mut() }.copy_from_slice(&image);
+            let texture = shared_texture(
+                &device,
+                &buffer,
+                wgpu::TextureFormat::Bgra8Unorm,
+                (width, height),
+            );
+            let Some(texture) = texture else {
+                eprintln!("not a Metal device; test skipped");
+                return;
+            };
+            assert_eq!(
+                read_texture(&device, &queue, &texture, (width, height)),
+                image
+            );
+        }
+
+        #[test]
+        fn sharing_a_frame_costs_the_window_no_copy() {
+            let (Some((device, queue)), Some(pool)) = (device(), SharedPool::new()) else {
+                eprintln!("no GPU; test skipped");
+                return;
+            };
+            let len = (WIDTH * HEIGHT) as usize * BYTES_PER_PIXEL;
+            let image = pattern(len);
+            let extent = wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            };
+            let upload = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let mut upload_time = std::time::Duration::ZERO;
+            for _ in 0..TIMED_FRAMES {
+                let started = Instant::now();
+                queue.write_texture(
+                    upload.as_image_copy(),
+                    &image,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(WIDTH * BYTES_PER_PIXEL as u32),
+                        rows_per_image: Some(HEIGHT),
+                    },
+                    extent,
+                );
+                queue.submit([]);
+                upload_time += started.elapsed();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            }
+            let buffer = pool.acquire(WIDTH, HEIGHT).unwrap();
+            let started = Instant::now();
+            let texture = shared_texture(
+                &device,
+                &buffer,
+                wgpu::TextureFormat::Bgra8Unorm,
+                (WIDTH, HEIGHT),
+            );
+            let made = started.elapsed();
+            let Some(_texture) = texture else {
+                eprintln!("not a Metal device; test skipped");
+                return;
+            };
+            eprintln!(
+                "window thread per frame: upload {:?}; shared: no copy (texture made once in {made:?})",
+                upload_time / TIMED_FRAMES,
+            );
+            // What the GPU would sample is what the upload path gives, byte for byte.
+            let uploaded = read_texture(&device, &queue, &upload, (WIDTH, HEIGHT));
+            assert_eq!(uploaded, image);
+        }
     }
 }
