@@ -430,6 +430,9 @@ pub struct AndroidOptions {
     pub data: PathBuf,
     /// Size of the data partition when it is first created.
     pub userdata_bytes: u64,
+    /// Give this instance its own writable copy of the system partitions (`super`), so Android
+    /// can be changed there (Google apps, say). Off: the image's own copy, read-only.
+    pub writable_system: bool,
 }
 
 /// The guest's network. Everything here has a default; the command line only overrides.
@@ -683,6 +686,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     let mut android_images: Option<PathBuf> = None;
     let mut data_dir: Option<PathBuf> = None;
     let mut userdata_gib = DEFAULT_USERDATA_GIB;
+    let mut writable_system = false;
 
     while let Some(arg) = parser.next()? {
         match arg {
@@ -715,6 +719,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
             Long("serial") => config.serial = true,
             Long("android") => android_images = Some(parser.value()?.into()),
             Long("data-dir") => data_dir = Some(parser.value()?.into()),
+            Long("writable-system") => writable_system = true,
             Long("userdata-gib") => userdata_gib = positive(&mut parser, "userdata-gib")?,
             Long("no-net") => no_net = true,
             Long("no-display") => config.display = None,
@@ -805,6 +810,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
                 images,
                 data,
                 userdata_bytes,
+                writable_system,
             })
         }
         None if data_dir.is_some() => return Err(ConfigError(copy::DATA_DIR_NEEDS_ANDROID.into())),

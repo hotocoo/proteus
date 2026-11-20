@@ -212,6 +212,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_sparse_image_unpacks_to_the_bytes_it_expands_to() {
+        let data: Vec<u8> = (0..2 * BLOCK).map(|i| (i % 251) as u8).collect();
+        let sparse = image(&[
+            Chunk::Raw(&data),
+            Chunk::Fill([0xde, 0xad, 0xbe, 0xef], 1),
+            Chunk::Skip(3),
+            Chunk::Raw(&data[..BLOCK as usize]),
+        ]);
+        let source = TempFile::new(&sparse);
+        let mut disk = Disk::default();
+        append(&mut disk, source.open(false)).unwrap();
+        let plain = TempFile::new(&[]);
+        disk.write_to(&mut plain.open(true)).unwrap();
+        assert_eq!(plain.contents(), expand(&sparse).unwrap());
+    }
+
+    #[test]
     fn sparse_images_are_recognised_by_their_magic() {
         let sparse = TempFile::new(&image(&[Chunk::Skip(1)]));
         let raw = TempFile::new(b"plain data");

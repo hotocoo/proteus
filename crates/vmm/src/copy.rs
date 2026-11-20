@@ -32,6 +32,8 @@ Usage: proteus --kernel <file> [options]
   --serial                Attach the debug serial console to this terminal
   --display <WxH>         Size of the guest display in pixels (default 720x1280, a phone held upright)
   --refresh-hz <n>        Frames per second the display runs at: 60 (default), 90, 120, 144
+  --writable-system       Give this Android its own writable copy of the system partitions, made
+                          once in its data folder (for Google apps); otherwise they are read-only
   --screen-shape <shape>  Shape the window keeps when resized: free (default), 16:9, 18:9, 19:9,
                           19.5:9 or 20:9
   --no-display            Give the guest no display device
@@ -433,6 +435,12 @@ pub fn frame_path(shared: bool) -> &'static str {
 }
 pub fn bad_screen_shape(name: &str) -> String {
     format!("--screen-shape: unknown shape `{name}`; use free, 16:9, 18:9, 19:9, 19.5:9 or 20:9")
+}
+pub fn system_copy_made(path: &std::path::Path) -> String {
+    format!(
+        "making this instance's own copy of the system partitions: {}",
+        path.display()
+    )
 }
 pub const INSTANCE_UNKNOWN: &str = "there is no instance with that name";
 pub const INSTANCE_RUNNING: &str = "that instance is running; stop it first";

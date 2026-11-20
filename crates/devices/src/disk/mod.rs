@@ -118,6 +118,47 @@ impl Disk {
         self.len
     }
 
+    /// Writes the whole disk into `out` as a plain image. Zero-filled pieces are left as holes,
+    /// so on a filesystem that keeps sparse files they take no space.
+    pub fn write_to(&self, out: &mut File) -> io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        /// Bytes copied per step.
+        const COPY_CHUNK: usize = 1 << 20;
+        out.set_len(self.len)?;
+        let mut buffer = vec![0u8; COPY_CHUNK];
+        for segment in &self.segments {
+            out.seek(SeekFrom::Start(segment.start))?;
+            match &segment.source {
+                Source::Fill(pattern) if *pattern == [0; FILL_LEN] => {}
+                Source::Fill(pattern) => {
+                    let mut left = segment.len;
+                    let filled: Vec<u8> =
+                        pattern.iter().copied().cycle().take(COPY_CHUNK).collect();
+                    while left > 0 {
+                        let step = left.min(COPY_CHUNK as u64) as usize;
+                        out.write_all(&filled[..step])?;
+                        left -= step as u64;
+                    }
+                }
+                Source::Memory(bytes) => out.write_all(bytes)?,
+                Source::File { file, offset, .. } => {
+                    let mut left = segment.len;
+                    let mut at = *offset;
+                    while left > 0 {
+                        let step = left.min(COPY_CHUNK as u64) as usize;
+                        let mut file: &File = file;
+                        file.seek(SeekFrom::Start(at))?;
+                        io::Read::read_exact(&mut file, &mut buffer[..step])?;
+                        out.write_all(&buffer[..step])?;
+                        at += step as u64;
+                        left -= step as u64;
+                    }
+                }
+            }
+        }
+        out.flush()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

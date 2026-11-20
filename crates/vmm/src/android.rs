@@ -252,6 +252,60 @@ fn file_error(path: &Path) -> impl FnOnce(std::io::Error) -> VmmError + '_ {
     }
 }
 
+/// Images `--writable-system` gives each instance a copy of: the system partitions, and the
+/// verified-boot metadata, where Android records that verity is off so it can overlay them.
+const OWN_COPIES: [&str; 5] = [
+    "super.img",
+    "vbmeta.img",
+    "vbmeta_system.img",
+    "vbmeta_vendor_dlkm.img",
+    "vbmeta_system_dlkm.img",
+];
+/// Beside the copy: which image it was made from (length and modification time), so a changed
+/// image is copied again instead of mixing its system with another version's boot images.
+const COPY_SOURCE_SUFFIX: &str = ".source";
+/// The copy's name while it is being made, so a stopped copy is never taken for a whole one.
+const COPY_PARTIAL_SUFFIX: &str = ".partial";
+
+/// `copy`, writable, made from the image at `original` if it is missing or was made from another
+/// version of it. Android's sparse format is unpacked; holes stay holes, so on APFS the copy takes
+/// only the space the partitions really use.
+fn own_copy(original: &Path, copy: &Path) -> Result<Disk, VmmError> {
+    let stamp = |path: &Path| -> Option<String> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(format!("{} {}", meta.len(), modified.as_secs()))
+    };
+    let mut marker = copy.as_os_str().to_owned();
+    marker.push(COPY_SOURCE_SUFFIX);
+    let marker = PathBuf::from(marker);
+    let wanted = stamp(original).ok_or_else(|| VmmError::File {
+        path: original.to_owned(),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    })?;
+    let current = std::fs::read_to_string(&marker).ok();
+    if !copy.is_file() || current.as_deref() != Some(wanted.as_str()) {
+        log::info!("{}", copy::system_copy_made(copy));
+        let (source, _) =
+            devices::disk::open_image(original, false).map_err(file_error(original))?;
+        let mut partial = copy.as_os_str().to_owned();
+        partial.push(COPY_PARTIAL_SUFFIX);
+        let partial = PathBuf::from(partial);
+        let mut out = File::create(&partial).map_err(file_error(&partial))?;
+        source.write_to(&mut out).map_err(file_error(&partial))?;
+        out.sync_all().map_err(file_error(&partial))?;
+        std::fs::rename(&partial, copy).map_err(file_error(copy))?;
+        std::fs::write(&marker, &wanted).map_err(file_error(&marker))?;
+    }
+    let (mut disk, _) = devices::disk::open_image(copy, true).map_err(file_error(copy))?;
+    disk.pad_to(SECTOR);
+    Ok(disk)
+}
+
 fn image(path: &Path) -> Result<Disk, VmmError> {
     let (mut disk, _) = devices::disk::open_image(path, false).map_err(file_error(path))?;
     disk.pad_to(SECTOR);
@@ -356,6 +410,13 @@ pub fn assemble(options: &AndroidOptions) -> Result<(DiskImage, AndroidBoot), Vm
     let mut partitions = Vec::new();
     for (name, contents) in PARTITIONS {
         let disk = match contents {
+            Contents::Image { file, .. }
+                if options.writable_system
+                    && OWN_COPIES.contains(file)
+                    && image_path(file).exists() =>
+            {
+                own_copy(&image_path(file), &options.data.join(file))?
+            }
             Contents::Image { file, required } => {
                 let path = image_path(file);
                 if !required && !path.exists() {
