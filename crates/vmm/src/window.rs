@@ -513,7 +513,10 @@ impl App {
             egui::Panel::right(copy::TOOLBAR_ID)
                 .resizable(false)
                 .exact_size(TOOLBAR_WIDTH)
-                .show(ui, |ui| gui.toolbar(ui, &mut effects));
+                // Scrolls when the window is shorter than the buttons.
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| gui.toolbar(ui, &mut effects))
+                });
             if let Some(editor) = editor.as_mut() {
                 egui::Panel::right(copy::PANEL_ID)
                     .resizable(false)
