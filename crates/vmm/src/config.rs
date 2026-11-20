@@ -358,6 +358,8 @@ pub const BUNDLED_APPS_DIR: &str = "apps";
 pub const INSTALLED_APPS_FILE: &str = "bundled-apps-installed";
 /// How often the guest is asked whether it has booted, and how long it may take to answer.
 pub const SETUP_POLL: Duration = Duration::from_secs(2);
+/// How often Android's file cache is checked and, when too big, dropped.
+pub const CACHE_TRIM_PERIOD: Duration = Duration::from_secs(60);
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);
