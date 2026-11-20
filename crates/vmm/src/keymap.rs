@@ -801,7 +801,8 @@ mod tests {
         let text = "[look]\nkey = \"AltLeft\"\ncenter = [900, 300]\nradius = 250\nstart = true\n\
                     hold = true\n[[tap]]\nkey = \"Escape\"\nat = [1200, 40]\npointer = true\n\
                     [[stick]]\nup = \"KeyW\"\nleft = \"KeyA\"\ndown = \"KeyS\"\nright = \"KeyD\"\n\
-                    center = [300, 500]\nradius = 100\n";
+                    center = [300, 500]\nradius = 100\n[[tap]]\nkey = \"ShiftLeft\"\nat = [1100, 600]\n\
+                    [[tap]]\nkey = \"MouseLeft\"\nat = [1000, 500]\n";
         let mut map = Mapper::parse(text, DISPLAY).unwrap();
         map.pointer(1.0, 0.0);
         assert_eq!(
@@ -823,7 +824,8 @@ mod tests {
         assert!(map.key(code("KeyW"), true).is_some());
         assert!(map.wants_pointer()); // Held keys and buttons the map uses never stop the mouse turning the view.
         map.key(code("KeyW"), false);
-        map.key(code("ShiftLeft"), true);
+        assert!(!map.key(code("ShiftLeft"), true).unwrap().is_empty());
+        assert!(!map.key(code("MouseLeft"), true).unwrap().is_empty());
         assert!(map.wants_pointer());
         assert!(!map.pointer(5.0, 0.0).is_empty());
     }

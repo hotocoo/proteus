@@ -632,8 +632,8 @@ pub mod gui {
         grown in place.";
 
     pub const WRITABLE_SYSTEM: &str = "Writable system";
-    pub const WRITABLE_SYSTEM_HINT: &str = "Copies Android's system into this instance (about \
-        8 GB) so it can be changed: needed to install Google apps or root.";
+    pub const WRITABLE_SYSTEM_HINT: &str = "Copies Android's system into this instance so it \
+        can be changed: needed to install Google apps or root.";
     pub const ADVANCED: &str = "Advanced";
     pub const LOG_LEVEL: &str = "Log";
     pub const LOG_DEFAULT: &str = "default";

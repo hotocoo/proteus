@@ -318,6 +318,9 @@ struct App {
     toolbar_shown: bool,
     /// When the pointer left the shown toolbar, to fold it away a little later.
     toolbar_left: Option<Instant>,
+    /// Where the toolbar (or the button that shows it) was last drawn over the picture, in points:
+    /// presses there are the toolbar's, not the guest's.
+    toolbar_rect: Option<egui::Rect>,
     /// Whether the window has the keyboard and mouse.
     focused: bool,
     /// Android's screen turn, in quarter turns, as last reported.
@@ -429,8 +432,9 @@ impl App {
     fn pointer_pixel(&self) -> Option<(u32, u32)> {
         let (rect, size) = self.picture?;
         let point = self.pointer_points()?;
+        let on_toolbar = self.toolbar_rect.is_some_and(|bar| bar.contains(point));
         self.shown_part
-            .is_some_and(|part| part.contains(point))
+            .is_some_and(|part| !on_toolbar && part.contains(point))
             .then(|| guest_pixel(rect, size, point))?
     }
 
@@ -580,6 +584,7 @@ impl App {
         let mut effects = Vec::new();
         let toolbar_shown = &mut self.toolbar_shown;
         let toolbar_left = &mut self.toolbar_left;
+        let toolbar_rect = &mut self.toolbar_rect;
         let gui = &mut self.gui;
         let texture = &self.picture_texture;
         let editor = &mut self.editor;
@@ -619,6 +624,7 @@ impl App {
                         })
                     })
                     .response;
+                *toolbar_rect = Some(bar.rect);
                 // Folds away by itself once the pointer has left it, unless a panel is open.
                 if bar.contains_pointer() || gui.open.is_some() || editor.is_some() {
                     *toolbar_left = None;
@@ -629,12 +635,13 @@ impl App {
                         _ => {
                             *toolbar_shown = false;
                             *toolbar_left = None;
+                            ui.ctx().request_repaint();
                         }
                     }
                 }
             } else {
                 // Only a small button over the picture's corner, to bring the toolbar back.
-                egui::Area::new(ui.scope_id().with(copy::TOOLBAR_ID))
+                let corner = egui::Area::new(ui.scope_id().with(copy::TOOLBAR_ID))
                     .order(egui::Order::Foreground)
                     .anchor(egui::Align2::RIGHT_TOP, crate::config::SHOW_TOOLBAR_OFFSET)
                     .show(ui.ctx(), |ui| {
@@ -643,8 +650,11 @@ impl App {
                             .on_hover_text(copy::gui::SHOW_TOOLBAR_HINT);
                         if show.clicked() {
                             *toolbar_shown = true;
+                            ui.ctx().request_repaint();
                         }
-                    });
+                    })
+                    .response;
+                *toolbar_rect = Some(corner.rect);
             }
             if let Some(editor) = editor.as_mut() {
                 egui::Panel::right(copy::PANEL_ID)
@@ -1448,6 +1458,7 @@ impl WindowLoop {
             panel_shown: false,
             toolbar_shown: crate::config::TOOLBAR_SHOWN_AT_START,
             toolbar_left: None,
+            toolbar_rect: None,
             focused: true,
             turns: 0,
             sizes,
