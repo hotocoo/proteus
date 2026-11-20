@@ -9,6 +9,9 @@ use vm_memory::GuestMemoryMmap;
 
 use crate::{InterruptLine, copy};
 
+/// Gives memory the guest freed back to the host; needs `madvise`.
+#[cfg(unix)]
+pub mod balloon;
 pub mod blk;
 pub mod console;
 pub mod edid;

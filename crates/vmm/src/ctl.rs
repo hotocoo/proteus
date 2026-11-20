@@ -89,6 +89,8 @@ pub const WORD_STOP: &str = "stop";
 pub const WORD_SHUTDOWN: &str = "shutdown";
 /// Asks Android to power off, as its power menu does.
 const SHUTDOWN_COMMAND: &str = "reboot -p";
+/// Writes everything the guest still holds to its disks.
+const SYNC_COMMAND: &str = "sync";
 const WORD_WAIT: &str = "wait";
 const WORD_RUN: &str = "run";
 const WORD_RECORD: &str = "record";
@@ -630,6 +632,13 @@ impl Controller {
     pub fn shut_down(&self) {
         let boot = self.power.boot();
         let port = self.adb_port.load(Ordering::SeqCst);
+        // Written out first, so that nothing is lost if Android then takes too long to stop.
+        if port != 0
+            && let Err(err) =
+                crate::adb::output_within(port, SYNC_COMMAND, crate::config::SHUTDOWN_SYNC)
+        {
+            log::warn!("{}", copy::setup_failed(&err));
+        }
         let asked = port != 0
             && crate::adb::output_within(port, SHUTDOWN_COMMAND, crate::config::SHUTDOWN_ASK)
                 .is_ok();

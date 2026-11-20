@@ -211,6 +211,10 @@ pub struct Gui {
     status: String,
     /// Frames the guest showed per second, as last counted.
     pub fps: Option<f64>,
+    /// The frame rate of the slowest 1% of recent frames.
+    pub low_fps: Option<f64>,
+    /// How busy the host GPU is, in percent, where the host says.
+    pub gpu: Option<f64>,
     /// This process's CPU use (percent of one core) and memory, as last counted.
     pub cpu: Option<f64>,
     pub memory_bytes: Option<u64>,
@@ -246,6 +250,8 @@ impl Gui {
             open: None,
             status: String::new(),
             fps: None,
+            low_fps: None,
+            gpu: None,
             cpu: None,
             memory_bytes: None,
             apps: Apps::default(),
@@ -357,8 +363,15 @@ impl Gui {
             if let Some(fps) = self.fps {
                 ui.label(text::fps(fps)).on_hover_text(text::FPS_HINT);
             }
+            if let Some(low) = self.low_fps {
+                ui.label(text::low_fps(low))
+                    .on_hover_text(text::LOW_FPS_HINT);
+            }
             if let Some(cpu) = self.cpu {
                 ui.label(text::cpu(cpu)).on_hover_text(text::CPU_HINT);
+            }
+            if let Some(gpu) = self.gpu {
+                ui.label(text::gpu(gpu)).on_hover_text(text::GPU_BUSY_HINT);
             }
             if let Some(bytes) = self.memory_bytes {
                 ui.label(text::memory(bytes))

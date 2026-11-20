@@ -77,7 +77,7 @@ const _: () = {
     assert!(RAM_BASE + RAM_MAX_SIZE <= SHM_BASE);
     assert!(SHM_BASE + SHM_SIZE <= 1 << GPA_BITS);
     assert!(INITRD_OFFSET < FDT_OFFSET);
-    assert!(VIRTIO_NET_SLOT < VIRTIO_MMIO_SLOTS);
+    assert!(VIRTIO_BALLOON_SLOT < VIRTIO_MMIO_SLOTS);
 };
 
 /// Most vCPUs whose redistributors fit below the UART.

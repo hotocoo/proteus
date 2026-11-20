@@ -280,6 +280,8 @@ struct App {
     /// Frames the guest has sent since `counted`, for the debug log's frame rate.
     frames: u32,
     counted: Instant,
+    /// Recent waits between frames, for the 1% low.
+    gaps: crate::usage::FrameGaps,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
     /// Whether the window has the keyboard and mouse.
@@ -858,6 +860,8 @@ impl App {
         let now = crate::usage::read();
         self.gui.fps = Some(f64::from(self.frames) / seconds);
         self.gui.cpu = crate::usage::cpu_percent(&self.usage, &now);
+        self.gui.low_fps = self.gaps.one_percent_low();
+        self.gui.gpu = crate::usage::gpu_percent();
         self.gui.memory_bytes = now.memory_bytes;
         self.usage = now;
         self.frames = 0;
@@ -972,6 +976,7 @@ impl ApplicationHandler<Notice> for App {
             Notice::Frame => {
                 self.frame_waiting = true;
                 self.frames += 1;
+                self.gaps.frame(Instant::now());
             }
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),
@@ -1225,6 +1230,7 @@ impl WindowLoop {
             shutting_down: false,
             frames: 0,
             counted: Instant::now(),
+            gaps: crate::usage::FrameGaps::default(),
         };
         let ran = self.0.run_app(&mut app);
         // The GPU objects go before the window they draw into.

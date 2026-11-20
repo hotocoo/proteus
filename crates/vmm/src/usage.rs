@@ -29,6 +29,120 @@ pub fn cpu_percent(earlier: &Reading, later: &Reading) -> Option<f64> {
     (wall > 0.0).then(|| used / wall * 100.0)
 }
 
+/// Recent waits between the guest's frames, for the 1% low.
+#[derive(Default)]
+pub struct FrameGaps {
+    last: Option<Instant>,
+    gaps: std::collections::VecDeque<Duration>,
+}
+
+impl FrameGaps {
+    /// A frame arrived at `now`.
+    pub fn frame(&mut self, now: Instant) {
+        let gap = self.last.and_then(|last| now.checked_duration_since(last));
+        self.last = Some(now);
+        let Some(gap) = gap.filter(|gap| *gap <= crate::config::LOW_FPS_MAX_GAP) else {
+            return;
+        };
+        if self.gaps.len() == crate::config::LOW_FPS_FRAMES {
+            self.gaps.pop_front();
+        }
+        self.gaps.push_back(gap);
+    }
+
+    /// The frame rate of the slowest 1% of the recent frames (at least one frame).
+    pub fn one_percent_low(&self) -> Option<f64> {
+        const SHARE: usize = 100;
+        let mut gaps: Vec<Duration> = self.gaps.iter().copied().collect();
+        gaps.sort_unstable_by(|a, b| b.cmp(a));
+        let worst = &gaps[..gaps.len().div_ceil(SHARE)];
+        let total: Duration = worst.iter().sum();
+        (!worst.is_empty() && !total.is_zero()).then(|| worst.len() as f64 / total.as_secs_f64())
+    }
+}
+
+/// How busy the host's GPU is, in percent, counting every process. macOS reports it in the
+/// accelerator's `PerformanceStatistics`.
+#[cfg(target_os = "macos")]
+pub fn gpu_percent() -> Option<f64> {
+    use std::ffi::{CStr, c_char, c_void};
+    type CfRef = *const c_void;
+    const MAIN_PORT_DEFAULT: u32 = 0;
+    const UTF8: u32 = 0x0800_0100;
+    const SINT64: isize = 4;
+    const ACCELERATOR: &CStr = c"IOAccelerator";
+    const STATISTICS: &CStr = c"PerformanceStatistics";
+    const UTILIZATION: &CStr = c"Device Utilization %";
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOServiceMatching(name: *const c_char) -> CfRef;
+        fn IOServiceGetMatchingServices(port: u32, matching: CfRef, found: *mut u32) -> i32;
+        fn IOIteratorNext(iterator: u32) -> u32;
+        fn IOObjectRelease(object: u32) -> i32;
+        fn IORegistryEntryCreateCFProperty(entry: u32, key: CfRef, a: CfRef, o: u32) -> CfRef;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringCreateWithCString(a: CfRef, text: *const c_char, encoding: u32) -> CfRef;
+        fn CFDictionaryGetValue(dict: CfRef, key: CfRef) -> CfRef;
+        fn CFDictionaryGetTypeID() -> usize;
+        fn CFNumberGetValue(number: CfRef, kind: isize, value: *mut c_void) -> bool;
+        fn CFNumberGetTypeID() -> usize;
+        fn CFGetTypeID(object: CfRef) -> usize;
+        fn CFRelease(object: CfRef);
+    }
+    // SAFETY: plain IOKit/CoreFoundation calls; every object created here is released here, and
+    // values read out of a dictionary are only used while the dictionary is held.
+    unsafe {
+        let mut found = 0;
+        let matching = IOServiceMatching(ACCELERATOR.as_ptr());
+        // Takes ownership of `matching`.
+        if matching.is_null()
+            || IOServiceGetMatchingServices(MAIN_PORT_DEFAULT, matching, &mut found) != 0
+        {
+            return None;
+        }
+        let statistics = CFStringCreateWithCString(std::ptr::null(), STATISTICS.as_ptr(), UTF8);
+        let utilization = CFStringCreateWithCString(std::ptr::null(), UTILIZATION.as_ptr(), UTF8);
+        let mut busy = None;
+        loop {
+            let service = IOIteratorNext(found);
+            if service == 0 {
+                break;
+            }
+            let dict = IORegistryEntryCreateCFProperty(service, statistics, std::ptr::null(), 0);
+            IOObjectRelease(service);
+            if dict.is_null() {
+                continue;
+            }
+            if busy.is_none() && CFGetTypeID(dict) == CFDictionaryGetTypeID() {
+                let number = CFDictionaryGetValue(dict, utilization);
+                let mut value: i64 = 0;
+                if !number.is_null()
+                    && CFGetTypeID(number) == CFNumberGetTypeID()
+                    && CFNumberGetValue(number, SINT64, (&raw mut value).cast())
+                {
+                    busy = Some(value as f64);
+                }
+            }
+            CFRelease(dict);
+        }
+        IOObjectRelease(found);
+        for key in [statistics, utilization] {
+            if !key.is_null() {
+                CFRelease(key);
+            }
+        }
+        busy
+    }
+}
+
+/// Other hosts do not say how busy their GPU is in a way read cheaply here.
+#[cfg(not(target_os = "macos"))]
+pub fn gpu_percent() -> Option<f64> {
+    None
+}
+
 #[cfg(windows)]
 fn cpu_time() -> Duration {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -124,5 +238,30 @@ mod tests {
         let cpu = cpu_percent(&before, &after).unwrap();
         assert!(cpu > 0.0, "{cpu}");
         assert!(after.memory_bytes.unwrap() > 0);
+    }
+
+    #[test]
+    fn one_percent_low_is_the_slowest_frames_and_skips_still_screens() {
+        let mut gaps = FrameGaps::default();
+        assert_eq!(gaps.one_percent_low(), None);
+        let start = Instant::now();
+        let mut at = start;
+        // 198 frames 10 ms apart, two 50 ms stutters, and a still screen of 5 s.
+        for index in 0..200 {
+            at += Duration::from_millis(if index % 100 == 50 { 50 } else { 10 });
+            gaps.frame(at);
+        }
+        at += Duration::from_secs(5);
+        gaps.frame(at);
+        let low = gaps.one_percent_low().unwrap();
+        assert!((low - 20.0).abs() < 0.01, "{low}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gpu_busy_share_is_a_percentage() {
+        if let Some(busy) = gpu_percent() {
+            assert!((0.0..=100.0).contains(&busy), "{busy}");
+        }
     }
 }

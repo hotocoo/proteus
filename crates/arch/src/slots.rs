@@ -13,6 +13,8 @@ pub const VIRTIO_CONSOLE_SLOT: u32 = 9;
 /// There are two because the image's optional Wi-Fi wrapper wants the real card to be the third.
 pub const VIRTIO_SPARE_NET_SLOTS: [u32; 2] = [10, 11];
 pub const VIRTIO_NET_SLOT: u32 = 12;
+/// Last, so that adding it renumbers no other device.
+pub const VIRTIO_BALLOON_SLOT: u32 = 13;
 
 const _: () = {
     assert!(VIRTIO_DISK_SLOTS <= VIRTIO_GPU_SLOT && VIRTIO_GPU_SLOT < VIRTIO_TOUCH_SLOT);
@@ -22,4 +24,5 @@ const _: () = {
     assert!(VIRTIO_CONSOLE_SLOT < VIRTIO_SPARE_NET_SLOTS[0]);
     assert!(VIRTIO_SPARE_NET_SLOTS[0] < VIRTIO_SPARE_NET_SLOTS[1]);
     assert!(VIRTIO_SPARE_NET_SLOTS[1] < VIRTIO_NET_SLOT);
+    assert!(VIRTIO_NET_SLOT < VIRTIO_BALLOON_SLOT);
 };

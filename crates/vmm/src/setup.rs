@@ -37,7 +37,9 @@ const UWB_OFF: &str = "cmd uwb disable-uwb; \
 /// Turns off parts of the image a game machine has no use for, every boot (an update of the image
 /// could bring them back): Android's ad services and the on-device ad and learning services that
 /// feed them, remote key provisioning (it calls Google's servers), device-lock financing, printing,
-/// screensavers, satellite messaging and demo and tracing apps. `pm enable <package>` brings one
+/// screensavers, satellite messaging, demo and tracing apps, and phone extras with no modem or
+/// SIM behind them (SMS, emergency broadcasts, carrier calling setup), the stock calendar and
+/// camera, work-profile setup, diagnostics and app-link checking. `pm enable <package>` brings one
 /// back. Packages the image does not have, or will not let go, are skipped.
 const GAMING_TRIM: &str = "for package in \
      com.android.adservices.api com.android.federatedcompute.services \
@@ -45,7 +47,12 @@ const GAMING_TRIM: &str = "for package in \
      com.android.devicelockcontroller com.android.printspooler com.android.bips \
      com.android.printservice.recommendation com.android.dreams.basic \
      com.android.dreams.phototable com.google.android.telephony.satellite \
-     com.android.threadnetwork.demoapp com.android.traceur com.android.wallpaper.livepicker; \
+     com.android.threadnetwork.demoapp com.android.traceur com.android.wallpaper.livepicker \
+     com.android.messaging com.android.cellbroadcastreceiver \
+     com.android.cellbroadcastreceiver.module com.android.imsserviceentitlement \
+     com.android.calendar com.android.providers.calendar com.android.camera2 \
+     com.android.managedprovisioning com.android.devicediagnostics \
+     com.android.statementservice; \
      do pm disable-user --user 0 $package >/dev/null 2>&1; done";
 /// Stops the image's radio and Thread network services. They are Cuttlefish's, made for its host
 /// tools: the radio service exits at once without Cuttlefish's modem simulator, and the Thread
@@ -55,6 +62,13 @@ const GAMING_TRIM: &str = "for package in \
 const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
      su 0 cmd thread_network force-stop-ot-daemon enabled; \
      su 0 setprop ctl.stop vendor.threadnetwork_hal; su 0 setprop ctl.stop vendor.ril-daemon";
+/// Keeps little unwritten data in the guest. By default Linux holds up to a fifth of RAM (1.6 GB
+/// with 8 GB) in its cache before writing it out, and a machine that stops without a clean
+/// shutdown loses all of it: a game download went back from 4.8 to 3.6 GB that way. With these,
+/// at most a few seconds' worth is ever at risk, and disk writes come in a steady stream.
+const DIRTY_LIMITS: &str = "su 0 sh -c 'echo 33554432 > /proc/sys/vm/dirty_background_bytes; \
+     echo 268435456 > /proc/sys/vm/dirty_bytes; echo 500 > /proc/sys/vm/dirty_expire_centisecs; \
+     echo 100 > /proc/sys/vm/dirty_writeback_centisecs'";
 /// Makes apps share memory through memfd. The guest kernel has no `/dev/ashmem`, and without this
 /// Android still tries it: every shared bitmap (a notification's icon, say) and database cursor
 /// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
@@ -143,6 +157,7 @@ fn booted(adb_port: &AtomicU16, done: &AtomicBool) -> Option<u16> {
 
 fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Path>) {
     let mut steps = vec![
+        DIRTY_LIMITS,
         SHARED_MEMORY,
         DISK_QUEUES,
         BLUETOOTH_OFF,

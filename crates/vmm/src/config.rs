@@ -313,10 +313,17 @@ pub const USERDATA_GIB_RANGE: std::ops::RangeInclusive<u64> = 4..=256;
 pub const LIST_ROWS: usize = 2;
 /// How often the toolbar's frame counter (and the trace log) counts the guest's frame rate.
 pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
+/// Frames the toolbar's 1% low is worked out over: about 7 s at 144 fps, 17 s at 60 fps.
+pub const LOW_FPS_FRAMES: usize = 1000;
+/// A longer wait between frames is a still screen (Android sends no frame when nothing changes),
+/// not a stutter, so it is left out of the 1% low.
+pub const LOW_FPS_MAX_GAP: Duration = Duration::from_millis(250);
 /// How long Android may take to answer the request to shut down, and to finish shutting down,
 /// before the power is cut.
 pub const SHUTDOWN_ASK: Duration = Duration::from_secs(5);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the guest gets to write out what it holds before it is asked to shut down.
+pub const SHUTDOWN_SYNC: Duration = Duration::from_secs(30);
 pub const SHUTDOWN_THREAD: &str = "shutdown";
 /// How many input commands wait for a slow follower before more are dropped.
 pub const SYNC_QUEUE: usize = 256;

@@ -741,6 +741,16 @@ pub mod gui {
     pub fn fps(rate: f64) -> String {
         format!("{rate:.0} fps")
     }
+    pub const LOW_FPS_HINT: &str = "The frame rate of the slowest 1% of recent frames: how bad the \
+        stutters are. Close to the fps above means smooth.";
+    pub fn low_fps(rate: f64) -> String {
+        format!("1% low {rate:.0}")
+    }
+    pub const GPU_BUSY_HINT: &str = "How busy this computer's GPU was, counting every app, not only \
+        this emulator.";
+    pub fn gpu(percent: f64) -> String {
+        format!("GPU {percent:.0}%")
+    }
     pub const CPU_HINT: &str = "Host CPU this emulator used in the last second, as a share of one \
         core: 400% is four cores busy.";
     pub fn cpu(percent: f64) -> String {

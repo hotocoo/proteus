@@ -12,6 +12,10 @@ CONFIG_HW_RANDOM_VIRTIO=y
 CONFIG_DRM=y
 CONFIG_DRM_VIRTIO_GPU=y
 CONFIG_SND_VIRTIO=y
+# Free page reporting: the guest hands the memory it frees back to the host, so the emulator's
+# memory follows what Android uses instead of only ever growing.
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_PAGE_REPORTING=y
 
 CONFIG_EROFS_FS=y
 CONFIG_F2FS_FS=y

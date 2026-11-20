@@ -541,38 +541,46 @@ fn drain_control(
     mode: DisplayMode,
 ) -> Result<bool, virtio_queue::Error> {
     let mut used_any = false;
-    while let Some(chain) = queue.pop_descriptor_chain(mem) {
-        let head = chain.head_index();
-        let mut request = [0u8; HEADER_LEN];
-        // A chain too short to hold a header, or with no room for an answer, is returned unused.
-        let handled = chain.clone().reader(mem).ok().and_then(|mut reader| {
-            reader.read_exact(&mut request).ok()?;
-            Some(match backend {
-                Backend::Plain(display) => (display.handle(mem, &request, &mut reader), None),
-                Backend::Accelerated(gpu) => gpu.handle(mode, mem, &request, &mut reader),
-            })
-        });
-        let (response, fence) = handled.unzip();
-        let written = response
-            .and_then(|response| {
-                let mut writer = chain.writer(mem).ok()?;
-                writer.write_all(&response).ok()?;
-                Some(writer.bytes_written())
-            })
-            .unwrap_or(0);
-        // The answer is in the guest's buffer already; a fenced one is handed back when its fence
-        // is done, which is what tells the guest the fence signalled.
-        match (fence.flatten(), &mut *backend) {
-            (Some(fence), Backend::Accelerated(gpu)) => {
-                gpu.pending.hold(fence, (head, written as u32))
-            }
-            _ => {
-                queue.add_used(mem, head, written as u32)?;
-                used_any = true;
+    // The guest is told not to kick while commands are being answered: it sends thousands a
+    // second, and each kick is a trip out of the guest and a wake of this thread.
+    queue.disable_notification(mem)?;
+    loop {
+        while let Some(chain) = queue.pop_descriptor_chain(mem) {
+            let head = chain.head_index();
+            let mut request = [0u8; HEADER_LEN];
+            // A chain too short to hold a header, or with no room for an answer, is returned unused.
+            let handled = chain.clone().reader(mem).ok().and_then(|mut reader| {
+                reader.read_exact(&mut request).ok()?;
+                Some(match backend {
+                    Backend::Plain(display) => (display.handle(mem, &request, &mut reader), None),
+                    Backend::Accelerated(gpu) => gpu.handle(mode, mem, &request, &mut reader),
+                })
+            });
+            let (response, fence) = handled.unzip();
+            let written = response
+                .and_then(|response| {
+                    let mut writer = chain.writer(mem).ok()?;
+                    writer.write_all(&response).ok()?;
+                    Some(writer.bytes_written())
+                })
+                .unwrap_or(0);
+            // The answer is in the guest's buffer already; a fenced one is handed back when its fence
+            // is done, which is what tells the guest the fence signalled.
+            match (fence.flatten(), &mut *backend) {
+                (Some(fence), Backend::Accelerated(gpu)) => {
+                    gpu.pending.hold(fence, (head, written as u32))
+                }
+                _ => {
+                    queue.add_used(mem, head, written as u32)?;
+                    used_any = true;
+                }
             }
         }
+        // Re-arming reports commands that slipped in after the last pop; go round again for those.
+        if !queue.enable_notification(mem)? {
+            return Ok(used_any);
+        }
     }
-    Ok(used_any)
 }
 
 /// Cursor updates need no answer; their buffers are just handed back.

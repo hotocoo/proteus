@@ -726,6 +726,8 @@ pub fn run_in(
         .then_some(layout::VIRTIO_GAMEPAD_SLOT);
     let console_slot = config.android.as_ref().map(|_| layout::VIRTIO_CONSOLE_SLOT);
     let sound_slot = config.sound.then_some(layout::VIRTIO_SOUND_SLOT);
+    // Freed guest memory goes back to the host; only Unix hosts can drop the pages behind it.
+    let balloon_slot = cfg!(unix).then_some(layout::VIRTIO_BALLOON_SLOT);
     // An Android image expects its network card to be the third one; two cards with no cable
     // come before it. They are only there with a real card to give a name to.
     let spare_net_slots: &[u32] = match (&config.android, net_slot) {
@@ -740,6 +742,7 @@ pub fn run_in(
         .chain(console_slot)
         .chain(spare_net_slots.iter().copied())
         .chain(net_slot)
+        .chain(balloon_slot)
         .collect();
     virtio_slots.sort_unstable();
     #[cfg(target_arch = "aarch64")]
@@ -879,6 +882,10 @@ pub fn run_in(
     if let Some(options) = &config.net {
         let (network, mac) = network(options, resolver, Arc::clone(&controller.adb_port))?;
         attach(layout::VIRTIO_NET_SLOT, Box::new(Net::new(network, mac)))?;
+    }
+    #[cfg(unix)]
+    if let Some(slot) = balloon_slot {
+        attach(slot, Box::new(devices::virtio::balloon::Balloon::new()))?;
     }
     if let Some(slot) = console_slot {
         let mut sinks: Vec<Option<PortSink>> = Vec::new();

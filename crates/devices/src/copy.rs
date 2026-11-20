@@ -60,6 +60,11 @@ pub const INPUT_WORKER_GONE: &str = "input worker thread ended unexpectedly";
 pub const CONSOLE_WORKER_NAME: &str = "virtio-console";
 pub const SOUND_WORKER_NAME: &str = "virtio-snd";
 pub const SOUND_WORKER_GONE: &str = "sound worker thread ended unexpectedly";
+pub const BALLOON_WORKER_NAME: &str = "virtio-balloon";
+pub const BALLOON_WORKER_GONE: &str = "memory-return worker thread ended unexpectedly";
+pub fn balloon_discard_failed(err: &std::io::Error) -> String {
+    format!("could not give freed guest memory back to the host: {err}")
+}
 pub const CONSOLE_WORKER_GONE: &str = "console worker thread ended unexpectedly";
 
 pub fn gpu_renderer_refused(what: &str, why: &dyn std::fmt::Display) -> String {
