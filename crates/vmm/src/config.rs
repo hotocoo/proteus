@@ -193,7 +193,7 @@ pub fn home_default() -> Option<PathBuf> {
     Some(renamed(base.join(APP_FOLDER), base.join(OLD_NAME)))
 }
 /// The name the program had before it was Proteus; its folders are moved over on first use.
-const OLD_NAME: &str = "emu";
+pub const OLD_NAME: &str = "emu";
 /// `new`, after moving `old` there if only `old` exists, so data kept under the old name stays.
 pub fn renamed(new: PathBuf, old: PathBuf) -> PathBuf {
     if !new.exists() && old.is_dir() {

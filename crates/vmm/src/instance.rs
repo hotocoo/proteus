@@ -201,7 +201,7 @@ pub fn args(root: &Path, name: &str) -> io::Result<Vec<String>> {
                 _ => err,
             }
         })?;
-    Ok(text.lines().map(str::to_owned).collect())
+    Ok(text.lines().map(|line| moved_home(root, line)).collect())
 }
 
 /// Saves new options for an instance that exists; it starts with them next time.
@@ -260,6 +260,24 @@ pub fn wipe_data(root: &Path, name: &str) -> io::Result<()> {
     }
 }
 
+/// `line` with the home folder's old name (from before the rename to Proteus) changed to the
+/// one `root` is in: the folder was moved over, and saved options still name files in it.
+fn moved_home(root: &Path, line: &str) -> String {
+    let Some(home) = root.parent() else {
+        return line.to_owned();
+    };
+    let Some(old) = home.parent().map(|base| base.join(crate::config::OLD_NAME)) else {
+        return line.to_owned();
+    };
+    let (old, new) = (old.to_string_lossy(), home.to_string_lossy());
+    match line.strip_prefix(old.as_ref()) {
+        Some(rest) if rest.is_empty() || rest.starts_with(std::path::MAIN_SEPARATOR) => {
+            format!("{new}{rest}")
+        }
+        _ => line.to_owned(),
+    }
+}
+
 /// The arguments that start an instance: the ones it was created with, its own data folder and
 /// socket, then `extra`.
 pub fn start_args(root: &Path, name: &str, extra: &[OsString]) -> io::Result<Vec<OsString>> {
@@ -268,7 +286,10 @@ pub fn start_args(root: &Path, name: &str, extra: &[OsString]) -> io::Result<Vec
         io::ErrorKind::NotFound => io::Error::new(err.kind(), copy::INSTANCE_UNKNOWN),
         _ => err,
     })?;
-    let mut args: Vec<OsString> = text.lines().map(OsString::from).collect();
+    let mut args: Vec<OsString> = text
+        .lines()
+        .map(|line| OsString::from(moved_home(root, line)))
+        .collect();
     args.extend([
         OWN_OPTIONS[0].into(),
         dir.join(DATA_DIR).into(),
@@ -334,6 +355,23 @@ pub fn remove(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn options_naming_the_old_home_follow_it_to_the_new_one() {
+        let root = Path::new("/Users/me/Library/Application Support/proteus/instances");
+        assert_eq!(
+            moved_home(
+                root,
+                "/Users/me/Library/Application Support/emu/images/phone"
+            ),
+            "/Users/me/Library/Application Support/proteus/images/phone"
+        );
+        assert_eq!(
+            moved_home(root, "/Users/me/Library/Application Support/emulator/x"),
+            "/Users/me/Library/Application Support/emulator/x"
+        );
+        assert_eq!(moved_home(root, "--gpu"), "--gpu");
+    }
 
     fn scratch(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("proteus-{test}-{}", std::process::id()));
