@@ -84,6 +84,9 @@ pub fn gpu_renderer_failed(why: &dyn std::fmt::Display) -> String {
     format!("virtio-gpu: the host renderer did not start, so the display is unaccelerated: {why}")
 }
 
+pub fn gpu_readback_failed(code: u32) -> String {
+    format!("virtio-gpu: reading back a frame failed ({code:#x})")
+}
 pub fn gpu_readback(frames: u32, took: std::time::Duration, over: std::time::Duration) -> String {
     let average = took.as_secs_f64() * 1000.0 / f64::from(frames.max(1));
     format!(

@@ -302,6 +302,10 @@ pub struct Gpu3d {
     readback: (u32, std::time::Duration, std::time::Instant),
     /// A presented frame's pixel buffer, kept to read the next one into.
     spare: Vec<u8>,
+    /// The scanout flushed and not yet read back. It is read after the flush is answered, so
+    /// the guest gets on with its next frame meanwhile; nothing the guest sends after the flush
+    /// runs before the read, so the frame cannot change under it.
+    due: Option<Scanout>,
 }
 
 fn renderer_failed(what: &str) -> impl Fn(String) -> u32 + '_ {
@@ -369,6 +373,7 @@ impl Gpu3d {
             scanout: None,
             readback: (0, std::time::Duration::ZERO, std::time::Instant::now()),
             spare: Vec::new(),
+            due: None,
         }
     }
 
@@ -727,11 +732,27 @@ impl Gpu3d {
         }
     }
 
-    /// The shown resource flushed: its pixels, read back from the renderer, to present.
+    /// The shown resource flushed: noted, to be read back by `read_back`.
     fn flush(&mut self, resource: u32) -> Result<Answer, u32> {
-        let Some(shown) = self.scanout.filter(|shown| shown.resource == resource) else {
-            return Ok(Answer::NoData);
-        };
+        if let Some(shown) = self.scanout.filter(|shown| shown.resource == resource) {
+            self.due = Some(shown);
+        }
+        Ok(Answer::NoData)
+    }
+
+    /// Whether a flushed frame waits to be read back.
+    pub fn frame_due(&self) -> bool {
+        self.due.is_some()
+    }
+
+    /// The flushed frame's pixels, read back from the renderer, to present. `None` when no
+    /// frame waits.
+    pub fn read_back(&mut self) -> Option<Result<Answer, u32>> {
+        let shown = self.due.take()?;
+        Some(self.read(shown))
+    }
+
+    fn read(&mut self, shown: Scanout) -> Result<Answer, u32> {
         let stride = shown.width.checked_mul(BYTES_PER_PIXEL);
         let len = stride.and_then(|stride| (stride as usize).checked_mul(shown.height as usize));
         let (Some(stride), Some(len)) = (stride, len) else {
@@ -741,7 +762,7 @@ impl Gpu3d {
         let mut pixels = std::mem::take(&mut self.spare);
         pixels.resize(len, 0);
         let transfer = Transfer {
-            resource,
+            resource: shown.resource,
             x: shown.x,
             y: shown.y,
             width: shown.width,
@@ -1095,7 +1116,11 @@ mod tests {
             run(&mut gpu, CMD_SET_SCANOUT, 0, &words(&[0, 0, 64, 32, 0, 5])),
             Ok(Answer::NoData)
         );
-        let flushed = run(&mut gpu, CMD_FLUSH, 0, &words(&[0, 0, 64, 32, 5, 0])).unwrap();
+        assert_eq!(
+            run(&mut gpu, CMD_FLUSH, 0, &words(&[0, 0, 64, 32, 5, 0])),
+            Ok(Answer::NoData)
+        );
+        let flushed = gpu.read_back().unwrap().unwrap();
         let Answer::Frame {
             width,
             height,
@@ -1115,6 +1140,7 @@ mod tests {
             run(&mut gpu, CMD_FLUSH, 0, &words(&[0, 0, 1, 1, 6, 0])),
             Ok(Answer::NoData)
         );
+        assert!(gpu.read_back().is_none());
         assert_eq!(
             run(&mut gpu, CMD_SET_SCANOUT, 0, &words(&[0, 0, 1, 1, 1, 5])),
             Err(RESP_ERR_INVALID_SCANOUT_ID)

@@ -474,6 +474,26 @@ struct Accelerated {
 }
 
 impl Accelerated {
+    /// Reads back and presents the frame the guest flushed, if one waits.
+    fn present_due(&mut self) {
+        match self.gpu.read_back() {
+            Some(Ok(super::gpu3d::Answer::Frame {
+                width,
+                height,
+                format,
+                pixels,
+            })) => {
+                let spare = match &self.sink {
+                    Some(sink) => sink.present_owned(width, height, format, pixels),
+                    None => pixels,
+                };
+                self.gpu.recycle(spare);
+            }
+            Some(Err(code)) => log::debug!("{}", copy::gpu_readback_failed(code)),
+            Some(Ok(_)) | None => {}
+        }
+    }
+
     /// The answer to one control command, and the fence it waits for, if any.
     fn handle(
         &mut self,
@@ -496,23 +516,7 @@ impl Accelerated {
             return (edid_response(mode, request, body), None);
         }
         let (kind, answer) = match self.gpu.execute(mem, &header, body) {
-            Ok(answer) => {
-                let response = answer.response();
-                if let super::gpu3d::Answer::Frame {
-                    width,
-                    height,
-                    format,
-                    pixels,
-                } = answer
-                {
-                    let spare = match &self.sink {
-                        Some(sink) => sink.present_owned(width, height, format, pixels),
-                        None => pixels,
-                    };
-                    self.gpu.recycle(spare);
-                }
-                response
-            }
+            Ok(answer) => answer.response(),
             Err(error) => (error, Vec::new()),
         };
         // The answer waits for the fence, if the renderer takes it; otherwise it goes now.
@@ -539,6 +543,7 @@ fn drain_control(
     mem: &GuestMemoryMmap,
     backend: &mut Backend,
     mode: DisplayMode,
+    irq: &VirtioInterrupt,
 ) -> Result<bool, virtio_queue::Error> {
     let mut used_any = false;
     // The guest is told not to kick while commands are being answered: it sends thousands a
@@ -574,6 +579,16 @@ fn drain_control(
                     queue.add_used(mem, head, written as u32)?;
                     used_any = true;
                 }
+            }
+            // A flushed frame is read back after the guest has its answer, so that it can start
+            // the next frame while the host copies this one.
+            if let Backend::Accelerated(gpu) = backend
+                && gpu.gpu.frame_due()
+            {
+                if used_any {
+                    irq.signal_used();
+                }
+                gpu.present_due();
             }
         }
         // Re-arming reports commands that slipped in after the last pop; go round again for those.
@@ -671,7 +686,7 @@ fn serve(
     };
     loop {
         let used = match wake.recv() {
-            Ok(Wake::Queue) => drain_control(&mut control, &mem, &mut backend, mode)
+            Ok(Wake::Queue) => drain_control(&mut control, &mem, &mut backend, mode, &irq)
                 .and_then(|a| drain_cursor(&mut cursor, &mem).map(|b| a | b)),
             Ok(Wake::Fence(done)) => {
                 let Backend::Accelerated(gpu) = &mut backend else {
@@ -1371,8 +1386,9 @@ mod tests {
         mock.add_desc_chains(&chains, 0).unwrap();
         let mut queue: Queue = mock.create_queue().unwrap();
         let mut display = Backend::Plain(display(None));
+        let irq = VirtioInterrupt::new(Arc::new(crate::virtio::testing::LineLog::default()));
 
-        assert!(drain_control(&mut queue, &mem, &mut display, MODE).unwrap());
+        assert!(drain_control(&mut queue, &mem, &mut display, MODE, &irq).unwrap());
         let used_len = |index: u64| -> u32 {
             mem.read_obj(mock.used_addr().unchecked_add(4 + index * 8 + 4))
                 .unwrap()
@@ -1393,7 +1409,7 @@ mod tests {
             )
         );
         assert!(
-            !drain_control(&mut queue, &mem, &mut display, MODE).unwrap(),
+            !drain_control(&mut queue, &mem, &mut display, MODE, &irq).unwrap(),
             "nothing left"
         );
     }
