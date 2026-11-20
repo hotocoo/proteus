@@ -147,7 +147,8 @@ pub fn spawn(
                 };
                 set_up(port, keep_log_stream, reset_shape, data.as_deref());
                 // Until this boot is over; `done` is looked at now and then meanwhile.
-                let mut trimmed = std::time::Instant::now();
+                // Booting reads gigabytes the cache keeps; dropped now, not a minute later.
+                let mut trimmed = std::time::Instant::now() - CACHE_TRIM_PERIOD;
                 while !done.load(Ordering::SeqCst) && !power.wait_for(boot, SETUP_POLL) {
                     if trimmed.elapsed() >= CACHE_TRIM_PERIOD {
                         trimmed = std::time::Instant::now();

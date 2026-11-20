@@ -783,6 +783,10 @@ pub mod gui {
     pub const PRESET_LOW_END: &str = "Low-end";
     pub const PRESETS_HINT: &str =
         "Sets memory, CPUs, frame rate and GPU in one click; change any of them after.";
+    pub const HIDE_TOOLBAR: &str = "Hide ›";
+    pub const HIDE_TOOLBAR_HINT: &str = "Hide the toolbar; the picture takes its room. ⌘\\ also.";
+    pub const SHOW_TOOLBAR: &str = "‹";
+    pub const SHOW_TOOLBAR_HINT: &str = "Show the toolbar. ⌘\\ also.";
     pub const SCREEN_SHAPE: &str = "Screen shape";
     pub const SCREEN_SHAPE_FREE: &str = "Free";
     pub const SCREEN_SHAPE_HINT: &str = "The window snaps to this shape when you stop resizing it, \

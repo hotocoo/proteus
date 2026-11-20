@@ -629,6 +629,17 @@ impl Controller {
     /// Shuts Android down the way its power menu does, so everything is written to disk, then
     /// switches the machine off. If Android cannot be asked, or has not finished within
     /// `SHUTDOWN_TIMEOUT`, the power is cut anyway. Blocks until then.
+    /// Writes everything the guest still holds to its disks, if Android is up.
+    pub fn sync_guest(&self) {
+        let port = self.adb_port.load(Ordering::SeqCst);
+        if port != 0
+            && let Err(err) =
+                crate::adb::output_within(port, SYNC_COMMAND, crate::config::SHUTDOWN_SYNC)
+        {
+            log::warn!("{}", copy::setup_failed(&err));
+        }
+    }
+
     pub fn shut_down(&self) {
         let boot = self.power.boot();
         let port = self.adb_port.load(Ordering::SeqCst);

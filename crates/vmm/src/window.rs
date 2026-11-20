@@ -134,6 +134,8 @@ enum Shortcut {
     /// Turn the device a quarter turn: clockwise when true.
     Turn(bool),
     Screenshot,
+    /// Hide or show the toolbar.
+    Toolbar,
 }
 
 /// Whether the shortcut modifier is held: ⌘ on a Mac, Ctrl+Alt elsewhere (the Windows/Super key
@@ -162,6 +164,7 @@ fn shortcut(key: KeyCode, shift: bool) -> Option<Shortcut> {
         KeyCode::ArrowLeft => Shortcut::Turn(false),
         KeyCode::ArrowRight => Shortcut::Turn(true),
         KeyCode::KeyS => Shortcut::Screenshot,
+        KeyCode::Backslash => Shortcut::Toolbar,
         _ => return None,
     })
 }
@@ -289,6 +292,8 @@ struct App {
     gaps: crate::usage::FrameGaps,
     /// Whether a panel was beside the picture when the window last drew.
     panel_shown: bool,
+    /// Whether the toolbar is out; hidden, the picture takes its room.
+    toolbar_shown: bool,
     /// Whether the window has the keyboard and mouse.
     focused: bool,
     /// Android's screen turn, in quarter turns, as last reported.
@@ -547,6 +552,7 @@ impl App {
             return;
         };
         let mut effects = Vec::new();
+        let toolbar_shown = &mut self.toolbar_shown;
         let gui = &mut self.gui;
         let texture = &self.picture_texture;
         let editor = &mut self.editor;
@@ -555,13 +561,37 @@ impl App {
         let mut seen_space = None;
         let logical = self.logical;
         shown.painter.paint(&shown.window, |ui| {
-            egui::Panel::right(copy::TOOLBAR_ID)
-                .resizable(false)
-                .exact_size(TOOLBAR_WIDTH)
-                // Scrolls when the window is shorter than the buttons.
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| gui.toolbar(ui, &mut effects))
-                });
+            if *toolbar_shown {
+                egui::Panel::right(copy::TOOLBAR_ID)
+                    .resizable(false)
+                    .exact_size(TOOLBAR_WIDTH)
+                    // Scrolls when the window is shorter than the buttons.
+                    .show(ui, |ui| {
+                        let hide = ui
+                            .add_sized(
+                                [ui.available_width(), crate::config::TOOLBAR_BUTTON_HEIGHT],
+                                egui::Button::new(copy::gui::HIDE_TOOLBAR),
+                            )
+                            .on_hover_text(copy::gui::HIDE_TOOLBAR_HINT);
+                        if hide.clicked() {
+                            *toolbar_shown = false;
+                        }
+                        egui::ScrollArea::vertical().show(ui, |ui| gui.toolbar(ui, &mut effects))
+                    });
+            } else {
+                // Only a small button over the picture's corner, to bring the toolbar back.
+                egui::Area::new(ui.scope_id().with(copy::TOOLBAR_ID))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::RIGHT_TOP, crate::config::SHOW_TOOLBAR_OFFSET)
+                    .show(ui.ctx(), |ui| {
+                        let show = ui
+                            .button(copy::gui::SHOW_TOOLBAR)
+                            .on_hover_text(copy::gui::SHOW_TOOLBAR_HINT);
+                        if show.clicked() {
+                            *toolbar_shown = true;
+                        }
+                    });
+            }
             if let Some(editor) = editor.as_mut() {
                 egui::Panel::right(copy::PANEL_ID)
                     .resizable(false)
@@ -575,10 +605,19 @@ impl App {
                         gui.panel(ui, &mut effects);
                     });
             }
-            if !gui.status().is_empty() {
-                egui::Panel::bottom(copy::STATUS_ID).show(ui, |ui| {
-                    ui.label(gui.status());
-                });
+            // A pop-up over the bottom of the picture that goes away by itself, so that it never
+            // takes room from the game or hides it for long.
+            if let Some((status, left)) = gui.status() {
+                egui::Area::new(ui.scope_id().with(copy::STATUS_ID))
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_BOTTOM, crate::config::STATUS_OFFSET)
+                    .interactable(false)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(status);
+                        });
+                    });
+                ui.ctx().request_repaint_after(left);
             }
             egui::CentralPanel::no_frame().show(ui, |ui| {
                 let space = ui.max_rect();
@@ -840,6 +879,10 @@ impl App {
                 self.send(Command::Rotate([0.0, 0.0, degrees]));
             }
             Shortcut::Screenshot => self.gui.screenshot(),
+            Shortcut::Toolbar => {
+                self.toolbar_shown = !self.toolbar_shown;
+                self.draw();
+            }
         }
     }
 
@@ -1204,6 +1247,40 @@ impl ApplicationHandler<Notice> for App {
 /// thread; that is a rule of the host's window system.
 pub struct WindowLoop(EventLoop<Notice>);
 
+/// The machine a quit from macOS (⌘Q, the Dock, logging out) must not cut off.
+/// Emptied once the window has shut the machine down itself.
+static QUITTING: std::sync::Mutex<Option<Arc<Controller>>> = std::sync::Mutex::new(None);
+static GUARDED: std::sync::Once = std::sync::Once::new();
+
+/// A quit from macOS ends the process with `exit` without passing through the window: the guest
+/// is not shut down, and gfxstream's threads crash on its locks as they are torn down. This runs
+/// first among the exit handlers (it is registered after gfxstream's): it writes out what Android
+/// holds, then ends the process before anything is torn down under the running machine.
+fn guard_quit(controller: &Arc<Controller>) {
+    extern "C" fn on_exit() {
+        let controller = QUITTING.lock().ok().and_then(|mut held| held.take());
+        if let Some(controller) = controller {
+            controller.sync_guest();
+            // SAFETY: ends the process at once; nothing after this needs to run.
+            unsafe { libc::_exit(0) };
+        }
+    }
+    if let Ok(mut held) = QUITTING.lock() {
+        *held = Some(Arc::clone(controller));
+    }
+    // SAFETY: registers a plain function with no captured state, once.
+    GUARDED.call_once(|| unsafe {
+        libc::atexit(on_exit);
+    });
+}
+
+/// The window has shut the machine down; a later `exit` is an ordinary one.
+fn unguard_quit() {
+    if let Ok(mut held) = QUITTING.lock() {
+        *held = None;
+    }
+}
+
 impl WindowLoop {
     pub fn new() -> Result<Self, VmmError> {
         let event_loop = EventLoop::<Notice>::with_user_event().build();
@@ -1233,6 +1310,7 @@ impl WindowLoop {
         instance: Option<String>,
         screen_shape: Option<f32>,
     ) -> Result<crate::Exit, VmmError> {
+        guard_quit(&controller);
         let notify = Arc::new(self.notifier());
         let link = self.notifier();
         *controller
@@ -1278,6 +1356,7 @@ impl WindowLoop {
             device_turns: 0,
             exit: crate::Exit::Closed,
             panel_shown: false,
+            toolbar_shown: true,
             focused: true,
             turns: 0,
             sizes: [None; 2],
@@ -1288,6 +1367,7 @@ impl WindowLoop {
             gaps: crate::usage::FrameGaps::default(),
         };
         let ran = self.0.run_app(&mut app);
+        unguard_quit();
         // The GPU objects go before the window they draw into.
         let render = app
             .shown

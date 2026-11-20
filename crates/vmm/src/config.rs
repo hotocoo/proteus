@@ -250,6 +250,11 @@ const RECORDING_EXTENSION: &str = "mp4";
 /// The window's controls: the toolbar's width and button height, the space around buttons, the
 /// open panel's width and its text fields' width, in points.
 pub const TOOLBAR_WIDTH: f32 = 112.0;
+/// How long a status message stays up, and how far above the window's bottom edge it sits.
+pub const STATUS_SHOWN: Duration = Duration::from_secs(4);
+pub const STATUS_OFFSET: [f32; 2] = [0.0, -16.0];
+/// Where the button that brings the hidden toolbar back sits, from the window's top-right corner.
+pub const SHOW_TOOLBAR_OFFSET: [f32; 2] = [-8.0, 8.0];
 pub const TOOLBAR_MARGIN: f32 = 6.0;
 pub const TOOLBAR_BUTTON_HEIGHT: f32 = 28.0;
 pub const PANEL_WIDTH: f32 = 340.0;

@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use egui::{RichText, Ui};
 use serde::{Deserialize, Serialize};
@@ -209,6 +210,8 @@ pub struct Gui {
     instance: Option<String>,
     pub open: Option<Panel>,
     status: String,
+    /// The status as last shown and since when, so it can go away after a while.
+    status_seen: std::cell::RefCell<(String, Instant)>,
     /// Frames the guest showed per second, as last counted.
     pub fps: Option<f64>,
     /// The frame rate of the slowest 1% of recent frames.
@@ -249,6 +252,7 @@ impl Gui {
             instance,
             open: None,
             status: String::new(),
+            status_seen: std::cell::RefCell::new((String::new(), Instant::now())),
             fps: None,
             low_fps: None,
             gpu: None,
@@ -426,9 +430,15 @@ impl Gui {
         });
     }
 
-    /// The status line under the picture. Nothing when there is nothing to say.
-    pub fn status(&self) -> &str {
-        &self.status
+    /// The status message and how much longer to show it; nothing once it has been up for
+    /// `STATUS_SHOWN`, or when there is nothing to say.
+    pub fn status(&self) -> Option<(&str, std::time::Duration)> {
+        let mut seen = self.status_seen.borrow_mut();
+        if seen.0 != self.status {
+            *seen = (self.status.clone(), Instant::now());
+        }
+        let left = crate::config::STATUS_SHOWN.checked_sub(seen.1.elapsed())?;
+        (!self.status.is_empty()).then_some((self.status.as_str(), left))
     }
 
     pub fn screenshot(&mut self) {
@@ -1013,13 +1023,16 @@ mod tests {
         harness.get_by_label(text::SHAKE).click();
         harness.run();
         // No motion sensors in this controller: the panel says so instead of failing quietly.
-        assert!(!harness.state().status().is_empty());
+        assert!(harness.state().status().is_some());
         harness.get_by_label(text::LOCATION).click();
         harness.run();
         assert_eq!(harness.state().open, Some(Panel::Location));
         harness.get_by_label(text::SET_LOCATION).click();
         harness.run();
-        assert_eq!(harness.state().status(), text::BAD_COORDINATES);
+        assert_eq!(
+            harness.state().status().map(|(s, _)| s),
+            Some(text::BAD_COORDINATES)
+        );
     }
 
     fn harness(gui: Gui) -> egui_kittest::Harness<'static, Gui> {
@@ -1056,7 +1069,7 @@ mod tests {
         harness.get_by_label(text::SAVE).click();
         harness.run();
         let saved = dir.join("macros").join("back twice.txt");
-        assert!(saved.is_file(), "{}", harness.state().status());
+        assert!(saved.is_file(), "{:?}", harness.state().status());
         assert_eq!(harness.state().macros.files, ["back twice.txt"]);
         // Played on its own thread; wait for the keys to arrive.
         harness.get_by_label(text::PLAY).click();
@@ -1068,7 +1081,7 @@ mod tests {
         };
         std::thread::sleep(std::time::Duration::from_secs(1));
         controller.execute(&Command::RecordStop).unwrap();
-        assert_eq!(keys(), 2, "{}", harness.state().status());
+        assert_eq!(keys(), 2, "{:?}", harness.state().status());
         let _ = std::fs::remove_dir_all(dir);
     }
 
