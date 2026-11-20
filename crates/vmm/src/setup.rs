@@ -14,7 +14,8 @@ use std::thread::JoinHandle;
 
 use crate::adb;
 use crate::config::{
-    BUNDLED_APPS_DIR, CACHE_TRIM_PERIOD, INSTALLED_APPS_FILE, SETUP_POLL, SETUP_TIMEOUT,
+    BUNDLED_APPS_DIR, CACHE_TRIM_PERIOD, CACHE_TRIM_SHARE, INSTALLED_APPS_FILE, SETUP_POLL,
+    SETUP_TIMEOUT,
 };
 use crate::copy;
 use crate::session::PowerSwitch;
@@ -69,14 +70,19 @@ const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
 const DIRTY_LIMITS: &str = "su 0 sh -c 'echo 33554432 > /proc/sys/vm/dirty_background_bytes; \
      echo 268435456 > /proc/sys/vm/dirty_bytes; echo 500 > /proc/sys/vm/dirty_expire_centisecs; \
      echo 100 > /proc/sys/vm/dirty_writeback_centisecs'";
-/// Lets go of Android's file cache once it holds more than half the guest's RAM; the emulator
-/// runs it every `CACHE_TRIM_PERIOD`. Each byte of guest RAM is host memory, and a game download
-/// fills the cache with files nobody reads again (6.4 of 8 GB in one case), which the Mac then
-/// swaps out. Only clean cache is dropped (read back from disk when needed), and the freed pages
-/// go back to the host through the balloon.
-const CACHE_TRIM: &str = "su 0 sh -c 'set -- $(grep MemTotal /proc/meminfo); total=$2; \
-     set -- $(grep ^Cached /proc/meminfo); cached=$2; \
-     [ $((cached * 2)) -le $total ] || echo 1 > /proc/sys/vm/drop_caches'";
+/// Lets go of Android's clean file cache once it holds more than `CACHE_TRIM_SHARE` of the
+/// guest's RAM; the emulator runs it every `CACHE_TRIM_PERIOD`. Each byte of guest RAM is host
+/// memory, and a game download fills the cache with files nobody reads again (6.4 of 8 GB in one
+/// case), which the Mac then swaps out. That cache is a second copy: the Mac caches the disk image
+/// itself, in memory it can drop and does not charge to this process, so a dropped file comes back
+/// from there quickly. Freed pages go back to the host through the balloon.
+fn cache_trim() -> String {
+    format!(
+        "su 0 sh -c 'set -- $(grep MemTotal /proc/meminfo); total=$2; \
+         set -- $(grep ^Cached /proc/meminfo); cached=$2; \
+         [ $((cached * {CACHE_TRIM_SHARE})) -le $total ] || echo 1 > /proc/sys/vm/drop_caches'"
+    )
+}
 /// Makes apps share memory through memfd. The guest kernel has no `/dev/ashmem`, and without this
 /// Android still tries it: every shared bitmap (a notification's icon, say) and database cursor
 /// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
@@ -145,7 +151,7 @@ pub fn spawn(
                 while !done.load(Ordering::SeqCst) && !power.wait_for(boot, SETUP_POLL) {
                     if trimmed.elapsed() >= CACHE_TRIM_PERIOD {
                         trimmed = std::time::Instant::now();
-                        if let Err(err) = adb::output(port, CACHE_TRIM) {
+                        if let Err(err) = adb::output(port, &cache_trim()) {
                             log::debug!("{}", copy::setup_failed(&err));
                         }
                     }
