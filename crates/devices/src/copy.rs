@@ -68,6 +68,8 @@ pub const BALLOON_WORKER_GONE: &str = "memory-return worker thread ended unexpec
 pub fn balloon_discard_failed(err: &std::io::Error) -> String {
     format!("could not give freed guest memory back to the host: {err}")
 }
+pub const VSOCK_WORKER_NAME: &str = "virtio-vsock";
+pub const VSOCK_WORKER_GONE: &str = "vsock worker thread ended unexpectedly";
 pub const CONSOLE_WORKER_GONE: &str = "console worker thread ended unexpectedly";
 
 pub fn gpu_renderer_refused(what: &str, why: &dyn std::fmt::Display) -> String {

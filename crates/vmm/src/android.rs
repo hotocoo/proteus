@@ -28,6 +28,8 @@ const DATA_LOCK_FILE: &str = ".lock";
 
 /// Slot the images are presented as. The image set has one copy of everything, so there is only "a".
 const SLOT_SUFFIX: &str = "_a";
+/// The guest's vsock address; the image's services expect 3, as on Cuttlefish.
+pub const GUEST_CID: u64 = 3;
 
 /// What a partition holds.
 enum Contents {
@@ -190,6 +192,7 @@ const BOOTCONFIG: &[(&str, &str)] = &[
     // there is no thread radio; the lights service only needs a port it is allowed to bind.
     ("androidboot.vsock_lights_port", "6900"),
     ("androidboot.vsock_lights_cid", "3"),
+    ("androidboot.modem_simulator_ports", "9600"),
     ("androidboot.openthread_node_id", "1"),
 ];
 /// Terminals (`/dev/hvc0` and up) the image's hardware services open at start. Most would talk to

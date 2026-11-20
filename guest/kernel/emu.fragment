@@ -16,6 +16,9 @@ CONFIG_SND_VIRTIO=y
 # memory follows what Android uses instead of only ever growing.
 CONFIG_VIRTIO_BALLOON=y
 CONFIG_PAGE_REPORTING=y
+# vsock to the host: the image's radio service talks to its modem over it.
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
 
 CONFIG_EROFS_FS=y
 CONFIG_F2FS_FS=y

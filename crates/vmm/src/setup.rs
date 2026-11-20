@@ -56,14 +56,12 @@ const GAMING_TRIM: &str = "for package in \
      com.android.managedprovisioning com.android.devicediagnostics \
      com.android.statementservice; \
      do pm disable-user --user 0 $package >/dev/null 2>&1; done";
-/// Stops the image's radio and Thread network services. They are Cuttlefish's, made for its host
-/// tools: the radio service exits at once without Cuttlefish's modem simulator, and the Thread
-/// service without its simulated radio, so init restarts each every five seconds for good.
-/// `com.android.phone` still waits for the radio and is restarted by Android now and then; that
-/// needs a modem, which this board does not have.
+/// Stops the image's Thread network services. They are Cuttlefish's, made for its host tools,
+/// and exit without its simulated radio, so init restarts them every five seconds for good. The
+/// cellular radio service stays: it talks to `crate::modem`, which answers as a modem with no SIM.
 const RADIOS_OFF: &str = "su 0 cmd thread_network disable; \
      su 0 cmd thread_network force-stop-ot-daemon enabled; \
-     su 0 setprop ctl.stop vendor.threadnetwork_hal; su 0 setprop ctl.stop vendor.ril-daemon";
+     su 0 setprop ctl.stop vendor.threadnetwork_hal";
 /// Keeps little unwritten data in the guest. By default Linux holds up to a fifth of RAM (1.6 GB
 /// with 8 GB) in its cache before writing it out, and a machine that stops without a clean
 /// shutdown loses all of it: a game download went back from 4.8 to 3.6 GB that way. With these,

@@ -31,6 +31,7 @@ pub mod location;
 mod logger;
 #[cfg(host_board)]
 pub mod machine;
+pub mod modem;
 pub mod orientation;
 #[cfg(host_board)]
 mod painter;

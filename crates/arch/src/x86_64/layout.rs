@@ -74,6 +74,6 @@ const _: () = {
     assert!(PDE_ADDR < CMDLINE_ADDR && CMDLINE_ADDR + CMDLINE_MAX < EBDA_START);
     assert!(virtio_mmio_base(VIRTIO_MMIO_SLOTS) <= IOAPIC_ADDR);
     assert!(virtio_irq(VIRTIO_MMIO_SLOTS - 1) < IOAPIC_PINS);
-    assert!(VIRTIO_BALLOON_SLOT < VIRTIO_MMIO_SLOTS);
+    assert!(VIRTIO_VSOCK_SLOT < VIRTIO_MMIO_SLOTS);
     assert!(SHM_BASE + SHM_SIZE <= 1 << GPA_BITS);
 };
