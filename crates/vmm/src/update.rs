@@ -21,9 +21,15 @@ const WORK_DIR: &str = ".proteus-update";
 const ASSET_SUFFIX: Option<&str> = Some("-windows-x86_64.zip");
 #[cfg(target_os = "linux")]
 const ASSET_SUFFIX: Option<&str> = Some("-linux-x86_64.tar.gz");
-// shortcut: the macOS release is an app bundle, which this does not swap; add that when needed.
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+const ASSET_SUFFIX: Option<&str> = Some("-macos-arm64-app.zip");
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 const ASSET_SUFFIX: Option<&str> = None;
+/// On macOS the release is an app bundle, swapped whole; its tag is inside it, in Resources.
+#[cfg(target_os = "macos")]
+const BUNDLE_EXTENSION: &str = "app";
+#[cfg(target_os = "macos")]
+const BUNDLE_RESOURCES: &str = "Contents/Resources";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -35,43 +41,121 @@ pub enum Outcome {
 pub fn update() -> Result<Outcome, String> {
     let suffix = ASSET_SUFFIX.ok_or(copy::UPDATE_UNSUPPORTED)?;
     let program = std::env::current_exe().map_err(|err| err.to_string())?;
-    let dir = program
-        .parent()
-        .ok_or(copy::UPDATE_UNSUPPORTED)?
-        .to_path_buf();
+    #[cfg(target_os = "macos")]
+    return update_bundle(&program, suffix);
+    #[cfg(not(target_os = "macos"))]
+    update_folder(&program, suffix)
+}
+
+/// The newest release's tag.
+fn newest() -> Result<String, String> {
     let releases = format!("repos/{UPSTREAM}/releases?per_page=1");
     let tag = gh(&["api", &releases, "--jq", ".[0].tag_name"])?;
     let tag = tag.trim();
     if tag.is_empty() || tag == "null" {
         return Err(copy::UPDATE_NO_RELEASE.to_owned());
     }
-    if installed(&dir).as_deref() == Some(tag) {
-        return Ok(Outcome::UpToDate(tag.to_owned()));
-    }
-    let work = dir.join(WORK_DIR);
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
-    let done = download_and_install(tag, suffix, &work, &dir);
-    let _ = std::fs::remove_dir_all(&work);
-    done.map(|()| Outcome::Updated(tag.to_owned()))
+    Ok(tag.to_owned())
 }
 
-fn download_and_install(tag: &str, suffix: &str, work: &Path, dir: &Path) -> Result<(), String> {
+/// Downloads this host's package of release `tag` into `work`, which it empties first.
+fn download(tag: &str, suffix: &str, work: &Path) -> Result<PathBuf, String> {
+    let _ = std::fs::remove_dir_all(work);
+    std::fs::create_dir_all(work).map_err(|err| err.to_string())?;
     let pattern = format!("*{suffix}");
     let work_arg = work.to_string_lossy();
     gh(&[
         "release", "download", tag, "-R", UPSTREAM, "-p", &pattern, "-D", &work_arg,
     ])?;
-    let archive = std::fs::read_dir(work)
+    std::fs::read_dir(work)
         .map_err(|err| err.to_string())?
         .flatten()
         .map(|entry| entry.path())
         .find(|path| path.to_string_lossy().ends_with(suffix))
-        .ok_or(copy::UPDATE_NO_ASSET)?;
+        .ok_or_else(|| copy::UPDATE_NO_ASSET.to_owned())
+}
+
+/// The app bundle `program` runs from.
+#[cfg(target_os = "macos")]
+fn bundle_of(program: &Path) -> Option<PathBuf> {
+    program
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == BUNDLE_EXTENSION))
+        .map(Path::to_path_buf)
+}
+
+/// Replaces the app bundle this program runs from with the newest release's. The running program
+/// keeps working from the old bundle, which is moved aside and removed at the next start.
+#[cfg(target_os = "macos")]
+fn update_bundle(program: &Path, suffix: &str) -> Result<Outcome, String> {
+    let bundle = bundle_of(program).ok_or(copy::UPDATE_UNSUPPORTED)?;
+    let tag = newest()?;
+    if installed(&bundle.join(BUNDLE_RESOURCES)).as_deref() == Some(tag.as_str()) {
+        return Ok(Outcome::UpToDate(tag));
+    }
+    let parent = bundle.parent().ok_or(copy::UPDATE_UNSUPPORTED)?;
+    let work = parent.join(WORK_DIR);
+    let done = download(&tag, suffix, &work).and_then(|archive| {
+        // `ditto` keeps the bundle's signature and links as they were packed.
+        let unpacked = Command::new("ditto")
+            .arg("-x")
+            .arg("-k")
+            .arg(&archive)
+            .arg(&work)
+            .status()
+            .map_err(|err| err.to_string())?;
+        if !unpacked.success() {
+            return Err(copy::UPDATE_UNPACK_FAILED.to_owned());
+        }
+        let new = std::fs::read_dir(&work)
+            .map_err(|err| err.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == BUNDLE_EXTENSION))
+            .ok_or(copy::UPDATE_NO_ASSET)?;
+        swap_bundle(&new, &bundle)
+    });
+    let _ = std::fs::remove_dir_all(&work);
+    done.map(|()| Outcome::Updated(tag))
+}
+
+/// Puts bundle `new` where `bundle` is, moving `bundle` aside; puts it back if that fails.
+#[cfg(target_os = "macos")]
+fn swap_bundle(new: &Path, bundle: &Path) -> Result<(), String> {
+    let old = moved_aside(bundle);
+    let _ = std::fs::remove_dir_all(&old);
+    std::fs::rename(bundle, &old).map_err(|err| err.to_string())?;
+    if let Err(err) = std::fs::rename(new, bundle) {
+        let _ = std::fs::rename(&old, bundle);
+        return Err(err.to_string());
+    }
+    Ok(())
+}
+
+/// Replaces the files of the folder this program runs from with the newest release's.
+#[cfg(not(target_os = "macos"))]
+fn update_folder(program: &Path, suffix: &str) -> Result<Outcome, String> {
+    let dir = program
+        .parent()
+        .ok_or(copy::UPDATE_UNSUPPORTED)?
+        .to_path_buf();
+    let tag = newest()?;
+    if installed(&dir).as_deref() == Some(tag.as_str()) {
+        return Ok(Outcome::UpToDate(tag));
+    }
+    let work = dir.join(WORK_DIR);
+    let done = download(&tag, suffix, &work)
+        .and_then(|archive| download_and_install(&tag, &archive, &work, &dir));
+    let _ = std::fs::remove_dir_all(&work);
+    done.map(|()| Outcome::Updated(tag))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn download_and_install(tag: &str, archive: &Path, work: &Path, dir: &Path) -> Result<(), String> {
     // `tar` ships with Windows 10 and later and reads zip archives too.
     let unpacked = crate::no_console_window(&mut Command::new("tar"))
         .arg("-xf")
-        .arg(&archive)
+        .arg(archive)
         .arg("-C")
         .arg(work)
         .status()
@@ -89,6 +173,7 @@ fn download_and_install(tag: &str, suffix: &str, work: &Path, dir: &Path) -> Res
     std::fs::write(dir.join(RELEASE_FILE), tag).map_err(|err| err.to_string())
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Copies every file of `from` into `to`. A running program and the libraries it has loaded
 /// (gfxstream's renderer) cannot be overwritten on Windows, so each file being replaced is moved
 /// aside first and put back if its replacement cannot be copied.
@@ -148,6 +233,11 @@ pub fn remove_leftovers() {
             let _ = std::fs::remove_file(path);
         }
     }
+    // The bundle an update replaced.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = std::env::current_exe().ok().as_deref().and_then(bundle_of) {
+        let _ = std::fs::remove_dir_all(moved_aside(&bundle));
+    }
 }
 
 fn gh(args: &[&str]) -> Result<String, String> {
@@ -179,6 +269,7 @@ mod tests {
         dir
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn install_replaces_files_and_moves_each_replaced_file_aside() {
         let from = scratch("from");
@@ -200,6 +291,30 @@ mod tests {
         assert_eq!(read(moved_aside(&to.join("kernel-x86_64"))), "old kernel");
         assert_eq!(read(to.join("mine.txt")), "kept");
         assert!(!to.join("skipped").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_new_bundle_takes_the_old_ones_place_and_the_old_one_is_kept_aside() {
+        let dir = scratch("bundle");
+        let bundle = dir.join("Proteus.app");
+        let new = dir.join("work").join("Proteus.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(new.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/MacOS/proteus"), "old").unwrap();
+        std::fs::write(new.join("Contents/MacOS/proteus"), "new").unwrap();
+        let program = bundle.join("Contents/MacOS/proteus");
+        assert_eq!(bundle_of(&program).as_deref(), Some(bundle.as_path()));
+
+        swap_bundle(&new, &bundle).unwrap();
+
+        let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
+        assert_eq!(read(program), "new");
+        assert_eq!(
+            read(moved_aside(&bundle).join("Contents/MacOS/proteus")),
+            "old"
+        );
+        assert!(!new.exists());
     }
 
     #[test]

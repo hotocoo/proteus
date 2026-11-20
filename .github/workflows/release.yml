@@ -65,6 +65,8 @@ jobs:
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
           # The same, as an app that opens the launcher when double-clicked.
           version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          # The tag, inside the bundle, so the Update button knows what is installed.
+          echo "$GITHUB_REF_NAME" > "$name/proteus.release"
           scripts/make-app.sh "$name" "$version" .
           ditto -c -k --keepParent Proteus.app "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip"
           shasum -a 256 "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip" > "proteus-${GITHUB_REF_NAME}-macos-arm64-app.zip.sha256"

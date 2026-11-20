@@ -115,6 +115,7 @@ pub const INSTANCE_SUBCOMMAND: &str = "instance";
 pub const INSTANCE_START: &str = "start";
 /// Hidden: what `proteus` runs itself as to find out whether the GPU renderer starts.
 pub const GPU_CHECK_ARG: &str = "--gpu-check";
+pub const UPDATE_SUBCOMMAND: &str = "update";
 /// How long the renderer may take to start before it is judged not to work.
 pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the check is looked at while it runs.
@@ -537,6 +538,8 @@ pub enum InstanceCommand {
 pub enum Parsed {
     /// Start and stop the GPU renderer once, to see whether it works here.
     GpuCheck,
+    /// `proteus update`: what the launcher's Update button does, from a terminal.
+    Update,
     Instance(InstanceCommand),
     Run(Box<Config>),
     /// Send `command` to the instance listening on `socket`.
@@ -632,6 +635,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, ConfigE
     }
     if args.peek().is_some_and(|first| first == GPU_CHECK_ARG) {
         return Ok(Parsed::GpuCheck);
+    }
+    if args.peek().is_some_and(|first| first == UPDATE_SUBCOMMAND) {
+        return Ok(Parsed::Update);
     }
     if args
         .peek()

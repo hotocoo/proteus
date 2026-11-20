@@ -11,6 +11,7 @@ proteus: lightweight Android emulator
 
 Usage: proteus --kernel <file> [options]
        proteus ctl <socket or instance> <command>
+       proteus update                (install the newest release, through the GitHub CLI)
        proteus instance create <name> <options>   Make a named instance that starts with these options
        proteus instance start <name> [<options>]  Start it, with its own data, socket and adb port
        proteus instance list                      Name each instance, and say which are running

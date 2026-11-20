@@ -468,6 +468,28 @@ pub fn cli_main() -> ExitCode {
         }
         Ok(config::Parsed::GpuCheck) => return gpu_check(),
         #[cfg(host_board)]
+        Ok(config::Parsed::Update) => {
+            return match update::update() {
+                Ok(update::Outcome::UpToDate(tag)) => {
+                    println!("{}", copy::up_to_date(&tag));
+                    ExitCode::SUCCESS
+                }
+                Ok(update::Outcome::Updated(tag)) => {
+                    println!("{}", copy::updated(&tag));
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("{}", copy::fatal(&why));
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        #[cfg(not(host_board))]
+        Ok(config::Parsed::Update) => {
+            eprintln!("{}", copy::fatal(&copy::UPDATE_UNSUPPORTED));
+            return ExitCode::FAILURE;
+        }
+        #[cfg(host_board)]
         Ok(config::Parsed::Launcher) => {
             // Opened by a double click or shortcut, Windows gave this console program a console
             // window of its own, which would sit there empty: close it. A terminal's stays.

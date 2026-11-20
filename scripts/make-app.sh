@@ -16,7 +16,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 # Code beside the program; everything else in Resources, where proteus also looks.
 cp "$from/proteus" "$from/libgfxstream_backend.dylib" "$app/Contents/MacOS/"
 for item in lib64 apps licenses kernel-arm64 kernel-arm64.config kernel-arm64.source.txt KERNEL.md \
-    README.md; do
+    README.md proteus.release; do
     if [ -e "$from/$item" ]; then cp -R "$from/$item" "$app/Contents/Resources/"; fi
 done
 sed "s/VERSION/$version/g" "$repo/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
