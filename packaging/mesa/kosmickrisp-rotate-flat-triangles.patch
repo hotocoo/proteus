@@ -1,0 +1,186 @@
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -87,6 +87,15 @@
+ 
+    uint64_t base_vertex_addr;
+    uint64_t base_instance_addr;
++
++   /* Flat-shaded triangle lists with the last vertex provoking: the draw is issued non-indexed
++    * and the vertex shader fetches each triangle's vertices rotated by one (last first), since
++    * Metal only has a first provoking vertex. 0 = off. */
++   uint64_t rotate_index_addr;
++   uint32_t rotate_mode;
++   uint32_t rotate_index_size;
++   uint32_t rotate_first;
++   int32_t rotate_vertex_offset;
+ };
+ 
+ struct kk_attachment {
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -58,6 +58,8 @@
+          /* Required to know which extra states does the pipeline contain for
+           * serialization. */
+          uint32_t additional_stages_bits;
++         /* Reads its vertex ID through per-draw rotation (see kk_per_draw_data). */
++         bool rotates_triangles;
+ 
+          uint32_t tess_local_thread_size;
+ 
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1030,8 +1030,79 @@
+                    SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE);
+    }
+ }
++
++
++#define kk_draw_offset(member) offsetof(struct kk_per_draw_data, member)
+ 
++static nir_def *
++kk_load_draw_u32(nir_builder *b, nir_def *per_draw, uint32_t offset)
++{
++   return nir_load_global_constant(b, 1, 32, nir_iadd_imm(b, per_draw, offset));
++}
++
++/* Replaces the vertex ID with a per-draw rotated one: for a draw flagged in kk_per_draw_data,
++ * vertex i of the non-indexed draw stands for corner (i % 3 + 2) % 3 of triangle i / 3, read
++ * from the index buffer when there is one. The last vertex of every triangle comes first, so
++ * Metal's first provoking vertex gives Vulkan's last, with no unroll pass and no render pass
++ * split. Draws without the flag see the vertex ID unchanged. */
+ static bool
++kk_nir_rotate_vertex_id(nir_shader *nir)
++{
++   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_VERTEX) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_IS_INDEXED_DRAW) ||
++       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE))
++      return false;
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++   nir_def *raw = nir_load_vertex_id(&b);
++   nir_def *per_draw = nir_load_per_draw_ptr_kk(&b, 1, 64);
++   nir_def *mode = kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_mode));
++
++   nir_push_if(&b, nir_ine_imm(&b, mode, 0));
++   nir_def *corner = nir_umod_imm(&b, raw, 3);
++   nir_def *source = nir_iadd(&b, nir_isub(&b, raw, corner),
++                              nir_umod_imm(&b, nir_iadd_imm(&b, corner, 2), 3));
++   nir_def *pos = nir_iadd(&b, kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_first)),
++                           source);
++   nir_def *size = kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_index_size));
++   nir_push_if(&b, nir_ieq_imm(&b, size, 0));
++   nir_def *direct = pos;
++   nir_push_else(&b, NULL);
++   nir_def *base = nir_load_global_constant(
++      &b, 1, 64, nir_iadd_imm(&b, per_draw, kk_draw_offset(rotate_index_addr)));
++   nir_def *byte = nir_iadd(&b, base, nir_u2u64(&b, nir_imul(&b, pos, size)));
++   nir_def *word = nir_load_global_constant(&b, 1, 32, nir_iand_imm(&b, byte, ~3ull));
++   nir_def *shift = nir_imul_imm(&b, nir_u2u32(&b, nir_iand_imm(&b, byte, 3)), 8);
++   nir_def *mask = nir_bcsel(&b, nir_ieq_imm(&b, size, 1), nir_imm_int(&b, 0xff),
++                             nir_bcsel(&b, nir_ieq_imm(&b, size, 2), nir_imm_int(&b, 0xffff),
++                                       nir_imm_int(&b, ~0)));
++   nir_def *index = nir_iand(&b, nir_ushr(&b, word, shift), mask);
++   nir_def *indexed = nir_iadd(
++      &b, index, kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_vertex_offset)));
++   nir_pop_if(&b, NULL);
++   nir_def *rotated = nir_if_phi(&b, direct, indexed);
++   nir_pop_if(&b, NULL);
++   nir_def *vid = nir_if_phi(&b, rotated, raw);
++
++   nir_foreach_block(block, impl) {
++      nir_foreach_instr_safe(instr, block) {
++         if (instr->type != nir_instr_type_intrinsic)
++            continue;
++         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++         if (intr->intrinsic != nir_intrinsic_load_vertex_id || &intr->def == raw)
++            continue;
++         nir_def_rewrite_uses(&intr->def, vid);
++         nir_instr_remove(instr);
++      }
++   }
++   BITSET_SET(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
++   nir_progress(true, impl, nir_metadata_none);
++   return true;
++}
++
++static bool
+ lower_vertex_id_zero_base(struct nir_builder *b, nir_intrinsic_instr *intrin,
+                           void *data)
+ {
+@@ -1109,10 +1180,16 @@
+          nir->xfb_info = NULL;
+          NIR_PASS(_, nir, poly_nir_lower_sw_vs);
+       } else
++      {
+          /* Metal's instance_id contains base_instance. When the emulation path
+           * is taken, since we launch compute, they correctly get translated.
+           * For the non-emulated path we need to subtract base_instance... */
+          NIR_PASS(_, nir, msl_nir_lower_instance_id);
++         if (kk_nir_rotate_vertex_id(nir)) {
++            shader->info.vs.rotates_triangles = true;
++            shader->info.uses_per_draw_data = true;
++         }
++      }
+    } else if (stage == MESA_SHADER_TESS_CTRL) {
+       /* TODO_KOSMICKRISP: Poly lowering breaks with vectorized I/O less than
+        * 32-bit, which we support. Lower TCS inputs & outputs to scalar. */
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1848,6 +1848,24 @@
+           requires_unroll_robustness(cmd, data) ||
+           requires_unroll_restart(cmd, data) ||
+           requires_unroll_flatshade(cmd, data);
++}
++
++/* Flat-shaded triangle lists that only need unrolling for the provoking vertex: the vertex
++ * shader can rotate each triangle itself (kk_nir_rotate_vertex_id), so the draw goes out
++ * non-indexed with no unroll pass and no render pass split. */
++static bool
++kk_can_rotate_triangles(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
++{
++   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++   if (data->prim != MESA_PRIM_TRIANGLES || data->indirect || !vs ||
++       !vs->info.vs.rotates_triangles ||
++       cmd->state.shaders[MESA_SHADER_TESS_EVAL] ||
++       cmd->state.shaders[MESA_SHADER_GEOMETRY])
++      return false;
++   if (!requires_unroll_flatshade(cmd, data))
++      return false;
++   return !requires_unroll_robustness(cmd, data) &&
++          !requires_unroll_restart(cmd, data);
+ }
+ 
+ static uint64_t
+@@ -2084,12 +2102,29 @@
+ 
+    bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+ 
++   bool rotate = kk_can_rotate_triangles(cmd, data);
++
+    /* Unroll geometry. Skip draw if we fail. */
+-   if (requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data))
++   if (!rotate && requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data))
+       return;
+ 
++   struct kk_shader *vs_rot = cmd->state.shaders[MESA_SHADER_VERTEX];
+    for (uint32_t i = 0; i < data->draw_count; i++) {
+       struct kk_draw_data draw_data = build_draw_data(cmd, data, i);
++
++      if (vs_rot && vs_rot->info.vs.rotates_triangles) {
++         struct kk_per_draw_data *pd = &cmd->state.gfx.per_draw_data;
++         pd->rotate_mode = rotate ? 1u : 0u;
++         if (rotate) {
++            bool indexed = draw_data.index.el_size_B != 0;
++            pd->rotate_index_addr = indexed ? draw_data.index.gpu.addr : 0u;
++            pd->rotate_index_size = draw_data.index.el_size_B;
++            pd->rotate_first = indexed ? 0u : draw_data.vertex_offset;
++            pd->rotate_vertex_offset = indexed ? (int32_t)draw_data.vertex_offset : 0;
++            draw_data.index.el_size_B = 0u;
++            draw_data.vertex_offset = 0u;
++         }
++      }
+ 
+       if (data->upload_mask)
+          kk_upload_per_draw_data(cmd, data->upload_mask, i, &draw_data);
