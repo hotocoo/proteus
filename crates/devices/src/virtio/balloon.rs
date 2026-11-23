@@ -3,6 +3,8 @@
 //! the guest ever touched stays held by this process until it exits, so the emulator's memory only
 //! grows. The balloon itself is never inflated (its target stays zero).
 
+use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -30,13 +32,33 @@ enum Wake {
     Stop,
 }
 
+/// Gives guest RAM back to the host where `madvise` alone cannot: Hypervisor.framework keeps the
+/// pages it mapped into the guest charged to this process whatever `madvise` says about them.
+pub trait RamReleaser: Send + Sync {
+    /// `host..host + len` is the guest RAM at `gpa`, whole host pages the guest has freed and does
+    /// not touch until the report is handed back.
+    fn release(&self, gpa: u64, host: NonNull<u8>, len: usize);
+}
+
 pub struct Balloon {
     worker: Option<(Sender<Wake>, JoinHandle<()>)>,
+    releaser: Option<Arc<dyn RamReleaser>>,
 }
 
 impl Balloon {
     pub fn new() -> Self {
-        Self { worker: None }
+        Self {
+            worker: None,
+            releaser: None,
+        }
+    }
+
+    /// Hands freed pages to `releaser` instead of `madvise`.
+    pub fn releasing(releaser: Arc<dyn RamReleaser>) -> Self {
+        Self {
+            worker: None,
+            releaser: Some(releaser),
+        }
     }
 }
 
@@ -48,7 +70,12 @@ impl Default for Balloon {
 
 /// Gives the host memory behind `len` bytes of guest RAM at `addr` back to the system. The guest
 /// sees zeros or its old bytes there next time it reads, which is fine: the pages are free.
-fn discard(mem: &GuestMemoryMmap, addr: GuestAddress, len: usize) {
+fn discard(
+    mem: &GuestMemoryMmap,
+    releaser: Option<&dyn RamReleaser>,
+    addr: GuestAddress,
+    len: usize,
+) {
     // Both ends have to be in guest memory, and contiguous on the host: one region.
     let Some(last) = len
         .checked_sub(1)
@@ -77,6 +104,11 @@ fn discard(mem: &GuestMemoryMmap, addr: GuestAddress, len: usize) {
     if end <= first {
         return;
     }
+    if let Some((releaser, host)) = releaser.zip(NonNull::new(first as *mut u8)) {
+        let gpa = addr.0 + (first - start) as u64;
+        releaser.release(gpa, host, end - first);
+        return;
+    }
     #[cfg(target_os = "macos")]
     let advice = libc::MADV_FREE_REUSABLE;
     #[cfg(not(target_os = "macos"))]
@@ -94,7 +126,11 @@ fn discard(mem: &GuestMemoryMmap, addr: GuestAddress, len: usize) {
 
 /// Hands back every buffer on the inflate, deflate and reporting queues; for the reporting queue
 /// first gives the host memory behind each one back. Returns whether any buffer was used.
-fn drain(queues: &mut [Queue], mem: &GuestMemoryMmap) -> Result<bool, virtio_queue::Error> {
+fn drain(
+    queues: &mut [Queue],
+    mem: &GuestMemoryMmap,
+    releaser: Option<&dyn RamReleaser>,
+) -> Result<bool, virtio_queue::Error> {
     let mut used_any = false;
     for (index, queue) in queues.iter_mut().enumerate() {
         if !queue.ready() {
@@ -105,7 +141,7 @@ fn drain(queues: &mut [Queue], mem: &GuestMemoryMmap) -> Result<bool, virtio_que
             if index == REPORTING_QUEUE {
                 for buffer in chain {
                     if let Ok(len) = usize::try_from(buffer.len()) {
-                        discard(mem, buffer.addr(), len);
+                        discard(mem, releaser, buffer.addr(), len);
                     }
                 }
             }
@@ -121,9 +157,10 @@ fn serve(
     mem: GuestMemoryMmap,
     irq: std::sync::Arc<VirtioInterrupt>,
     wake: Receiver<Wake>,
+    releaser: Option<Arc<dyn RamReleaser>>,
 ) {
     while let Ok(Wake::Work) = wake.recv() {
-        match drain(&mut queues, &mem) {
+        match drain(&mut queues, &mem, releaser.as_deref()) {
             Ok(true) => irq.signal_used(),
             Ok(false) => {}
             Err(err) => log::warn!("{}", copy::virtio_queue_error(&err)),
@@ -161,9 +198,10 @@ impl VirtioDevice for Balloon {
             return Err(DeviceError::MissingQueue);
         }
         let (wake, wakes) = mpsc::channel();
+        let releaser = self.releaser.clone();
         let thread = thread::Builder::new()
             .name(copy::BALLOON_WORKER_NAME.into())
-            .spawn(move || serve(ctx.queues, ctx.mem, ctx.irq, wakes))?;
+            .spawn(move || serve(ctx.queues, ctx.mem, ctx.irq, wakes, releaser))?;
         self.worker = Some((wake, thread));
         Ok(())
     }
@@ -221,13 +259,34 @@ mod tests {
         let idle = || Queue::new(QUEUE_SIZES[0]).unwrap();
         let mut queues = vec![idle(), idle(), reporting];
 
-        assert!(drain(&mut queues, &mem).unwrap());
+        assert!(drain(&mut queues, &mem, None).unwrap());
         assert_eq!(mock.used().idx().load(), 1);
         // Whatever the host gave back, the memory is still there for the guest to use again.
         mem.write_slice(&[1; 64], GuestAddress(FREED_AT)).unwrap();
         let mut back = [0u8; 64];
         mem.read_slice(&mut back, GuestAddress(FREED_AT)).unwrap();
         assert_eq!(back, [1; 64]);
+    }
+
+    #[test]
+    fn a_releaser_gets_the_whole_host_pages_of_a_report() {
+        struct Record(std::sync::Mutex<Vec<(u64, usize)>>);
+        impl RamReleaser for Record {
+            fn release(&self, gpa: u64, _host: NonNull<u8>, len: usize) {
+                self.0.lock().unwrap().push((gpa, len));
+            }
+        }
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), MEM_SIZE)]).unwrap();
+        let record = Record(std::sync::Mutex::new(Vec::new()));
+        discard(
+            &mem,
+            Some(&record),
+            GuestAddress(FREED_AT),
+            FREED_LEN as usize,
+        );
+        // A range smaller than a host page is left alone.
+        discard(&mem, Some(&record), GuestAddress(FREED_AT), 1);
+        assert_eq!(*record.0.lock().unwrap(), [(FREED_AT, FREED_LEN as usize)]);
     }
 
     #[test]

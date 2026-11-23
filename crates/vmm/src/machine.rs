@@ -553,6 +553,49 @@ fn load_lists(paths: &[PathBuf]) -> Result<DomainSet, VmmError> {
     Ok(domains)
 }
 
+/// Gives freed guest RAM back to macOS. Hypervisor.framework keeps every page it mapped into the
+/// guest charged to this process, `madvise` or not, so freed pages are taken out of the guest,
+/// swapped for fresh untouched memory, and put back.
+#[cfg(target_os = "macos")]
+struct RamRemap {
+    vm: Arc<HostVm>,
+    /// Keeps guest RAM mapped for as long as this can replace pages in it.
+    _mem: GuestMemoryMmap,
+}
+
+#[cfg(target_os = "macos")]
+impl devices::virtio::balloon::RamReleaser for RamRemap {
+    fn release(&self, gpa: u64, host: NonNull<u8>, len: usize) {
+        if let Err(err) = self.vm.unmap(gpa, len) {
+            log::debug!("{}", copy::ram_release_failed(&err));
+            return;
+        }
+        // SAFETY: `host..host+len` is whole pages of guest RAM that `mem` mapped and keeps mapped;
+        // the guest has freed them and the VM no longer maps them, so nothing reads them while
+        // they are replaced in place by fresh anonymous memory.
+        let fresh = unsafe {
+            libc::mmap(
+                host.as_ptr().cast(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        if fresh == libc::MAP_FAILED {
+            log::debug!(
+                "{}",
+                copy::ram_release_failed(&std::io::Error::last_os_error())
+            );
+        }
+        // SAFETY: as when the VM was built: `mem` owns this range, never moves it, outlives `vm`.
+        if let Err(err) = unsafe { self.vm.map(gpa, host, len, Prot::RWX) } {
+            log::error!("{}", copy::ram_release_failed(&err));
+        }
+    }
+}
+
 /// Puts renderer memory into the guest, inside the GPU's shared-memory window.
 #[cfg(feature = "gpu")]
 struct WindowMapper(Arc<HostVm>);
@@ -896,7 +939,14 @@ pub fn run_in(
     }
     #[cfg(unix)]
     if let Some(slot) = balloon_slot {
-        attach(slot, Box::new(devices::virtio::balloon::Balloon::new()))?;
+        #[cfg(target_os = "macos")]
+        let balloon = devices::virtio::balloon::Balloon::releasing(Arc::new(RamRemap {
+            vm: Arc::clone(&vm),
+            _mem: mem.clone(),
+        }));
+        #[cfg(not(target_os = "macos"))]
+        let balloon = devices::virtio::balloon::Balloon::new();
+        attach(slot, Box::new(balloon))?;
     }
     if let Some(slot) = console_slot {
         let mut sinks: Vec<Option<PortSink>> = Vec::new();

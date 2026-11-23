@@ -166,6 +166,10 @@ pub fn thread(err: &dyn Display) -> String {
     format!("could not start a thread: {err}")
 }
 
+pub fn ram_release_failed(err: &dyn Display) -> String {
+    format!("could not give freed guest memory back to macOS: {err}")
+}
+
 pub fn irq_failed(line: u32, err: &dyn Display) -> String {
     format!("interrupt line {line}: {err}")
 }
@@ -277,7 +281,8 @@ pub fn audio_failed(err: &dyn Display) -> String {
 pub const WINDOW_TITLE: &str = "Proteus";
 /// The title while the guest draws in software because the GPU renderer did not start, so that
 /// a slow picture is never mistaken for a hung machine.
-pub const WINDOW_TITLE_SOFTWARE: &str = "Proteus (software drawing: the GPU renderer did not start)";
+pub const WINDOW_TITLE_SOFTWARE: &str =
+    "Proteus (software drawing: the GPU renderer did not start)";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
 pub const SHARED_FRAMES_ON: &str =
@@ -338,7 +343,9 @@ pub const GPU_CHECK_HUNG: &str = "it did not start in time";
 
 /// The window's pop-up when the GPU renderer did not start.
 pub fn gpu_unavailable_short(why: &dyn Display) -> String {
-    format!("The GPU renderer did not start ({why}). Games will be very slow; restart to try again.")
+    format!(
+        "The GPU renderer did not start ({why}). Games will be very slow; restart to try again."
+    )
 }
 
 pub fn gpu_unavailable(why: &dyn Display) -> String {
