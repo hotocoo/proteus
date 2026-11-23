@@ -7,8 +7,8 @@
 # and then tap the menu in it. The Terminal's grid grows as the story unlocks menus, which moves
 # its items: these are where they sit once Team is unlocked (Union level 3).
 # A gamepad needs no map: the game supports controllers itself.
-# Positions measured on a 2400x1080 screen. F taps the first entry of an interaction or dialogue
-# list. Not here yet (no touch button found): T, Tab, G, X, V, Ctrl, middle click, O, F1, F3, F4.
+# Positions measured on a 2400x1080 screen. Not here yet (no touch button found): T, Tab, G, X,
+# V, Ctrl, middle click, O, F1, F3, F4.
 size = [2400, 1080]
 toggle = "F12"            # whole map off, for typing
 
@@ -49,9 +49,9 @@ at = [1783, 760]
 key = "KeyR"
 at = [1660, 850]
 
-[[tap]]                   # interact / pick up / talk / continue dialogue
-key = "KeyF"
-at = [1770, 456]
+[[tap]]                   # interact / talk / dialogue: the list's bottom entry, which sits in
+key = "KeyF"              # the same place however many entries it has; with none, it carries
+at = [1830, 676]          # the dialogue on
 
 [[tap]]                   # jump / climb (upper runner button)
 key = "Space"
