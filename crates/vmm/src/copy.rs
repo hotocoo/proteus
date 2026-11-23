@@ -166,6 +166,22 @@ pub fn thread(err: &dyn Display) -> String {
     format!("could not start a thread: {err}")
 }
 
+#[cfg(target_os = "macos")]
+pub const HOST_RAM_THREAD: &str = "host-ram";
+#[cfg(target_os = "macos")]
+pub fn ram_alias_failed(kr: i32) -> String {
+    format!(
+        "could not keep a second mapping of guest memory (kern_return {kr}); Activity Monitor will count shared guest pages twice"
+    )
+}
+#[cfg(target_os = "macos")]
+pub fn ram_refresh_failed(kr: i32) -> String {
+    format!("could not refresh the program's view of guest memory (kern_return {kr})")
+}
+#[cfg(target_os = "macos")]
+pub fn ram_refresh_thread_failed(err: &std::io::Error) -> String {
+    format!("could not start the guest memory refresh thread: {err}")
+}
 pub fn ram_release_failed(err: &dyn Display) -> String {
     format!("could not give freed guest memory back to macOS: {err}")
 }

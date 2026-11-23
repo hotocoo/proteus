@@ -19,6 +19,8 @@ pub mod frames;
 pub mod gamepad;
 #[cfg(host_board)]
 mod gui;
+#[cfg(target_os = "macos")]
+mod host_ram;
 pub mod input;
 pub mod install;
 pub mod instance;

@@ -441,6 +441,12 @@ pub const CACHE_TRIM_PERIOD: Duration = Duration::from_secs(60);
 /// Android's file cache is dropped once it holds more than one part in this many of guest RAM.
 /// One eighth: the host already caches the disk images, so the guest's copy mostly doubles it.
 pub const CACHE_TRIM_SHARE: u64 = 8;
+/// How often the program's own view of guest RAM is mapped afresh, so pages the emulator touched
+/// stop counting twice in Activity Monitor (see `host_ram`). Each refresh costs a few ms; the
+/// emulator's next touch of a page costs a soft page fault.
+pub const HOST_RAM_REFRESH_PERIOD: Duration = Duration::from_secs(5);
+/// Guest RAM is remapped this much at a time, so a release never waits long for a refresh.
+pub const HOST_RAM_REFRESH_CHUNK: usize = 32 << 20;
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);

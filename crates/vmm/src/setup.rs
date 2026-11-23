@@ -107,12 +107,13 @@ const SHARED_MEMORY: &str = "su 0 setprop sys.use_memfd true";
 /// second. Pipeline barriers do the same job with no round trip. Read by each app at its start.
 const ANGLE_NO_EVENTS: &str = "su 0 setprop debug.angle.feature_overrides_disabled \
      useVkEventForImageBarrier:useVkEventForBufferBarrier";
-/// Has the guest hand back free memory in pieces of 128 KiB (order 5) rather than 2 MiB. Free
-/// memory in a running game is too fragmented for 2 MiB pieces (none were free in Wuthering
-/// Waves), so freed memory stayed counted against this Mac; dropping 500 MB of cache then gave
-/// 640 MB back within seconds.
+/// Has the guest hand back free memory in pieces as small as 16 KiB (order 2, one Mac page)
+/// rather than 2 MiB. Free memory in a running game is fragmented: at 2 MiB none was reported,
+/// and at 128 KiB (order 5) about 600 MB of a 4 GB guest's free memory stayed counted against
+/// this Mac. At 16 KiB that falls to about 150 MB, with no measurable cost (6 GB of allocate and
+/// free in the guest took the same time).
 const REPORT_SMALL_FREES: &str =
-    "su 0 sh -c 'echo 5 > /sys/module/page_reporting/parameters/page_reporting_order'";
+    "su 0 sh -c 'echo 2 > /sys/module/page_reporting/parameters/page_reporting_order'";
 /// Turns off Unreal Engine's hang watchdog in every installed Unreal game. The watchdog aborts the
 /// game when a thread misses its heartbeat for `HangDuration` seconds; loading under emulation can
 /// stall that long where a phone would not, and Wuthering Waves died that way mid-load
