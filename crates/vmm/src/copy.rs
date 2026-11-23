@@ -266,6 +266,7 @@ pub const KEYMAP_NEEDS_WINDOW: &str =
     "key maps need a window; do not combine them with --headless or --no-display";
 pub const KEYMAP_TWO_SOURCES: &str = "give --keymap or --keymap-dir, not both";
 pub const FOREGROUND_THREAD: &str = "foreground app";
+pub const KEYMAP_THEN_THREAD: &str = "key map menu taps";
 pub const ORIENTATION_THREAD: &str = "orientation";
 pub const SETUP_THREAD: &str = "android setup";
 

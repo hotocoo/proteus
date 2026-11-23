@@ -20,7 +20,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::config::{MIN_REMEMBERED_SIDE, PANEL_WIDTH, TOOLBAR_WIDTH};
+use crate::config::{KEYMAP_THEN_WAIT, MIN_REMEMBERED_SIDE, PANEL_WIDTH, TOOLBAR_WIDTH};
 use crate::ctl::{Command, Controller};
 use crate::frames::channel_order;
 use crate::gui::{Effect, Gui};
@@ -356,8 +356,13 @@ impl App {
     }
 
     fn apply(&self, touches: &[Touch]) {
+        let mut later = Vec::new();
         for touch in touches {
             self.send(match *touch {
+                Touch::Later { step, x, y } => {
+                    later.push((step, x, y));
+                    continue;
+                }
                 Touch::Place { finger, x, y } => Command::Touch { finger, x, y },
                 Touch::Lift { finger } => Command::Lift { finger },
                 Touch::Tilt { x, z } => Command::Rotate([f64::from(x), 0.0, f64::from(z)]),
@@ -368,6 +373,26 @@ impl App {
                     bearing.map(|bearing| (f64::from(bearing), f64::from(km_per_hour))),
                 ),
             });
+        }
+        if later.is_empty() {
+            return;
+        }
+        // A menu takes a moment to open; waiting for it here would freeze the window.
+        let controller = Arc::clone(&self.controller);
+        let spawned = std::thread::Builder::new()
+            .name(copy::KEYMAP_THEN_THREAD.into())
+            .spawn(move || {
+                let start = Instant::now();
+                for (step, x, y) in later {
+                    let due = KEYMAP_THEN_WAIT * step;
+                    std::thread::sleep(due.saturating_sub(start.elapsed()));
+                    if let Err(why) = controller.execute(&Command::Tap { x, y }) {
+                        log::debug!("{}", copy::window_input_dropped(&why));
+                    }
+                }
+            });
+        if let Err(why) = spawned {
+            log::debug!("{}", copy::window_input_dropped(&why));
         }
     }
 

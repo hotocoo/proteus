@@ -1,11 +1,13 @@
 # Wuthering Waves (com.kurogame.wutheringwaves.global), landscape, game's "Static Joystick" mode.
-# Keys follow the PC version. The mouse turns the camera; Left Alt (Option) switches to the
-# pointer and back.
-# Menu keys (Esc, M, C, J, Enter) also free the pointer; pressing one again, or moving (WASD) or
-# acting, gives it back.
+# Keys follow the PC version's defaults. The game ignores a keyboard on Android, so each key taps
+# the button that does the same on the touch screen. The mouse turns the camera; Left Alt (Option)
+# switches to the pointer and back.
+# Menu keys (Esc, M, C, J, B, H, N, F2, Enter) also free the pointer; pressing one again, or moving
+# (WASD) or acting, gives it back. Keys for menus with no button of their own open the Terminal
+# and then tap the menu in it.
 # A gamepad needs no map: the game supports controllers itself.
-# Positions measured on a 2400x1080 screen. Not yet here: Q (echo), R (liberation), F (interact)
-# and 1-3 (switch character); the game shows those buttons only later in the story.
+# Positions measured on a 2400x1080 screen. F taps the first entry of an interaction or dialogue
+# list. Not here yet (no touch button found): T, Tab, G, X, V, Ctrl, middle click, L, O, F1, F3, F4.
 size = [2400, 1080]
 toggle = "F12"            # whole map off, for typing
 
@@ -23,7 +25,12 @@ center = [1500, 450]
 radius = 300
 sensitivity = 1.0
 start = true
-hold = false             # Left Alt switches pointer on and off
+hold = false              # Left Alt switches pointer on and off
+
+[zoom]                    # mouse wheel: camera zoom, as on PC
+center = [1200, 500]
+spread = 200
+step = 60
 
 [[tap]]                   # basic attack
 key = "MouseLeft"
@@ -32,6 +39,18 @@ at = [1951, 828]
 [[tap]]                   # resonance skill
 key = "KeyE"
 at = [1781, 941]
+
+[[tap]]                   # echo skill
+key = "KeyQ"
+at = [1783, 760]
+
+[[tap]]                   # resonance liberation
+key = "KeyR"
+at = [1660, 850]
+
+[[tap]]                   # interact / pick up / talk / continue dialogue
+key = "KeyF"
+at = [1770, 456]
 
 [[tap]]                   # jump / climb (upper runner button)
 key = "Space"
@@ -44,6 +63,18 @@ at = [2112, 931]
 [[tap]]                   # dodge / sprint, the PC key too
 key = "ShiftLeft"
 at = [2112, 931]
+
+[[tap]]                   # switch to character 1 (team portraits, right edge)
+key = "Digit1"
+at = [2150, 270]
+
+[[tap]]                   # switch to character 2
+key = "Digit2"
+at = [2150, 406]
+
+[[tap]]                   # switch to character 3
+key = "Digit3"
+at = [2150, 542]
 
 [[tap]]                   # terminal (main menu)
 key = "Escape"
@@ -63,6 +94,30 @@ pointer = true
 [[tap]]                   # quests
 key = "KeyJ"
 at = [144, 257]
+pointer = true
+
+[[tap]]                   # backpack: terminal, then Backpack
+key = "KeyB"
+at = [2213, 65]
+then = [[1504, 480]]
+pointer = true
+
+[[tap]]                   # tutorials: terminal, then Tutorials
+key = "KeyH"
+at = [2213, 65]
+then = [[1504, 750]]
+pointer = true
+
+[[tap]]                   # mail: terminal, then the envelope in its bottom bar
+key = "KeyN"
+at = [2213, 65]
+then = [[1648, 1026]]
+pointer = true
+
+[[tap]]                   # guide: terminal, then Guide Depot
+key = "F2"
+at = [2213, 65]
+then = [[1744, 770]]
 pointer = true
 
 [[tap]]                   # chat

@@ -15,6 +15,9 @@ use crate::gui::Effect;
 pub struct TapEntry {
     pub key: String,
     pub at: [u32; 2],
+    /// What the editor does not show (`pointer`, `then`), kept as it was.
+    #[serde(flatten)]
+    pub rest: toml::Table,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -128,6 +131,7 @@ impl Editor {
                 self.map.tap.push(TapEntry {
                     key: String::new(),
                     at,
+                    rest: toml::Table::new(),
                 });
                 self.waiting = Waiting::TapKey(self.map.tap.len() - 1);
             }
@@ -329,13 +333,16 @@ mod tests {
 
     #[test]
     fn parts_the_editor_does_not_show_are_kept() {
-        let original = "toggle = \"F12\"\n\n[[tap]]\nkey = \"Space\"\nat = [10, 20]\n\n\
+        let original = "toggle = \"F12\"\n\n[[tap]]\nkey = \"Space\"\nat = [10, 20]\n\
+                        pointer = true\nthen = [[30, 40]]\n\n\
                         [look]\nkey = \"Backquote\"\ncenter = [900, 300]\nradius = 250\n";
         let map = MapFile::parse(original).unwrap();
         let again = MapFile::parse(&map.to_text().unwrap()).unwrap();
         assert_eq!(again, map);
         assert!(again.rest.contains_key("look"));
         assert!(again.rest.contains_key("toggle"));
+        assert_eq!(again.tap[0].rest["pointer"].as_bool(), Some(true));
+        assert!(again.tap[0].rest.contains_key("then"));
         crate::keymap::Mapper::parse(&map.to_text().unwrap(), DISPLAY).unwrap();
     }
 

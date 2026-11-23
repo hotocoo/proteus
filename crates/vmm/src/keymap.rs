@@ -11,6 +11,7 @@
 //! [[tap]]                   # a finger that is down while the key is
 //! key = "Space"
 //! at = [1100, 600]
+//! then = [[900, 400]]       # optional: then these, one by one (an item in the menu it opened)
 //!
 //! [[stick]]                 # four keys push one finger away from a centre
 //! up = "KeyW"
@@ -99,6 +100,13 @@ pub enum Touch {
         bearing: Option<u16>,
         km_per_hour: u16,
     },
+    /// Tap a pixel once `step` waits have passed (`config::KEYMAP_THEN_WAIT` each): the next
+    /// item of a menu a key opened, once the menu is on screen.
+    Later {
+        step: u32,
+        x: u32,
+        y: u32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -153,6 +161,9 @@ struct TapEntry {
     /// Also frees the pointer (a menu opens) or gives it back to the view (it closes).
     #[serde(default)]
     pointer: bool,
+    /// Tapped one after another once the key is pressed: items in the menu its tap opens.
+    #[serde(default)]
+    then: Vec<[u32; 2]>,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +203,7 @@ struct Tap {
     key: u16,
     at: (u32, u32),
     pointer: bool,
+    then: Vec<(u32, u32)>,
 }
 
 struct Stick {
@@ -394,6 +406,11 @@ impl Mapper {
                 key: key(&entry.key, &mut used)?,
                 at: position(entry.at, display)?,
                 pointer: entry.pointer,
+                then: entry
+                    .then
+                    .iter()
+                    .map(|&at| position(at, display))
+                    .collect::<Result<_, _>>()?,
             });
         }
         let mut sticks = Vec::new();
@@ -602,8 +619,13 @@ impl Mapper {
             let Tap {
                 at: (x, y),
                 pointer,
+                ref then,
                 ..
             } = self.taps[index];
+            let later = (1..)
+                .zip(then)
+                .map(|(step, &(x, y))| Touch::Later { step, x, y });
+            let later: Vec<Touch> = later.collect();
             let tapping = &mut self.tapping[index];
             return Some(match (*tapping, down) {
                 // With every finger busy the press is dropped, and so is its release.
@@ -611,6 +633,7 @@ impl Mapper {
                     Some(finger) => {
                         *tapping = Some(finger);
                         let mut touches = vec![Touch::Place { finger, x, y }];
+                        touches.extend(later);
                         if pointer && let Some(look) = &mut self.look {
                             look.on = !look.on;
                             look.menu = !look.on;
@@ -933,6 +956,34 @@ mod tests {
         );
         // A key the map does not know goes to the guest.
         assert_eq!(map.key(code("KeyQ"), true), None);
+    }
+
+    #[test]
+    fn then_taps_follow_the_key_one_wait_apart() {
+        let text = "[[tap]]\nkey = \"KeyB\"\nat = [10, 20]\nthen = [[30, 40], [50, 60]]\n";
+        let mut map = Mapper::parse(text, (1280, 720)).unwrap();
+        let finger = FIRST_FINGER;
+        assert_eq!(
+            map.key(code("KeyB"), true),
+            Some(vec![
+                place(finger, 10, 20),
+                Touch::Later {
+                    step: 1,
+                    x: 30,
+                    y: 40
+                },
+                Touch::Later {
+                    step: 2,
+                    x: 50,
+                    y: 60
+                },
+            ])
+        );
+        assert_eq!(
+            map.key(code("KeyB"), false),
+            Some(vec![Touch::Lift { finger }])
+        );
+        assert!(Mapper::parse(&text.replace("[50, 60]", "[5000, 60]"), (1280, 720)).is_err());
     }
 
     #[test]

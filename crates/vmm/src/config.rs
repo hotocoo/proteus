@@ -433,6 +433,9 @@ pub const FILL_ASPECT_RANGE: std::ops::RangeInclusive<f32> = (1.0 / 3.0)..=3.0;
 pub const BUNDLED_APPS_DIR: &str = "apps";
 /// Key maps for particular games a release carries, copied into an instance's key map folder.
 pub const BUNDLED_KEYMAPS_DIR: &str = "keymaps";
+/// How long a key map waits before each `then` tap: long enough for the menu the key's own tap
+/// opened to be on screen (Wuthering Waves' Terminal takes most of a second).
+pub const KEYMAP_THEN_WAIT: Duration = Duration::from_millis(900);
 pub const INSTALLED_APPS_FILE: &str = "bundled-apps-installed";
 /// How often the guest is asked whether it has booted, and how long it may take to answer.
 pub const SETUP_POLL: Duration = Duration::from_secs(2);
