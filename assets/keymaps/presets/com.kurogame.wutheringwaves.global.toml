@@ -2,12 +2,13 @@
 # Keys follow the PC version's defaults. The game ignores a keyboard on Android, so each key taps
 # the button that does the same on the touch screen. The mouse turns the camera; Left Alt (Option)
 # switches to the pointer and back.
-# Menu keys (Esc, M, C, J, B, H, N, F2, Enter) also free the pointer; pressing one again, or moving
+# Menu keys (Esc, M, C, J, B, L, H, N, F2, Enter) also free the pointer; pressing one again, or moving
 # (WASD) or acting, gives it back. Keys for menus with no button of their own open the Terminal
-# and then tap the menu in it.
+# and then tap the menu in it. The Terminal's grid grows as the story unlocks menus, which moves
+# its items: these are where they sit once Team is unlocked (Union level 3).
 # A gamepad needs no map: the game supports controllers itself.
 # Positions measured on a 2400x1080 screen. F taps the first entry of an interaction or dialogue
-# list. Not here yet (no touch button found): T, Tab, G, X, V, Ctrl, middle click, L, O, F1, F3, F4.
+# list. Not here yet (no touch button found): T, Tab, G, X, V, Ctrl, middle click, O, F1, F3, F4.
 size = [2400, 1080]
 toggle = "F12"            # whole map off, for typing
 
@@ -99,13 +100,19 @@ pointer = true
 [[tap]]                   # backpack: terminal, then Backpack
 key = "KeyB"
 at = [2213, 65]
-then = [[1504, 480]]
+then = [[1744, 480]]
+pointer = true
+
+[[tap]]                   # team: terminal, then Team
+key = "KeyL"
+at = [2213, 65]
+then = [[1264, 240]]
 pointer = true
 
 [[tap]]                   # tutorials: terminal, then Tutorials
 key = "KeyH"
 at = [2213, 65]
-then = [[1504, 750]]
+then = [[1744, 750]]
 pointer = true
 
 [[tap]]                   # mail: terminal, then the envelope in its bottom bar
@@ -117,7 +124,7 @@ pointer = true
 [[tap]]                   # guide: terminal, then Guide Depot
 key = "F2"
 at = [2213, 65]
-then = [[1744, 770]]
+then = [[1986, 770]]
 pointer = true
 
 [[tap]]                   # chat
