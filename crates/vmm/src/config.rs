@@ -454,6 +454,10 @@ pub const HOST_RAM_REFRESH_CHUNK: usize = 32 << 20;
 /// Metal's GPU priority for the window's drawing: 0 is high (Metal's default is 1). The guest's
 /// own GPU work gets the same from the bundled KosmicKrisp.
 pub const WINDOW_GPU_PRIORITY: usize = 0;
+/// What a running guest tells macOS it is doing (NSActivityOptions): user-initiated work that
+/// allows idle system sleep (0x00EF_FFFF) and is latency-critical (0xFF_0000_0000), so App Nap
+/// never throttles it.
+pub const VM_ACTIVITY_OPTIONS: u64 = 0x00EF_FFFF | 0xFF_0000_0000;
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);

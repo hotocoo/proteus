@@ -395,6 +395,7 @@ impl Machine {
     /// Runs every vCPU on its own thread and returns once the guest has stopped, or `power` has
     /// turned the machine off.
     fn run(&self, primary: Regs, power: &PowerSwitch) -> Result<Stop, VmmError> {
+        let _awake = stay_unthrottled();
         thread::scope(|scope| {
             let boot = power.boot();
             let switched_off = thread::Builder::new()
@@ -1042,6 +1043,35 @@ pub fn run_in(
         boot_marker_after,
     })
 }
+
+/// Keeps macOS from napping the process while a guest runs. App Nap lowers a process whose
+/// window is covered, hidden or on another Space to nice 5 and priority 4, the lowest there is:
+/// every wake of a vCPU or renderer thread then waits its turn, and a guest-to-host GPU call that
+/// takes microseconds took a millisecond or more. The token is held until it is dropped; the Mac
+/// may still go to sleep when idle.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn stay_unthrottled() -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    // A process without Foundation loaded (no window) has no class to ask, and no nap either.
+    let info = AnyClass::get(c"NSProcessInfo")?;
+    let string = AnyClass::get(c"NSString")?;
+    // SAFETY: `+[NSString stringWithUTF8String:]` copies a NUL-terminated UTF-8 string;
+    // `+[NSProcessInfo processInfo]` returns the shared instance; `-beginActivityWithOptions:
+    // reason:` takes an NSActivityOptions (u64) and an NSString and returns the activity token.
+    unsafe {
+        let reason: *mut AnyObject =
+            msg_send![string, stringWithUTF8String: copy::VM_ACTIVITY_REASON.as_ptr()];
+        let process: *mut AnyObject = msg_send![info, processInfo];
+        if reason.is_null() || process.is_null() {
+            return None;
+        }
+        msg_send![process, beginActivityWithOptions: crate::config::VM_ACTIVITY_OPTIONS, reason: reason]
+    }
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn stay_unthrottled() {}
 
 #[cfg(test)]
 mod tests {
