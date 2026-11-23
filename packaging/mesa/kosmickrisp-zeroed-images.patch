@@ -1,0 +1,20 @@
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index de27a6d6e..7651fd56b 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -863,6 +863,15 @@ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
+ 
+    plane->addr = mem->bo->gpu + *offset_B;
+ 
++   /* An image can be shown before it is fully written (games present a frame or two at
++    * start, or copy an image that is not filled yet). On phones fresh GPU memory reads as
++    * zero, so that shows black; Metal heap memory can still hold an earlier allocation's
++    * pixels (Wuthering Waves flashed full-screen red twice while loading). Clear the memory
++    * an image is bound to: about 20 ms per GB, once.
++    */
++   if (mem->bo->cpu)
++      memset((uint8_t *)mem->bo->cpu + *offset_B, 0, plane_size_B);
++
+    /* Create auxiliary 2D array texture for 3D images so we can use 2D views of
+     * it */
+    if (plane->layout.type == MTL_TEXTURE_TYPE_3D &&
