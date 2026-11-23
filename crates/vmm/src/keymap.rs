@@ -100,8 +100,8 @@ pub enum Touch {
         bearing: Option<u16>,
         km_per_hour: u16,
     },
-    /// Tap a pixel once `step` waits have passed (`config::KEYMAP_THEN_WAIT` each): the next
-    /// item of a menu a key opened, once the menu is on screen.
+    /// Tap a pixel once `step` waits have passed (`config::KEYMAP_THEN_WAIT` each, counted from
+    /// the key going up): the next item of a menu a key opened, once the menu is on screen.
     Later {
         step: u32,
         x: u32,
@@ -633,7 +633,6 @@ impl Mapper {
                     Some(finger) => {
                         *tapping = Some(finger);
                         let mut touches = vec![Touch::Place { finger, x, y }];
-                        touches.extend(later);
                         if pointer && let Some(look) = &mut self.look {
                             look.on = !look.on;
                             look.menu = !look.on;
@@ -651,7 +650,14 @@ impl Mapper {
                     *tapping = None;
                     self.spare.push(finger);
                     self.spare.sort_unstable_by(|a, b| b.cmp(a));
-                    vec![Touch::Lift { finger }]
+                    let mut touches = vec![Touch::Lift { finger }];
+                    // Games act on a tap when the finger lifts, so the menu's items are tapped
+                    // after that; and not at all when the press gave the mouse back to the view
+                    // (a second press, closing the menu instead of opening it again).
+                    if self.look.as_ref().is_none_or(|look| !look.on) {
+                        touches.extend(later);
+                    }
+                    touches
                 }
                 _ => Vec::new(),
             });
@@ -965,8 +971,12 @@ mod tests {
         let finger = FIRST_FINGER;
         assert_eq!(
             map.key(code("KeyB"), true),
+            Some(vec![place(finger, 10, 20)])
+        );
+        assert_eq!(
+            map.key(code("KeyB"), false),
             Some(vec![
-                place(finger, 10, 20),
+                Touch::Lift { finger },
                 Touch::Later {
                     step: 1,
                     x: 30,
@@ -979,11 +989,16 @@ mod tests {
                 },
             ])
         );
-        assert_eq!(
-            map.key(code("KeyB"), false),
-            Some(vec![Touch::Lift { finger }])
-        );
         assert!(Mapper::parse(&text.replace("[50, 60]", "[5000, 60]"), (1280, 720)).is_err());
+        // A menu key's second press gives the mouse back to the view: it closes the menu, so
+        // only its own tap goes out.
+        let look = "pointer = true\n[look]\nkey = \"Backquote\"\ncenter = [600, 300]\nradius = 100\nstart = true\n";
+        let mut map = Mapper::parse(&format!("{text}{look}"), (1280, 720)).unwrap();
+        let count = |touches: Option<Vec<Touch>>| touches.map(|touches| touches.len());
+        assert_eq!(count(map.key(code("KeyB"), true)), Some(1));
+        assert_eq!(count(map.key(code("KeyB"), false)), Some(3));
+        assert_eq!(count(map.key(code("KeyB"), true)), Some(1));
+        assert_eq!(count(map.key(code("KeyB"), false)), Some(1));
     }
 
     #[test]
