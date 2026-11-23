@@ -1,8 +1,7 @@
 diff --git a/src/kosmickrisp/compiler/msl_type_inference.c b/src/kosmickrisp/compiler/msl_type_inference.c
-index 12e46d595..507ae6720 100644
 --- a/src/kosmickrisp/compiler/msl_type_inference.c
 +++ b/src/kosmickrisp/compiler/msl_type_inference.c
-@@ -335,7 +335,12 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
+@@ -335,7 +335,12 @@
           set_type(types, &instr->def, TYPE_NONE);
        break;
     case nir_intrinsic_store_reg:
@@ -16,7 +15,7 @@ index 12e46d595..507ae6720 100644
        set_type(types, &instr->src[1], TYPE_NONE);
        break;
     case nir_intrinsic_load_reg:
-@@ -827,8 +832,8 @@ emit_src_component(struct nir_to_msl_ctx *ctx, nir_src *src, unsigned comp)
+@@ -827,8 +832,8 @@
        P(ctx, "%" PRIu64 "u", nir_src_comp_as_uint(*src, comp));
        break;
     case TYPE_NONE:
@@ -27,7 +26,7 @@ index 12e46d595..507ae6720 100644
        break;
     default:
        return;
-@@ -840,6 +845,9 @@ void
+@@ -840,6 +845,9 @@
  msl_src_as_const(struct nir_to_msl_ctx *ctx, nir_src *src)
  {
     ti_type type = get_type(ctx->types, src);
@@ -37,27 +36,102 @@ index 12e46d595..507ae6720 100644
     if (src->ssa->num_components == 1) {
        emit_src_component(ctx, src, 0);
     } else {
-@@ -869,6 +877,11 @@ msl_infer_types(nir_shader *shader)
+@@ -852,14 +860,73 @@
+          emit_src_component(ctx, src, i);
        }
-    }
- 
-+   /* Types flow both ways, to uses and back to the values used, and a pass
-+    * in one direction moves them only one step the other way. Passes go
-+    * forward and back in turn, so long chains settle in a few passes instead
-+    * of one pass per step; the result is the same.
-+    */
-    do {
-       progress = false;
-       nir_foreach_function_impl(impl, shader) {
-@@ -877,6 +890,11 @@ msl_infer_types(nir_shader *shader)
-                progress |= propagate_types(types, instr);
-             }
-          }
+       P(ctx, ")");
++   }
++}
++
++/* Types flow both ways, to uses and back to the values used, and a pass
++ * in one direction moves them only one step the other way. Passes go
++ * forward and back in turn, so long chains settle in a few passes instead
++ * of one pass per step; the result is the same.
++ */
++static void
++propagate_all_types(nir_shader *shader, struct hash_table *types)
++{
++   bool progress;
++   do {
++      progress = false;
++      nir_foreach_function_impl(impl, shader) {
++         nir_foreach_block(block, impl) {
++            nir_foreach_instr(instr, block) {
++               progress |= propagate_types(types, instr);
++            }
++         }
 +         nir_foreach_block_reverse(block, impl) {
 +            nir_foreach_instr_reverse(instr, block) {
 +               progress |= propagate_types(types, instr);
 +            }
 +         }
++      }
++   } while (progress);
++}
++
++static bool
++default_untyped_values(nir_shader *shader, struct hash_table *types)
++{
++   bool changed = false;
++   nir_foreach_function_impl(impl, shader) {
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type == nir_instr_type_undef) {
++               nir_def *def = &nir_instr_as_undef(instr)->def;
++               if (get_type(types, def) == TYPE_NONE) {
++                  set_type(types, def, TYPE_GENERIC_DATA);
++                  changed = true;
++               }
++            } else if (instr->type == nir_instr_type_alu) {
++               nir_alu_instr *alu = nir_instr_as_alu(instr);
++               for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
++                  nir_src *src = &alu->src[i].src;
++                  if (get_type(types, src) == TYPE_NONE &&
++                      get_type(types, src->ssa) == TYPE_NONE) {
++                     set_type(types, src, TYPE_GENERIC_DATA);
++                     changed = true;
++                  }
++               }
++               if (get_type(types, &alu->def) == TYPE_NONE) {
++                  set_type(types, &alu->def, TYPE_GENERIC_DATA);
++                  changed = true;
++               }
++            }
++         }
++      }
+    }
++   return changed;
+ }
+ 
+ struct hash_table *
+ msl_infer_types(nir_shader *shader)
+ {
+    struct hash_table *types = _mesa_pointer_hash_table_create(NULL);
+-   bool progress = false;
+    // First, seed the types for every instruction for every source and def
+    nir_foreach_function_impl(impl, shader) {
+       nir_foreach_block(block, impl) {
+@@ -869,16 +936,13 @@
        }
-    } while (progress);
+    }
+ 
+-   do {
+-      progress = false;
+-      nir_foreach_function_impl(impl, shader) {
+-         nir_foreach_block(block, impl) {
+-            nir_foreach_instr(instr, block) {
+-               progress |= propagate_types(types, instr);
+-            }
+-         }
+-      }
+-   } while (progress);
++   propagate_all_types(shader, types);
++
++   /* A value no use constrains (a vector built from undefined components and
++    * constants, say) is left without a type and would be printed with a null
++    * type name, so the whole shader fails to compile. It is plain data. */
++   if (default_untyped_values(shader, types))
++      propagate_all_types(shader, types);
     return types;
+ }
+ 

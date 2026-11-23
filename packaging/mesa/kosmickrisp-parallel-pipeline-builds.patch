@@ -1,0 +1,354 @@
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -19,6 +19,7 @@
+ #include "libkk_shaders.h"
+ 
+ #include "util/u_dynarray.h"
++#include "util/u_queue.h"
+ 
+ #include "vk_device.h"
+ #include "vk_meta.h"
+@@ -92,12 +93,29 @@
+    struct kk_precompiled_shader shaders[LIBKK_NUM_PROGRAMS];
+ };
+ 
++/* Threads building Metal pipelines: Metal runs 16 builds at once on this
++ * hardware; half leaves cores for the guest while a game warms its cache. */
++#define KK_COMPILE_THREADS 8
++/* Initial room for waiting builds; the queue grows when a game asks for more. */
++#define KK_COMPILE_QUEUE_JOBS 256
++
+ struct kk_device {
+    struct vk_device vk;
+ 
+    mtl_device *mtl_handle;
+    mtl_compiler *mtl_compiler_handle;
+ 
++   /* Metal pipelines are built on these threads, not the creating one (see
++    * kk_shader.c). Metal compiles many at once, but one call at a time only
++    * uses one of its threads, so a game warming thousands of pipelines took
++    * an hour. compile_lock and compile_done guard each shader's compile_state.
++    */
++   struct util_queue compile_queue;
++   bool compile_queue_ready;
++   bool compile_abandon;
++   mtx_t compile_lock;
++   cnd_t compile_done;
++
+    /* Dispatch table exposed to the user. Required since we need to record all
+     * commands due to Metal limitations */
+    struct vk_device_dispatch_table exposed_dispatch_table;
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -335,6 +335,14 @@
+    if (result != VK_SUCCESS)
+       goto fail_sampler_heap;
+ 
++   /* Last, so the device's own shaders above are built in place. Without the
++    * threads, pipelines are built in place too. */
++   mtx_init(&dev->compile_lock, mtx_plain);
++   cnd_init(&dev->compile_done);
++   dev->compile_queue_ready =
++      util_queue_init(&dev->compile_queue, "kk_compile", KK_COMPILE_QUEUE_JOBS,
++                      KK_COMPILE_THREADS, UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL);
++
+    if (pdev->settings.gpu_capture_enabled) {
+       const char *capture_directory =
+          debug_get_option("MESA_KK_GPU_CAPTURE_DIRECTORY", NULL);
+@@ -380,6 +388,14 @@
+    if (!dev)
+       return;
+ 
++   /* Pipelines still waiting are dropped: nobody can use them any more. */
++   if (dev->compile_queue_ready) {
++      p_atomic_set(&dev->compile_abandon, true);
++      util_queue_finish(&dev->compile_queue);
++      util_queue_destroy(&dev->compile_queue);
++      dev->compile_queue_ready = false;
++   }
++
+    /* End capture before we start releasing resources. Otherwise, Metal capture
+     * may run into issues. */
+    if (pdev->settings.gpu_capture_enabled) {
+@@ -415,6 +431,9 @@
+ 
+    vk_device_finish(&dev->vk);
+ 
++   cnd_destroy(&dev->compile_done);
++   mtx_destroy(&dev->compile_lock);
++
+    vk_free(&dev->vk.alloc, dev);
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -133,9 +133,25 @@
+    char *entrypoint_name;
+ };
+ 
++/* Where a shader's Metal pipeline build stands (kk_shader::compile_state). */
++enum kk_compile_state {
++   /* Built while it was created, or nothing to build. */
++   KK_COMPILE_NOW = 0,
++   KK_COMPILE_QUEUED,
++   KK_COMPILE_RUNNING,
++   KK_COMPILE_DONE,
++   /* Destroyed while queued: the build thread frees it. */
++   KK_COMPILE_ABANDONED,
++};
++
+ struct kk_shader {
+    struct vk_shader vk;
+ 
++   /* enum kk_compile_state, under kk_device::compile_lock. */
++   uint32_t compile_state;
++   /* A build thread still holds this shader, so it frees it if destroyed. */
++   bool compile_job_pending;
++
+    struct kk_pipeline_handles pipeline;
+    struct kk_shader_info info;
+    struct msl_compile_data msl_data[MESA_SHADER_STAGES];
+@@ -146,6 +162,12 @@
+ 
+ extern const struct vk_device_shader_ops kk_device_shader_ops;
+ 
++struct kk_device;
++
++/* Returns once the shader's Metal pipeline is built, building it here if no
++ * thread has started on it. */
++void kk_shader_wait_compiled(struct kk_device *dev, struct kk_shader *shader);
++
+ static inline nir_address_format
+ kk_buffer_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
+ {
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -884,11 +884,9 @@
+ static const struct vk_shader_ops kk_shader_ops;
+ 
+ static void
+-kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+-                  const VkAllocationCallbacks *pAllocator)
++kk_shader_free(struct kk_device *dev, struct kk_shader *shader,
++               const VkAllocationCallbacks *pAllocator)
+ {
+-   struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+-
+    struct kk_pipeline_handles *pipe = &shader->pipeline;
+ 
+    if (shader->info.stage == MESA_SHADER_COMPUTE) {
+@@ -926,7 +924,30 @@
+ 
+    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
+ }
++
++static void
++kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
++                  const VkAllocationCallbacks *pAllocator)
++{
++   struct kk_device *dev = container_of(vk_dev, struct kk_device, vk);
+ 
++   if (__atomic_load_n(&shader->compile_state, __ATOMIC_ACQUIRE) !=
++       KK_COMPILE_NOW) {
++      mtx_lock(&dev->compile_lock);
++      while (shader->compile_state == KK_COMPILE_RUNNING)
++         cnd_wait(&dev->compile_done, &dev->compile_lock);
++      if (shader->compile_job_pending) {
++         /* shortcut: the build thread frees it with the device's allocator;
++          * gfxstream, the only user here, passes none. */
++         shader->compile_state = KK_COMPILE_ABANDONED;
++         mtx_unlock(&dev->compile_lock);
++         return;
++      }
++      mtx_unlock(&dev->compile_lock);
++   }
++   kk_shader_free(dev, shader, pAllocator);
++}
++
+ static bool
+ gather_vs_inputs(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+ {
+@@ -1607,6 +1628,93 @@
+    return result;
+ }
+ 
++/* Builds the shader's Metal pipeline. Failure leaves its handles NULL, and
++ * draws and dispatches with it are skipped. */
++static void
++kk_build_pipeline(struct kk_device *dev, struct kk_shader *shader)
++{
++   if (shader->vk.stage == MESA_SHADER_COMPUTE) {
++      uint32_t local_size_threads = shader->info.cs.local_size.x *
++                                    shader->info.cs.local_size.y *
++                                    shader->info.cs.local_size.z;
++      kk_compile_compute_pipeline(dev,
++                                  &shader->msl_data[MESA_SHADER_COMPUTE],
++                                  local_size_threads, &shader->pipeline.cs);
++   } else {
++      kk_compile_graphics_pipeline(dev, shader);
++   }
++}
++
++static void
++kk_build_pipeline_and_signal(struct kk_device *dev, struct kk_shader *shader)
++{
++   kk_build_pipeline(dev, shader);
++   mtx_lock(&dev->compile_lock);
++   /* Release: a reader that sees DONE without the lock sees the handles. */
++   __atomic_store_n(&shader->compile_state, KK_COMPILE_DONE, __ATOMIC_RELEASE);
++   cnd_broadcast(&dev->compile_done);
++   mtx_unlock(&dev->compile_lock);
++}
++
++static void
++kk_compile_job(void *job, UNUSED void *global_data, UNUSED int thread_index)
++{
++   struct kk_shader *shader = job;
++   struct kk_device *dev =
++      container_of(shader->vk.base.device, struct kk_device, vk);
++   bool build = false;
++
++   mtx_lock(&dev->compile_lock);
++   shader->compile_job_pending = false;
++   uint32_t state = shader->compile_state;
++   if (state == KK_COMPILE_QUEUED) {
++      if (p_atomic_read(&dev->compile_abandon)) {
++         shader->compile_state = KK_COMPILE_DONE;
++         cnd_broadcast(&dev->compile_done);
++      } else {
++         shader->compile_state = KK_COMPILE_RUNNING;
++         build = true;
++      }
++   }
++   mtx_unlock(&dev->compile_lock);
++
++   if (state == KK_COMPILE_ABANDONED)
++      kk_shader_free(dev, shader, NULL);
++   else if (build)
++      kk_build_pipeline_and_signal(dev, shader);
++}
++
++static void
++kk_queue_pipeline_build(struct kk_device *dev, struct kk_shader *shader)
++{
++   shader->compile_state = KK_COMPILE_QUEUED;
++   shader->compile_job_pending = true;
++   util_queue_add_job(&dev->compile_queue, shader, NULL, kk_compile_job, NULL,
++                      0);
++}
++
++void
++kk_shader_wait_compiled(struct kk_device *dev, struct kk_shader *shader)
++{
++   if (shader == NULL)
++      return;
++   uint32_t state = __atomic_load_n(&shader->compile_state, __ATOMIC_ACQUIRE);
++   if (state == KK_COMPILE_NOW || state == KK_COMPILE_DONE)
++      return;
++
++   mtx_lock(&dev->compile_lock);
++   if (shader->compile_state == KK_COMPILE_QUEUED) {
++      /* Needed now: build it here rather than wait behind the queue. */
++      shader->compile_state = KK_COMPILE_RUNNING;
++      mtx_unlock(&dev->compile_lock);
++      kk_build_pipeline_and_signal(dev, shader);
++      return;
++   }
++   while (shader->compile_state == KK_COMPILE_RUNNING)
++      cnd_wait(&dev->compile_done, &dev->compile_lock);
++   mtx_unlock(&dev->compile_lock);
++}
++
+ static VkResult
+ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                    struct vk_shader_compile_info *infos,
+@@ -1703,17 +1811,25 @@
+     * 2. Graphics with all stages (since we don't support GPL nor shader
+     * objects for now). This will be addressed later.
+     */
++   /* A generated fragment shader is freed below, so that build stays here. */
++   bool on_thread = dev->compile_queue_ready && shader_count == total_shaders;
+    if (shaders[0]->vk.stage == MESA_SHADER_COMPUTE) {
+       struct kk_shader *s = shaders[0];
+       uint32_t local_size_threads = s->info.cs.local_size.x *
+                                     s->info.cs.local_size.y *
+                                     s->info.cs.local_size.z;
+-      result =
+-         kk_compile_compute_pipeline(dev, &s->msl_data[MESA_SHADER_COMPUTE],
+-                                     local_size_threads, &s->pipeline.cs);
++      if (on_thread)
++         kk_queue_pipeline_build(dev, s);
++      else
++         result = kk_compile_compute_pipeline(
++            dev, &s->msl_data[MESA_SHADER_COMPUTE], local_size_threads,
++            &s->pipeline.cs);
+    } else {
+       gather_graphics_pipeline_create_info(state, shaders, total_shaders);
+-      result = kk_compile_graphics_pipeline(dev, shaders[0]);
++      if (on_thread)
++         kk_queue_pipeline_build(dev, shaders[0]);
++      else
++         result = kk_compile_graphics_pipeline(dev, shaders[0]);
+ 
+       /* Free generated fragment shader */
+       if (shader_count != total_shaders)
+@@ -1855,6 +1971,7 @@
+ void
+ kk_cmd_bind_compute_shader(struct kk_cmd_buffer *cmd, struct kk_shader *shader)
+ {
++   kk_shader_wait_compiled(kk_cmd_buffer_device(cmd), shader);
+    cmd->state.shaders[MESA_SHADER_COMPUTE] = shader;
+ }
+ 
+@@ -1870,6 +1987,8 @@
+    if (stage != MESA_SHADER_VERTEX)
+       return;
+ 
++   kk_shader_wait_compiled(kk_cmd_buffer_device(cmd), shader);
++
+    bool requires_dynamic_depth_stencil = shader->pipeline.gfx.ds_handle == NULL;
+    if (cmd->state.gfx.is_depth_stencil_dynamic) {
+       /* If we are switching from dynamic to static, we need to clean up
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2064,6 +2064,12 @@
+ kk_draw(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+ {
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
++
++   /* Its Metal pipeline failed to build (on a build thread, so creating it
++    * could not report the failure). */
++   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++   if (vs == NULL || vs->pipeline.gfx.render == NULL)
++      return;
+ 
+    kk_flush_gfx_state(cmd);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -78,6 +78,9 @@
+    desc->root.cs.base_group[2] = baseGroupZ;
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   /* Its Metal pipeline failed to build: see kk_draw(). */
++   if (cs == NULL || cs->pipeline.cs == NULL)
++      return;
+    struct mtl_size local_size = cs->info.cs.local_size;
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+@@ -127,6 +130,9 @@
+    desc->root.cs.base_group[2] = 0;
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
++   /* Its Metal pipeline failed to build: see kk_draw(). */
++   if (cs == NULL || cs->pipeline.cs == NULL)
++      return;
+    struct mtl_size local_size = cs->info.cs.local_size;
+ 
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);

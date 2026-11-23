@@ -1,0 +1,60 @@
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -31,6 +31,9 @@
+ struct kk_residency_set {
+    simple_mtx_t mutex;
+    mtl_residency_set *handle;
++   /* Allocations added or removed since the last commit. Every submission used to commit and
++    * request residency, an IOKit call each time even when nothing changed. */
++   bool dirty;
+ };
+ 
+ struct mtl_sampler_packed {
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -444,6 +444,7 @@
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_add_allocation(dev->residency_set.handle, heap);
++   dev->residency_set.dirty = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -452,6 +453,7 @@
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_remove_allocation(dev->residency_set.handle, heap);
++   dev->residency_set.dirty = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -460,6 +462,7 @@
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_add_allocation(dev->residency_set.handle, buffer);
++   dev->residency_set.dirty = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -469,6 +472,7 @@
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+    mtl_residency_set_remove_allocation(dev->residency_set.handle, buffer);
++   dev->residency_set.dirty = true;
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
+@@ -476,8 +480,11 @@
+ kk_device_make_resources_resident(struct kk_device *dev)
+ {
+    simple_mtx_lock(&dev->residency_set.mutex);
+-   mtl_residency_set_commit(dev->residency_set.handle);
+-   mtl_residency_set_request_residency(dev->residency_set.handle);
++   if (dev->residency_set.dirty) {
++      mtl_residency_set_commit(dev->residency_set.handle);
++      mtl_residency_set_request_residency(dev->residency_set.handle);
++      dev->residency_set.dirty = false;
++   }
+    simple_mtx_unlock(&dev->residency_set.mutex);
+ }
+ 
