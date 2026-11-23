@@ -182,6 +182,7 @@ pub fn ram_refresh_failed(kr: i32) -> String {
 pub fn ram_refresh_thread_failed(err: &std::io::Error) -> String {
     format!("could not start the guest memory refresh thread: {err}")
 }
+#[cfg(target_os = "macos")]
 pub fn ram_release_failed(err: &dyn Display) -> String {
     format!("could not give freed guest memory back to macOS: {err}")
 }

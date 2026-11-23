@@ -1,5 +1,30 @@
+diff --git a/src/kosmickrisp/vulkan/kk_device_memory.c b/src/kosmickrisp/vulkan/kk_device_memory.c
+index e658bd7d3..82f1814c7 100644
+--- a/src/kosmickrisp/vulkan/kk_device_memory.c
++++ b/src/kosmickrisp/vulkan/kk_device_memory.c
+@@ -112,6 +112,7 @@ kk_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *pAllocateInfo,
+    bool import_host = host_info && host_info->handleType;
+ 
+    if (import_metal || import_host) {
++      mem->imported = true;
+       mem->bo = CALLOC_STRUCT(kk_bo);
+       if (!mem->bo) {
+          result = vk_errorf(&dev->vk.base, VK_ERROR_OUT_OF_DEVICE_MEMORY, "%m");
+diff --git a/src/kosmickrisp/vulkan/kk_device_memory.h b/src/kosmickrisp/vulkan/kk_device_memory.h
+index fee1d2123..b887364f9 100644
+--- a/src/kosmickrisp/vulkan/kk_device_memory.h
++++ b/src/kosmickrisp/vulkan/kk_device_memory.h
+@@ -20,6 +20,8 @@ struct kk_device_memory {
+    struct vk_device_memory vk;
+    struct kk_bo *bo;
+    void *map;
++   /* Holds memory someone else allocated (a Metal heap or host pointer handed in). */
++   bool imported;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_device_memory, vk.base, VkDeviceMemory,
 diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
-index de27a6d6e..7651fd56b 100644
+index de27a6d6e..e641755f8 100644
 --- a/src/kosmickrisp/vulkan/kk_image.c
 +++ b/src/kosmickrisp/vulkan/kk_image.c
 @@ -863,6 +863,15 @@ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
@@ -7,12 +32,12 @@ index de27a6d6e..7651fd56b 100644
     plane->addr = mem->bo->gpu + *offset_B;
  
 +   /* An image can be shown before it is fully written (games present a frame or two at
-+    * start, or copy an image that is not filled yet). On phones fresh GPU memory reads as
-+    * zero, so that shows black; Metal heap memory can still hold an earlier allocation's
-+    * pixels (Wuthering Waves flashed full-screen red twice while loading). Clear the memory
-+    * an image is bound to: about 20 ms per GB, once.
++    * start). On phones fresh GPU memory reads as zero, so that shows black; Metal heap
++    * memory can still hold an earlier allocation's pixels (Wuthering Waves flashed
++    * full-screen red while loading). Clear the memory an image is bound to, ~20 ms per GB;
++    * imported memory holds someone's pixels and is left alone.
 +    */
-+   if (mem->bo->cpu)
++   if (!mem->imported && mem->bo->cpu)
 +      memset((uint8_t *)mem->bo->cpu + *offset_B, 0, plane_size_B);
 +
     /* Create auxiliary 2D array texture for 3D images so we can use 2D views of
