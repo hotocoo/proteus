@@ -383,6 +383,7 @@ impl Machine {
     }
 
     fn vcpu_thread(&self, index: u32, role: Role) {
+        devices::interactive_thread();
         if let Err(err) = self.vcpu_loop(index, role) {
             log::error!("{}", copy::vcpu_stopped(index, &err));
             self.request_stop(Err(err));
@@ -567,7 +568,7 @@ struct RamRemap {
 impl devices::virtio::balloon::RamReleaser for RamRemap {
     fn release(&self, gpa: u64, host: NonNull<u8>, len: usize) {
         if let Err(err) = self.vm.unmap(gpa, len) {
-            log::debug!("{}", copy::ram_release_failed(&err));
+            log::warn!("{}", copy::ram_release_failed(&err));
             return;
         }
         // SAFETY: `host..host+len` is whole pages of guest RAM that `mem` mapped and keeps mapped;
@@ -584,7 +585,7 @@ impl devices::virtio::balloon::RamReleaser for RamRemap {
             )
         };
         if fresh == libc::MAP_FAILED {
-            log::debug!(
+            log::warn!(
                 "{}",
                 copy::ram_release_failed(&std::io::Error::last_os_error())
             );

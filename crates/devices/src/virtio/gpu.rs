@@ -685,6 +685,7 @@ fn serve(
     wake: Receiver<Wake>,
     wakes: Sender<Wake>,
 ) {
+    crate::interactive_thread();
     let Served {
         mode,
         sink,

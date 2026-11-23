@@ -19,3 +19,14 @@ pub trait MmioDevice: Send + Sync {
 pub trait InterruptLine: Send + Sync {
     fn set(&self, level: bool);
 }
+
+/// Asks macOS to run the calling thread at user-interactive QoS: performance cores first and the
+/// quickest wake-ups, as Virtualization.framework does for its vCPUs. At the default QoS a busy
+/// Mac (another program on the GPU or CPU) can park the guest's render path on efficiency cores.
+pub fn interactive_thread() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: changes only the calling thread's scheduling class; no memory is touched.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
