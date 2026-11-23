@@ -451,6 +451,9 @@ pub const CACHE_TRIM_SHARE: u64 = 16;
 pub const HOST_RAM_REFRESH_PERIOD: Duration = Duration::from_secs(5);
 /// Guest RAM is remapped this much at a time, so a release never waits long for a refresh.
 pub const HOST_RAM_REFRESH_CHUNK: usize = 32 << 20;
+/// Metal's GPU priority for the window's drawing: 0 is high (Metal's default is 1). The guest's
+/// own GPU work gets the same from the bundled KosmicKrisp.
+pub const WINDOW_GPU_PRIORITY: usize = 0;
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const ORIENTATION_POLL: Duration = Duration::from_millis(500);
 pub const ORIENTATION_TIMEOUT: Duration = Duration::from_secs(5);

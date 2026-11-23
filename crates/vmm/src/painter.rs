@@ -27,6 +27,27 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Has Metal run the window's drawing ahead of other programs' GPU work. Another program's long
+/// GPU jobs (a model being trained or run) otherwise hold back every frame the window shows:
+/// under such load, a chain of 8 GPU round trips took 24 ms at Metal's default priority and 16 ms
+/// at this one. `-setGPUPriority:` is private; a queue without it keeps the default.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn raise_gpu_priority(queue: &wgpu::Queue) {
+    use objc2::runtime::AnyObject;
+    use objc2::{msg_send, sel};
+    use wgpu::hal::api::Metal;
+
+    // SAFETY: only borrows the Metal queue wgpu made, for the call below.
+    let Some(hal) = (unsafe { queue.as_hal::<Metal>() }) else {
+        return;
+    };
+    let raw: &AnyObject = hal.as_raw().as_ref();
+    if raw.class().responds_to(sel!(setGPUPriority:)) {
+        // SAFETY: the queue answers `-setGPUPriority:(NSUInteger)` returning BOOL, as checked.
+        let _: bool = unsafe { msg_send![raw, setGPUPriority: crate::config::WINDOW_GPU_PRIORITY] };
+    }
+}
+
 pub struct Painter {
     pub ctx: egui::Context,
     state: egui_winit::State,
@@ -62,6 +83,10 @@ impl Painter {
         ));
         block_on(painter.set_window(egui::ViewportId::ROOT, Some(Arc::clone(window))))
             .map_err(|err| err.to_string())?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(render) = painter.render_state() {
+            raise_gpu_priority(&render.queue);
+        }
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
