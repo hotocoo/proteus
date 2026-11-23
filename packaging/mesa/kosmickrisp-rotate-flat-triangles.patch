@@ -29,14 +29,14 @@
  
 --- a/src/kosmickrisp/vulkan/kk_shader.c
 +++ b/src/kosmickrisp/vulkan/kk_shader.c
-@@ -1030,8 +1030,79 @@
+@@ -1030,8 +1030,91 @@
                     SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE);
     }
  }
 +
-+
-+#define kk_draw_offset(member) offsetof(struct kk_per_draw_data, member)
  
++#define kk_draw_offset(member) offsetof(struct kk_per_draw_data, member)
++
 +static nir_def *
 +kk_load_draw_u32(nir_builder *b, nir_def *per_draw, uint32_t offset)
 +{
@@ -65,8 +65,20 @@
 +
 +   nir_push_if(&b, nir_ine_imm(&b, mode, 0));
 +   nir_def *corner = nir_umod_imm(&b, raw, 3);
-+   nir_def *source = nir_iadd(&b, nir_isub(&b, raw, corner),
-+                              nir_umod_imm(&b, nir_iadd_imm(&b, corner, 2), 3));
++   /* Mode 1, triangle list: triangle t is vertices 3t, 3t+1, 3t+2, last first. */
++   nir_def *list = nir_iadd(&b, nir_isub(&b, raw, corner),
++                            nir_umod_imm(&b, nir_iadd_imm(&b, corner, 2), 3));
++   /* Mode 2, triangle strip drawn as a list: strip triangle t is vertices t, t+1+t%2,
++    * t+2-t%2 (Vulkan's order); its provoking (last) vertex t+2 sits in slot 2 for even t
++    * and slot 1 for odd t, and goes first. */
++   nir_def *tri = nir_udiv_imm(&b, raw, 3);
++   nir_def *odd = nir_iand_imm(&b, tri, 1);
++   nir_def *slot = nir_umod_imm(&b, nir_iadd(&b, corner, nir_isub_imm(&b, 2, odd)), 3);
++   nir_def *strip = nir_bcsel(&b, nir_ieq_imm(&b, slot, 0), tri,
++                              nir_bcsel(&b, nir_ieq_imm(&b, slot, 1),
++                                        nir_iadd(&b, tri, nir_iadd_imm(&b, odd, 1)),
++                                        nir_isub(&b, nir_iadd_imm(&b, tri, 2), odd)));
++   nir_def *source = nir_bcsel(&b, nir_ieq_imm(&b, mode, 2), strip, list);
 +   nir_def *pos = nir_iadd(&b, kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_first)),
 +                           source);
 +   nir_def *size = kk_load_draw_u32(&b, per_draw, kk_draw_offset(rotate_index_size));
@@ -109,7 +121,7 @@
  lower_vertex_id_zero_base(struct nir_builder *b, nir_intrinsic_instr *intrin,
                            void *data)
  {
-@@ -1109,10 +1180,16 @@
+@@ -1109,10 +1192,16 @@
           nir->xfb_info = NULL;
           NIR_PASS(_, nir, poly_nir_lower_sw_vs);
        } else
@@ -128,12 +140,10 @@
         * 32-bit, which we support. Lower TCS inputs & outputs to scalar. */
 --- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
 +++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
-@@ -1848,6 +1848,24 @@
-           requires_unroll_robustness(cmd, data) ||
-           requires_unroll_restart(cmd, data) ||
+@@ -1850,6 +1850,27 @@
            requires_unroll_flatshade(cmd, data);
-+}
-+
+ }
+ 
 +/* Flat-shaded triangle lists that only need unrolling for the provoking vertex: the vertex
 + * shader can rotate each triangle itself (kk_nir_rotate_vertex_id), so the draw goes out
 + * non-indexed with no unroll pass and no render pass split. */
@@ -141,7 +151,10 @@
 +kk_can_rotate_triangles(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
 +{
 +   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
-+   if (data->prim != MESA_PRIM_TRIANGLES || data->indirect || !vs ||
++   /* An indexed strip may restart; only a list or a restart-free strip can be rotated. */
++   bool strip = data->prim == MESA_PRIM_TRIANGLE_STRIP &&
++                !(data->indexed && data->restart);
++   if ((data->prim != MESA_PRIM_TRIANGLES && !strip) || data->indirect || !vs ||
 +       !vs->info.vs.rotates_triangles ||
 +       cmd->state.shaders[MESA_SHADER_TESS_EVAL] ||
 +       cmd->state.shaders[MESA_SHADER_GEOMETRY])
@@ -150,10 +163,12 @@
 +      return false;
 +   return !requires_unroll_robustness(cmd, data) &&
 +          !requires_unroll_restart(cmd, data);
- }
- 
++}
++
  static uint64_t
-@@ -2084,12 +2102,29 @@
+ upload_base_vertex(struct kk_cmd_buffer *cmd, const struct kk_draw_data *data)
+ {
+@@ -2084,13 +2105,37 @@
  
     bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
  
@@ -167,10 +182,17 @@
 +   struct kk_shader *vs_rot = cmd->state.shaders[MESA_SHADER_VERTEX];
     for (uint32_t i = 0; i < data->draw_count; i++) {
        struct kk_draw_data draw_data = build_draw_data(cmd, data, i);
-+
+ 
 +      if (vs_rot && vs_rot->info.vs.rotates_triangles) {
 +         struct kk_per_draw_data *pd = &cmd->state.gfx.per_draw_data;
-+         pd->rotate_mode = rotate ? 1u : 0u;
++         bool strip = data->prim == MESA_PRIM_TRIANGLE_STRIP;
++         pd->rotate_mode = rotate ? (strip ? 2u : 1u) : 0u;
++         if (rotate && strip) {
++            /* n strip vertices make n - 2 triangles, drawn as a list. */
++            uint32_t n = draw_data.grid.size.x;
++            draw_data.grid.size.x = n >= 3 ? (n - 2) * 3 : 0;
++            draw_data.primitive_type = mesa_prim_to_mtl_primitive_type(MESA_PRIM_TRIANGLES);
++         }
 +         if (rotate) {
 +            bool indexed = draw_data.index.el_size_B != 0;
 +            pd->rotate_index_addr = indexed ? draw_data.index.gpu.addr : 0u;
@@ -181,6 +203,7 @@
 +            draw_data.vertex_offset = 0u;
 +         }
 +      }
- 
++
        if (data->upload_mask)
           kk_upload_per_draw_data(cmd, data->upload_mask, i, &draw_data);
+ 
