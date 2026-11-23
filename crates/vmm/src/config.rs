@@ -445,6 +445,11 @@ pub const CACHE_TRIM_PERIOD: Duration = Duration::from_secs(60);
 /// One sixteenth (512 MB of 8 GB): the host already caches the disk images, so the guest's copy
 /// mostly doubles it, and only the inactive part is ever dropped.
 pub const CACHE_TRIM_SHARE: u64 = 16;
+/// Most inactive anonymous memory moved into zram per `CACHE_TRIM_PERIOD` (KiB): about 4 s of one
+/// guest core compressing, so no single pass stalls the guest long.
+pub const ANON_TRIM_MAX_KIB: u64 = 512 * 1024;
+/// Less inactive anonymous memory than this (KiB) is left alone: not worth a pass.
+pub const ANON_TRIM_MIN_KIB: u64 = 16 * 1024;
 /// How often the program's own view of guest RAM is mapped afresh, so pages the emulator touched
 /// stop counting twice in Activity Monitor (see `host_ram`). Each refresh costs a few ms; the
 /// emulator's next touch of a page costs a soft page fault.
