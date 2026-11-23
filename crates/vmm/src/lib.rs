@@ -119,6 +119,18 @@ pub enum Exit {
 
 /// Returns what the user asked for as the machine stopped.
 #[cfg(host_board)]
+/// Why the guest draws in software although the GPU was asked for; the window shows it.
+static GPU_FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The window's title: it says so while the guest draws in software.
+pub(crate) fn window_title() -> &'static str {
+    if GPU_FALLBACK.get().is_some() {
+        copy::WINDOW_TITLE_SOFTWARE
+    } else {
+        copy::WINDOW_TITLE
+    }
+}
+
 fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
     use window::{Notice, WindowLoop};
 
@@ -152,6 +164,9 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
     };
     let window = WindowLoop::new()?;
     let notify = window.notifier();
+    if let Some(why) = GPU_FALLBACK.get() {
+        notify(Notice::Status(why.clone()));
+    }
     if let Some(screen) = &session.controller.screen {
         let notify = notify.clone();
         screen.on_frame(move || notify(Notice::Frame));
@@ -342,9 +357,11 @@ fn start_gpu() -> Result<(), String> {
             std::env::set_var(config::VULKAN_ICD_VARIABLE, driver);
             std::env::set_var(config::VULKAN_LAUNCHER_DIR_VARIABLE, dir);
         }
-        match gpu_works() {
-            Ok(()) => return Ok(()),
-            Err(failed) => why = failed,
+        for _ in 0..config::GPU_CHECK_ATTEMPTS {
+            match gpu_works() {
+                Ok(()) => return Ok(()),
+                Err(failed) => why = failed,
+            }
         }
     }
     // SAFETY: as above.
@@ -558,6 +575,7 @@ pub fn cli_main() -> ExitCode {
             Ok(()) => eprintln!("{}", copy::GPU_ACCELERATED),
             Err(why) => {
                 eprintln!("{}", copy::gpu_unavailable(&why));
+                let _ = GPU_FALLBACK.set(copy::gpu_unavailable_short(&why));
                 config.gpu = false;
             }
         }

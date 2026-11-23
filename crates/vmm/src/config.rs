@@ -173,6 +173,9 @@ pub const GPU_CHECK_ARG: &str = "--gpu-check";
 pub const UPDATE_SUBCOMMAND: &str = "update";
 /// How long the renderer may take to start before it is judged not to work.
 pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How many times each driver is checked before the next is tried: one failed check can be a
+/// passing hitch (a busy GPU, a driver just replaced), and software drawing is far slower.
+pub const GPU_CHECK_ATTEMPTS: usize = 2;
 /// How often the check is looked at while it runs.
 pub const GPU_CHECK_POLL: Duration = Duration::from_millis(50);
 /// The Vulkan drivers a release may carry beside the program, best first, by gfxstream's name for

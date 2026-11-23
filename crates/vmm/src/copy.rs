@@ -275,6 +275,9 @@ pub fn audio_failed(err: &dyn Display) -> String {
     format!("sound output: {err}; the guest's sound will not be heard")
 }
 pub const WINDOW_TITLE: &str = "Proteus";
+/// The title while the guest draws in software because the GPU renderer did not start, so that
+/// a slow picture is never mistaken for a hung machine.
+pub const WINDOW_TITLE_SOFTWARE: &str = "Proteus (software drawing: the GPU renderer did not start)";
 /// Names egui keeps the window's parts by.
 pub const GUEST_TEXTURE: &str = "guest";
 pub const SHARED_FRAMES_ON: &str =
@@ -332,6 +335,11 @@ pub const GPU_NOT_BUILT: &str =
     "this build of Proteus has no GPU acceleration; the guest draws in software";
 pub const GPU_ACCELERATED: &str = "proteus: the guest draws with this machine's GPU";
 pub const GPU_CHECK_HUNG: &str = "it did not start in time";
+
+/// The window's pop-up when the GPU renderer did not start.
+pub fn gpu_unavailable_short(why: &dyn Display) -> String {
+    format!("The GPU renderer did not start ({why}). Games will be very slow; restart to try again.")
+}
 
 pub fn gpu_unavailable(why: &dyn Display) -> String {
     format!("proteus: the GPU renderer does not work here ({why}); the guest draws in software")
