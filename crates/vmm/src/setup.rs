@@ -113,6 +113,16 @@ const ANGLE_NO_EVENTS: &str = "su 0 setprop debug.angle.feature_overrides_disabl
 /// 640 MB back within seconds.
 const REPORT_SMALL_FREES: &str =
     "su 0 sh -c 'echo 5 > /sys/module/page_reporting/parameters/page_reporting_order'";
+/// Turns off Unreal Engine's hang watchdog in every installed Unreal game. The watchdog aborts the
+/// game when a thread misses its heartbeat for `HangDuration` seconds; loading under emulation can
+/// stall that long where a phone would not, and Wuthering Waves died that way mid-load
+/// (`FThreadHeartBeat::OnHang`, SIGABRT). A duration of 0 skips the check. Each game reads its
+/// saved Engine.ini at start; appending keeps the file's owner, and a repeated section merges.
+const UNREAL_NO_HANG_ABORT: &str = "su 0 sh -c 'for ini in \
+     /data/media/0/Android/data/*/files/UE4Game/*/*/Saved/Config/Android/Engine.ini \
+     /data/media/0/Android/data/*/files/UnrealGame/*/*/Saved/Config/Android/Engine.ini; do \
+     [ -f \"$ini\" ] || continue; grep -q ^HangDuration=0 \"$ini\" && continue; \
+     printf \"\\n[Core.System]\\nHangDuration=0\\nPresentHangDuration=0\\n\" >> \"$ini\"; done'";
 /// Tells the guest its disks are solid state with no request scheduler. The kernel takes a virtio
 /// disk for a spinning one and queues its requests through mq-deadline, which only delays them:
 /// the host does its own ordering and caching.
@@ -210,6 +220,7 @@ fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Pat
         ANGLE_NO_EVENTS,
         DISK_QUEUES,
         REPORT_SMALL_FREES,
+        UNREAL_NO_HANG_ABORT,
         BLUETOOTH_OFF,
         UWB_OFF,
         RADIOS_OFF,
