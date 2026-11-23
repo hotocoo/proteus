@@ -1,0 +1,127 @@
+diff --git a/host/address_space/address_space_graphics.cpp b/host/address_space/address_space_graphics.cpp
+index 49fb390..3598916 100644
+--- a/host/address_space/address_space_graphics.cpp
++++ b/host/address_space/address_space_graphics.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "gfxstream/host/address_space_graphics.h"
+ 
++#include <chrono>
+ #include <memory>
+ #include <optional>
+ 
+@@ -629,7 +630,10 @@ void AddressSpaceGraphicsContext::perform(AddressSpaceDevicePingInfo* info) {
+ AsgOnUnavailableReadStatus AddressSpaceGraphicsContext::onUnavailableRead() {
+     std::unique_lock<std::mutex> lock(mConsumerStateMutex);
+     gfxstream::base::ScopedLockAssertion lockAssertion(mConsumerStateMutex);
+-    mConsumerStateCv.wait(lock, [this]() {
++    // Bounded, so a wake-up that is lost anyway costs at most this long instead of a hang; the
++    // caller looks at the ring again either way.
++    constexpr auto kMaxSleep = std::chrono::milliseconds(50);
++    mConsumerStateCv.wait_for(lock, kMaxSleep, [this]() {
+         gfxstream::base::ScopedLockAssertion lockAssertion(mConsumerStateMutex);
+         return mConsumerState.hasPendingWork();
+     });
+diff --git a/host/ring_stream.cpp b/host/ring_stream.cpp
+index 034e63a..8f93e2e 100644
+--- a/host/ring_stream.cpp
++++ b/host/ring_stream.cpp
+@@ -15,6 +15,9 @@
+ #include "ring_stream.h"
+ 
+ #include <assert.h>
++#include <stdio.h>
++
++#include <atomic>
+ #include <memory.h>
+ 
+ #include "gfxstream/host/dma_device.h"
+@@ -259,6 +262,20 @@ const unsigned char* RingStream::readRaw(void* buf, size_t* inout_len) {
+             ++mUnavailableReadCount;
+             if (mUnavailableReadCount >= kMaxUnavailableReads) {
+                 *(mContext.host_state) = ASG_HOST_STATE_NEED_NOTIFY;
++                // The guest pings only if it sees NEED_NOTIFY. A write that landed after the
++                // last look but before the store above was not seen, so look once more before
++                // sleeping: otherwise that write waits for a ping that never comes, and a decoder
++                // waiting for its sequence number spins for good (the guest app then hangs).
++                __atomic_thread_fence(__ATOMIC_SEQ_CST);
++                if (ring_buffer_available_read(mContext.to_host, 0)) {
++                    static std::atomic<uint32_t> caught{0};
++                    const uint32_t n = ++caught;
++                    if ((n & (n - 1)) == 0) {
++                        fprintf(stderr, "gfxstream: ring write caught before sleeping (%u times)\n", n);
++                    }
++                    *(mContext.host_state) = ASG_HOST_STATE_CAN_CONSUME;
++                    continue;
++                }
+ 
+                 bool sleeping = false;
+                 do {
+diff --git a/host/vulkan/vk_decoder.cpp b/host/vulkan/vk_decoder.cpp
+index 39eb8d2..a8e369a 100644
+--- a/host/vulkan/vk_decoder.cpp
++++ b/host/vulkan/vk_decoder.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "vk_decoder.h"
+ 
++#include <cstdio>
+ #include <cstring>
+ #include <functional>
+ #include <optional>
+@@ -161,8 +162,40 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                     seqno, gfxstream::base::getCurrentThreadId());
+             }
+             if (seqnoPtr && !m_forSnapshotLoad) {
+-                {
++                // A command whose turn was given up on (below) runs as soon as it comes, and
++                // takes one off first so that the count it adds afterwards changes nothing.
++                const int32_t ahead =
++                    static_cast<int32_t>(seqno - seqnoPtr->load(std::memory_order_seq_cst));
++                if (ahead <= 0) {
++                    seqnoPtr->fetch_sub(1, std::memory_order_seq_cst);
++                } else {
++                    // Guest threads take their numbers before they send their commands, and a
++                    // guest thread can hold its number while it waits for a lock held by a later
++                    // number's thread, which waits for the host: nothing then comes for good and
++                    // the app hangs. After kSeqnoGiveUpUs the turn is given up on and this
++                    // command runs; the missing one runs whenever it does arrive.
++                    constexpr uint64_t kSeqnoGiveUpUs = 1000000;
++                    uint64_t spins = 0;
++                    uint64_t waitStartUs = 0;
+                     while ((seqno - seqnoPtr->load(std::memory_order_seq_cst) != 1)) {
++                        if ((++spins & 1023) == 0) {
++                            const uint64_t nowUs = gfxstream::base::getHighResTimeUs();
++                            if (!waitStartUs) {
++                                waitStartUs = nowUs;
++                            } else if (nowUs - waitStartUs > kSeqnoGiveUpUs) {
++                                uint32_t current = seqnoPtr->load(std::memory_order_seq_cst);
++                                if (static_cast<int32_t>(seqno - current) > 1 &&
++                                    seqnoPtr->compare_exchange_strong(current, seqno - 1)) {
++                                    fprintf(stderr,
++                                            "gfxstream: seqno %u waited %llu ms for %u; went on "
++                                            "without it\n",
++                                            seqno,
++                                            (unsigned long long)((nowUs - waitStartUs) / 1000),
++                                            current + 1);
++                                }
++                                continue;
++                            }
++                        }
+                         if (shouldExit.load(std::memory_order_relaxed) ||
+                             (processResources && processResources->isGuestProcessDead())) {
+                             GFXSTREAM_WARNING(
+@@ -175,10 +208,12 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                         _mm_pause();
+ #elif (defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)))
+                         __asm__ __volatile__("pause;");
++#elif (defined(__GNUC__) && defined(__aarch64__))
++                        __asm__ __volatile__("yield");
+ #endif
+                     }
+-                    m_prevSeqno = seqno;
+                 }
++                m_prevSeqno = seqno;
+             }
+         }
+ 
