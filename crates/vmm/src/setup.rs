@@ -77,14 +77,19 @@ const DIRTY_LIMITS: &str = "su 0 sh -c 'echo 33554432 > /proc/sys/vm/dirty_backg
 /// itself, in memory it can drop and does not charge to this process, so a dropped file comes back
 /// from there quickly. Freed pages go back to the host through the balloon.
 ///
-/// Only the excess goes, coldest pages first (`memory.reclaim`, no swapping). Dropping the whole
-/// cache also threw out the files a game was streaming from, and the guest stalled for seconds
-/// reading them back, once a minute. Kernels without `memory.reclaim` still drop the whole cache.
+/// Only the excess goes, coldest pages first (`memory.reclaim`, no swapping), and never more than
+/// the inactive part, so files in use stay. Dropping the whole cache also threw out the files a
+/// game was streaming from, and the guest stalled for seconds reading them back, once a minute.
+/// Shared memory counts as cache but cannot be dropped, so it is left out of the sum. Kernels
+/// without `memory.reclaim` still drop the whole cache.
 fn cache_trim() -> String {
     format!(
         "su 0 sh -c 'set -- $(grep MemTotal /proc/meminfo); total=$2; \
          set -- $(grep ^Cached /proc/meminfo); cached=$2; \
-         extra=$((cached - total / {CACHE_TRIM_SHARE})); [ $extra -gt 0 ] || exit 0; \
+         set -- $(grep ^Shmem: /proc/meminfo); shmem=$2; \
+         set -- $(grep \"^Inactive(file)\" /proc/meminfo); inactive=$2; \
+         extra=$((cached - shmem - total / {CACHE_TRIM_SHARE})); \
+         [ $extra -le $inactive ] || extra=$inactive; [ $extra -gt 0 ] || exit 0; \
          if [ -e {MEMORY_RECLAIM} ]; then echo \"${{extra}}K swappiness=0\" > {MEMORY_RECLAIM}; \
          else echo 1 > /proc/sys/vm/drop_caches; fi'"
     )
@@ -265,7 +270,8 @@ mod tests {
     fn cache_trim_reclaims_only_the_excess() {
         let trim = cache_trim();
         println!("{trim}");
-        assert!(trim.contains(&format!("total / {CACHE_TRIM_SHARE}")));
+        assert!(trim.contains(&format!("cached - shmem - total / {CACHE_TRIM_SHARE}")));
+        assert!(trim.contains("[ $extra -le $inactive ] || extra=$inactive"));
         assert!(trim.contains(r#"echo "${extra}K swappiness=0" > /sys/fs/cgroup/memory.reclaim"#));
         assert!(trim.contains("else echo 1 > /proc/sys/vm/drop_caches"));
     }
