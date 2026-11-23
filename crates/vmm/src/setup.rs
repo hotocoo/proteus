@@ -124,6 +124,12 @@ const UNREAL_NO_HANG_ABORT: &str = "su 0 sh -c 'for ini in \
      /data/media/0/Android/data/*/files/UnrealGame/*/*/Saved/Config/Android/Engine.ini; do \
      [ -f \"$ini\" ] || continue; grep -q ^HangDuration=0 \"$ini\" && continue; \
      printf \"\\n[Core.System]\\nHangDuration=0\\nPresentHangDuration=0\\n\" >> \"$ini\"; done'";
+/// Has Android manage memory the way a phone does, which this image leaves off: apps in the
+/// background have their memory compressed into zram (app compaction), and cached apps are frozen
+/// so they stop touching it. The game in front is left alone. Compressed memory is memory the
+/// guest frees, and freed memory goes back to the Mac.
+const PHONE_MEMORY: &str = "device_config put activity_manager use_compaction true; \
+     settings put global cached_apps_freezer enabled";
 /// Tells the guest its disks are solid state with no request scheduler. The kernel takes a virtio
 /// disk for a spinning one and queues its requests through mq-deadline, which only delays them:
 /// the host does its own ordering and caching.
@@ -222,6 +228,7 @@ fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Pat
         DISK_QUEUES,
         REPORT_SMALL_FREES,
         UNREAL_NO_HANG_ABORT,
+        PHONE_MEMORY,
         BLUETOOTH_OFF,
         UWB_OFF,
         RADIOS_OFF,

@@ -439,8 +439,9 @@ pub const SETUP_POLL: Duration = Duration::from_secs(2);
 /// How often Android's file cache is checked and, when too big, dropped.
 pub const CACHE_TRIM_PERIOD: Duration = Duration::from_secs(60);
 /// Android's file cache is dropped once it holds more than one part in this many of guest RAM.
-/// One eighth: the host already caches the disk images, so the guest's copy mostly doubles it.
-pub const CACHE_TRIM_SHARE: u64 = 8;
+/// One sixteenth (512 MB of 8 GB): the host already caches the disk images, so the guest's copy
+/// mostly doubles it, and only the inactive part is ever dropped.
+pub const CACHE_TRIM_SHARE: u64 = 16;
 /// How often the program's own view of guest RAM is mapped afresh, so pages the emulator touched
 /// stop counting twice in Activity Monitor (see `host_ram`). Each refresh costs a few ms; the
 /// emulator's next touch of a page costs a soft page fault.
