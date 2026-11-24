@@ -360,6 +360,27 @@ pub const GPU_NOT_BUILT: &str =
     "this build of Proteus has no GPU acceleration; the guest draws in software";
 pub const GPU_ACCELERATED: &str = "proteus: the guest draws with this machine's GPU";
 pub const GPU_CHECK_HUNG: &str = "it did not start in time";
+/// The title while the guest draws through a lesser bundled Vulkan driver (MoltenVK), whose
+/// OpenGL ES stops below 3.1, so that a game refusing to start is not blamed on the game.
+pub const WINDOW_TITLE_FALLBACK_DRIVER: &str =
+    "Proteus (fallback GPU driver: games that need OpenGL ES 3.1 will not start)";
+
+pub fn gpu_check_failed(failed: &dyn Display, last_said: &str) -> String {
+    format!("{failed}: {last_said}")
+}
+
+/// The window's pop-up when the best GPU driver did not start and a lesser one did.
+pub fn gpu_driver_fallback(driver: &str, why: &dyn Display) -> String {
+    format!(
+        "The main GPU driver did not start ({why}), so {driver} is used. It offers less than \
+         OpenGL ES 3.1: games that need it (Wuthering Waves, for one) will say this device is \
+         not supported. Restart Proteus to try the main driver again."
+    )
+}
+
+pub fn gpu_driver_fallback_log(driver: &str, why: &dyn Display) -> String {
+    format!("proteus: the main GPU driver did not start ({why}); using {driver}")
+}
 
 /// The window's pop-up when the GPU renderer did not start.
 pub fn gpu_unavailable_short(why: &dyn Display) -> String {

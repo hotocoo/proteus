@@ -122,15 +122,14 @@ pub enum Exit {
 /// Returns what the user asked for as the machine stopped.
 #[cfg(host_board)]
 /// Why the guest draws in software although the GPU was asked for; the window shows it.
-static GPU_FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// Also set, with its own title, when only a lesser bundled Vulkan driver started.
+static GPU_FALLBACK: std::sync::OnceLock<(&'static str, String)> = std::sync::OnceLock::new();
 
-/// The window's title: it says so while the guest draws in software.
+/// The window's title: it says so while the guest draws in software or on a lesser driver.
 pub(crate) fn window_title() -> &'static str {
-    if GPU_FALLBACK.get().is_some() {
-        copy::WINDOW_TITLE_SOFTWARE
-    } else {
-        copy::WINDOW_TITLE
-    }
+    GPU_FALLBACK
+        .get()
+        .map_or(copy::WINDOW_TITLE, |(title, _)| title)
 }
 
 fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
@@ -166,7 +165,7 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
     };
     let window = WindowLoop::new()?;
     let notify = window.notifier();
-    if let Some(why) = GPU_FALLBACK.get() {
+    if let Some((_, why)) = GPU_FALLBACK.get() {
         notify(Notice::Status(why.clone()));
     }
     if let Some(screen) = &session.controller.screen {
@@ -325,6 +324,14 @@ fn run(_config: &config::Config, _started: Instant) -> Result<Exit, VmmError> {
 
 /// `proteus --gpu-check`: starts and stops the GPU renderer once. Exits with success if it worked.
 fn gpu_check() -> ExitCode {
+    // gfxstream can wait forever on a renderer that failed to start; a check whose parent is gone
+    // (quit mid-check) would then linger for good, so it ends itself once its time is up.
+    std::thread::spawn(|| {
+        std::thread::sleep(config::GPU_CHECK_TIMEOUT);
+        // SAFETY: `_exit` ends the process without running exit handlers, which could block on
+        // the stuck renderer.
+        unsafe { libc::_exit(1) }
+    });
     #[cfg(feature = "gpu")]
     return match gfx::check() {
         Ok(()) => ExitCode::SUCCESS,
@@ -353,7 +360,7 @@ fn start_gpu() -> Result<(), String> {
     }
     // The first bundled driver that starts is used; each is tried in its own child process.
     let mut why = String::new();
-    for (driver, dir) in bundled {
+    for (rank, (driver, dir)) in bundled.into_iter().enumerate() {
         // SAFETY: called from `main` before any thread is started.
         unsafe {
             std::env::set_var(config::VULKAN_ICD_VARIABLE, driver);
@@ -361,7 +368,18 @@ fn start_gpu() -> Result<(), String> {
         }
         for _ in 0..config::GPU_CHECK_ATTEMPTS {
             match gpu_works() {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    // A lesser driver can lack what games need (MoltenVK: no OpenGL ES 3.1), so
+                    // running on one is said out loud, never left to look like a game's fault.
+                    if rank > 0 {
+                        eprintln!("{}", copy::gpu_driver_fallback_log(driver, &why));
+                        let _ = GPU_FALLBACK.set((
+                            copy::WINDOW_TITLE_FALLBACK_DRIVER,
+                            copy::gpu_driver_fallback(driver, &why),
+                        ));
+                    }
+                    return Ok(());
+                }
                 Err(failed) => why = failed,
             }
         }
@@ -381,26 +399,38 @@ fn gpu_works() -> Result<(), String> {
         return Err(copy::GPU_NOT_BUILT.to_owned());
     }
     let program = std::env::current_exe().map_err(|err| err.to_string())?;
+    // The check's own words are kept in a file, so a failure says why and not just its status.
+    let log = std::env::temp_dir().join(config::GPU_CHECK_LOG);
+    let stderr = std::fs::File::create(&log)
+        .map(std::process::Stdio::from)
+        .unwrap_or_else(|_| std::process::Stdio::null());
     let mut child = no_console_window(&mut std::process::Command::new(program))
         .arg(config::GPU_CHECK_ARG)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr)
         .spawn()
         .map_err(|err| err.to_string())?;
     let deadline = Instant::now() + config::GPU_CHECK_TIMEOUT;
-    loop {
+    let failed = loop {
         match child.try_wait().map_err(|err| err.to_string())? {
             Some(status) if status.success() => return Ok(()),
-            Some(status) => return Err(status.to_string()),
+            Some(status) => break status.to_string(),
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(copy::GPU_CHECK_HUNG.to_owned());
+                break copy::GPU_CHECK_HUNG.to_owned();
             }
             None => std::thread::sleep(config::GPU_CHECK_POLL),
         }
-    }
+    };
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    Err(
+        match said.lines().rev().find(|line| !line.trim().is_empty()) {
+            Some(last) => copy::gpu_check_failed(&failed, last.trim()),
+            None => failed,
+        },
+    )
 }
 
 /// Carries out `proteus instance ...`. Starting one gives back its configuration, to run.
@@ -577,7 +607,10 @@ pub fn cli_main() -> ExitCode {
             Ok(()) => eprintln!("{}", copy::GPU_ACCELERATED),
             Err(why) => {
                 eprintln!("{}", copy::gpu_unavailable(&why));
-                let _ = GPU_FALLBACK.set(copy::gpu_unavailable_short(&why));
+                let _ = GPU_FALLBACK.set((
+                    copy::WINDOW_TITLE_SOFTWARE,
+                    copy::gpu_unavailable_short(&why),
+                ));
                 config.gpu = false;
             }
         }

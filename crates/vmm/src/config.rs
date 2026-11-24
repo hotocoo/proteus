@@ -176,6 +176,8 @@ pub const GPU_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// How many times each driver is checked before the next is tried: one failed check can be a
 /// passing hitch (a busy GPU, a driver just replaced), and software drawing is far slower.
 pub const GPU_CHECK_ATTEMPTS: usize = 2;
+/// File in the temporary folder that keeps the last check's own output, read back on failure.
+pub const GPU_CHECK_LOG: &str = "proteus-gpu-check.log";
 /// How often the check is looked at while it runs.
 pub const GPU_CHECK_POLL: Duration = Duration::from_millis(50);
 /// The Vulkan drivers a release may carry beside the program, best first, by gfxstream's name for
