@@ -7,8 +7,8 @@
 # and then tap the menu in it. The Terminal's grid grows as the story unlocks menus, which moves
 # its items: these are where they sit once Team is unlocked (Union level 3).
 # A gamepad needs no map: the game supports controllers itself.
-# Positions measured on a 2400x1080 screen. Not here yet (no touch button found): T, Tab, G, X,
-# V, Ctrl, middle click, O, F1, F3, F4.
+# Positions measured on a 2400x1080 screen. Not here yet (no touch button found): T, Tab, X, V,
+# Ctrl, middle click, O, F1, F3, F4.
 size = [2400, 1080]
 toggle = "F12"            # whole map off, for typing
 
@@ -45,6 +45,10 @@ at = [1781, 941]
 key = "KeyQ"
 at = [1783, 760]
 
+[[tap]]                   # aim mode (shown for gunners such as Chixia); press again to leave it
+key = "KeyG"
+at = [1670, 702]
+
 [[tap]]                   # resonance liberation
 key = "KeyR"
 at = [1660, 850]
@@ -65,17 +69,13 @@ at = [2112, 931]
 key = "ShiftLeft"
 at = [2112, 931]
 
-[[tap]]                   # switch to character 1 (team portraits, right edge)
-key = "Digit1"
+[[tap]]                   # switch character: the touch screen lists only the two members not in
+key = "Digit1"            # play, so 1 and 2 pick the upper and lower of those (not fixed slots)
 at = [2150, 270]
 
-[[tap]]                   # switch to character 2
+[[tap]]
 key = "Digit2"
 at = [2150, 406]
-
-[[tap]]                   # switch to character 3
-key = "Digit3"
-at = [2150, 542]
 
 [[tap]]                   # terminal (main menu)
 key = "Escape"
