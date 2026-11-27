@@ -399,7 +399,8 @@ pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
 /// Frames the toolbar's 1% low is worked out over: about 7 s at 144 fps, 17 s at 60 fps.
 pub const LOW_FPS_FRAMES: usize = 1000;
 /// Names a file to record when each guest frame arrives, for measuring frame pacing: one line per
-/// stamp, a tag (`g` as the GPU hands the frame over, `w` as the window takes it) and microseconds.
+/// stamp, a tag (`g` as the GPU hands the frame over, `w` as the window takes it) and wall-clock
+/// microseconds.
 pub const FRAME_LOG_VARIABLE: &str = "PROTEUS_FRAME_LOG";
 /// A longer wait between frames is a still screen (Android sends no frame when nothing changes),
 /// not a stutter, so it is left out of the 1% low.
