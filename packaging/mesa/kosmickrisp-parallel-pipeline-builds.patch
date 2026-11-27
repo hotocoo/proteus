@@ -57,14 +57,16 @@ diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_devi
     if (pdev->settings.gpu_capture_enabled) {
        const char *capture_directory =
           debug_get_option("MESA_KK_GPU_CAPTURE_DIRECTORY", NULL);
-@@ -380,6 +388,14 @@
+@@ -380,6 +388,16 @@
     if (!dev)
        return;
  
-+   /* Pipelines still waiting are dropped: nobody can use them any more. */
++   /* Pipelines still waiting are dropped: nobody can use them any more. Not
++    * util_queue_finish: its barrier (mutex and condvar on macOS) wedged build
++    * threads for good, and with them every later vkCreateInstance. Destroying
++    * the queue lets each thread end its build and leave. */
 +   if (dev->compile_queue_ready) {
 +      p_atomic_set(&dev->compile_abandon, true);
-+      util_queue_finish(&dev->compile_queue);
 +      util_queue_destroy(&dev->compile_queue);
 +      dev->compile_queue_ready = false;
 +   }
@@ -72,7 +74,7 @@ diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_devi
     /* End capture before we start releasing resources. Otherwise, Metal capture
      * may run into issues. */
     if (pdev->settings.gpu_capture_enabled) {
-@@ -415,6 +431,9 @@
+@@ -415,6 +433,9 @@
  
     vk_device_finish(&dev->vk);
  

@@ -84,6 +84,10 @@ pub const EDID_DPI: u32 = 320;
 /// for every render thread to leave, and a render thread whose guest was switched off mid-frame
 /// waits for guest commands forever: the window then never closed.
 const WORKER_STOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Set once a display worker was left behind with its renderer stuck. The GPU libraries' exit
+/// handlers then wait on the same stuck threads, so the program must end without running them.
+pub static RENDERER_LEFT_BEHIND: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// How often the stopping worker is checked on.
 const WORKER_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
@@ -903,6 +907,7 @@ impl VirtioDevice for Gpu {
                 // shortcut: a guest reboot after this starts a new renderer beside the stuck one;
                 // restart the process instead if that ever shows up.
                 log::warn!("{}", copy::GPU_WORKER_STUCK);
+                RENDERER_LEFT_BEHIND.store(true, std::sync::atomic::Ordering::SeqCst);
             } else if thread.join().is_err() {
                 log::error!("{}", copy::GPU_WORKER_GONE);
             }

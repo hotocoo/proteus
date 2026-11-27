@@ -618,7 +618,7 @@ pub fn cli_main() -> ExitCode {
             }
         }
     }
-    match run(&config, started) {
+    let code = match run(&config, started) {
         #[cfg(host_board)]
         Ok(exit @ (Exit::Restart | Exit::FactoryReset)) if let Some(name) = &config.instance => {
             if exit == Exit::FactoryReset {
@@ -636,5 +636,15 @@ pub fn cli_main() -> ExitCode {
             eprintln!("{}", copy::fatal(&err));
             ExitCode::FAILURE
         }
+    };
+    #[cfg(all(unix, feature = "gpu"))]
+    if devices::virtio::gpu::RENDERER_LEFT_BEHIND.load(std::sync::atomic::Ordering::SeqCst) {
+        // The GPU libraries' exit handlers would wait on the stuck renderer for good.
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let failed = code == ExitCode::FAILURE;
+        // SAFETY: ends the process at once; the machine and its disks are already closed.
+        unsafe { libc::_exit(i32::from(failed)) }
     }
+    code
 }
