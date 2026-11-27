@@ -900,6 +900,8 @@ impl VirtioDevice for Gpu {
             }
             if !thread.is_finished() {
                 // Left running: the renderer is stuck in its teardown and would block for good.
+                // shortcut: a guest reboot after this starts a new renderer beside the stuck one;
+                // restart the process instead if that ever shows up.
                 log::warn!("{}", copy::GPU_WORKER_STUCK);
             } else if thread.join().is_err() {
                 log::error!("{}", copy::GPU_WORKER_GONE);
