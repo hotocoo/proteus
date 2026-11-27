@@ -125,10 +125,9 @@ const ZRAM_ZSTD: &str = "su 0 sh -c 'z=/sys/block/zram0; \
      mkswap /dev/block/zram0 >/dev/null && swapon /dev/block/zram0'";
 /// The guest kernel's control for reclaiming memory from the coldest pages first.
 const MEMORY_RECLAIM: &str = "/sys/fs/cgroup/memory.reclaim";
-/// Has apps keep their compiled GPU shaders and pipelines in Android's multi-file cache, with room
-/// for `SHADER_CACHE_BYTES`, rather than the 2 MB single-file one: a game's pipelines then stay
-/// compiled from one session to the next instead of stuttering as each is first seen again. Read
-/// by each app at its start.
+/// Has apps keep their translated GL shader programs in Android's multi-file cache, with room for
+/// `SHADER_CACHE_BYTES`, rather than the 2 MB single-file one, which a game outgrows at once, so
+/// it translated its shaders again in every session. Read by each app at its start.
 fn shader_cache() -> String {
     format!(
         "su 0 sh -c 'setprop debug.egl.blobcache.multifile true; \

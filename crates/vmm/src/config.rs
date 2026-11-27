@@ -464,9 +464,10 @@ pub const CACHE_TRIM_SHARE: u64 = 16;
 /// Most inactive anonymous memory moved into zram per `CACHE_TRIM_PERIOD` (KiB): about 4 s of one
 /// guest core compressing, so no single pass stalls the guest long.
 pub const ANON_TRIM_MAX_KIB: u64 = 512 * 1024;
-/// Room each app gets for its saved GPU shaders and pipelines (bytes), in Android's multi-file
-/// shader cache. A game's ANGLE pipeline cache runs to tens of MB; the single-file cache Android
-/// uses otherwise holds 2 MB, so the game compiled every pipeline again in each session.
+/// Room each app gets for its saved GL shader programs (bytes), in Android's multi-file shader
+/// cache. ANGLE keeps a game's translated programs there: Wuthering Waves filled 40 MB, where the
+/// single-file cache Android uses otherwise holds 2 MB. (Vulkan pipelines are not kept there:
+/// ANGLE does not save them on this driver; the driver's own disk cache keeps those.)
 pub const SHADER_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 /// Less inactive anonymous memory than this (KiB) is left alone: not worth a pass.
 pub const ANON_TRIM_MIN_KIB: u64 = 16 * 1024;
