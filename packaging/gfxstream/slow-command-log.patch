@@ -1,0 +1,50 @@
+diff --git a/host/vulkan/vk_decoder.cpp b/host/vulkan/vk_decoder.cpp
+index a8e369a..4bc7293 100644
+--- a/host/vulkan/vk_decoder.cpp
++++ b/host/vulkan/vk_decoder.cpp
+@@ -30,6 +30,10 @@
+ 
+ #include "vk_decoder.h"
+ 
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++
+ #include <cstdio>
+ #include <cstring>
+ #include <functional>
+@@ -224,6 +228,14 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+ 
+         gfx_logger.recordCommandExecution();
+ 
++        // GFXSTREAM_SLOW_CMD_US=<n>: log every command that takes the host longer than n us.
++        static const long long kSlowCmdUs = [] {
++            const char* v = getenv("GFXSTREAM_SLOW_CMD_US");
++            return v ? atoll(v) : -1LL;
++        }();
++        const auto slowCmdStart = kSlowCmdUs >= 0 ? std::chrono::system_clock::now()
++                                                   : std::chrono::system_clock::time_point{};
++
+         switch (opcode) {
+ #ifdef VK_BASE_VERSION_1_0
+             case OP_vkCreateInstance: {
+@@ -23118,6 +23130,19 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+             m_state->snapshot()->destroyApiCallInfoIfUnused(snapshotApiCallHandle);
+         }
+ 
++        if (kSlowCmdUs >= 0) {
++            const auto slowCmdEnd = std::chrono::system_clock::now();
++            const long long us = std::chrono::duration_cast<std::chrono::microseconds>(
++                                     slowCmdEnd - slowCmdStart)
++                                     .count();
++            if (us > kSlowCmdUs) {
++                const long long at = std::chrono::duration_cast<std::chrono::microseconds>(
++                                         slowCmdEnd.time_since_epoch())
++                                         .count();
++                fprintf(stderr, "gfxslow %lld %u %lld %s\n", at, opcode, us,
++                        processName ? processName : "?");
++            }
++        }
+         ptr += packetLen;
+         vkStream->clearPool();
+     }
