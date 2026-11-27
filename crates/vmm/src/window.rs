@@ -1217,6 +1217,7 @@ impl ApplicationHandler<Notice> for App {
                 self.frame_waiting = true;
                 self.frames += 1;
                 self.gaps.frame(Instant::now());
+                crate::usage::log_frame('w');
             }
             Notice::Stopped => event_loop.exit(),
             Notice::Foreground(package) => self.follow(&package),

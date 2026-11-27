@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use crate::adb;
 use crate::config::{
     ANON_TRIM_MAX_KIB, ANON_TRIM_MIN_KIB, BUNDLED_APPS_DIR, CACHE_TRIM_PERIOD, CACHE_TRIM_SHARE,
-    INSTALLED_APPS_FILE, SETUP_POLL, SETUP_TIMEOUT,
+    INSTALLED_APPS_FILE, SETUP_POLL, SETUP_TIMEOUT, SHADER_CACHE_BYTES,
 };
 use crate::copy;
 use crate::session::PowerSwitch;
@@ -125,6 +125,16 @@ const ZRAM_ZSTD: &str = "su 0 sh -c 'z=/sys/block/zram0; \
      mkswap /dev/block/zram0 >/dev/null && swapon /dev/block/zram0'";
 /// The guest kernel's control for reclaiming memory from the coldest pages first.
 const MEMORY_RECLAIM: &str = "/sys/fs/cgroup/memory.reclaim";
+/// Has apps keep their compiled GPU shaders and pipelines in Android's multi-file cache, with room
+/// for `SHADER_CACHE_BYTES`, rather than the 2 MB single-file one: a game's pipelines then stay
+/// compiled from one session to the next instead of stuttering as each is first seen again. Read
+/// by each app at its start.
+fn shader_cache() -> String {
+    format!(
+        "su 0 sh -c 'setprop debug.egl.blobcache.multifile true; \
+         setprop debug.egl.blobcache.multifile_limit {SHADER_CACHE_BYTES}'"
+    )
+}
 /// Makes apps share memory through memfd. The guest kernel has no `/dev/ashmem`, and without this
 /// Android still tries it: every shared bitmap (a notification's icon, say) and database cursor
 /// fails, and apps that post notifications crash in `Bitmap_copyAshmem`. Read once per process,
@@ -252,9 +262,11 @@ fn booted(adb_port: &AtomicU16, done: &AtomicBool) -> Option<u16> {
 }
 
 fn set_up(port: u16, keep_log_stream: bool, reset_shape: bool, data: Option<&Path>) {
+    let shader_cache = shader_cache();
     let mut steps = vec![
         DIRTY_LIMITS,
         SHARED_MEMORY,
+        &shader_cache,
         ANGLE_NO_EVENTS,
         DISK_QUEUES,
         REPORT_SMALL_FREES,

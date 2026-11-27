@@ -29,6 +29,22 @@ pub fn cpu_percent(earlier: &Reading, later: &Reading) -> Option<f64> {
     (wall > 0.0).then(|| used / wall * 100.0)
 }
 
+/// Records a frame stamp tagged `tag` when `config::FRAME_LOG_VARIABLE` names a file.
+pub fn log_frame(tag: char) {
+    use std::io::Write;
+    type Log = std::sync::Mutex<(Instant, std::fs::File)>;
+    static LOG: std::sync::OnceLock<Option<Log>> = std::sync::OnceLock::new();
+    let log = LOG.get_or_init(|| {
+        let path = std::env::var_os(crate::config::FRAME_LOG_VARIABLE)?;
+        let file = std::fs::File::create(path).ok()?;
+        Some(std::sync::Mutex::new((Instant::now(), file)))
+    });
+    if let Some(Ok(mut log)) = log.as_ref().map(|log| log.lock()) {
+        let micros = log.0.elapsed().as_micros();
+        let _ = writeln!(log.1, "{tag} {micros}");
+    }
+}
+
 /// Recent waits between the guest's frames, for the 1% low.
 #[derive(Default)]
 pub struct FrameGaps {

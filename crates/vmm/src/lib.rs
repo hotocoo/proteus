@@ -170,7 +170,10 @@ fn run(config: &config::Config, started: Instant) -> Result<Exit, VmmError> {
     }
     if let Some(screen) = &session.controller.screen {
         let notify = notify.clone();
-        screen.on_frame(move || notify(Notice::Frame));
+        screen.on_frame(move || {
+            usage::log_frame('g');
+            notify(Notice::Frame);
+        });
     }
     // The window system wants this thread, the program's first, so the machine gets another.
     std::thread::scope(|scope| {

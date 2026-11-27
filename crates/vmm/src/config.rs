@@ -393,6 +393,9 @@ pub const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "tra
 pub const FRAME_RATE_PERIOD: Duration = Duration::from_secs(1);
 /// Frames the toolbar's 1% low is worked out over: about 7 s at 144 fps, 17 s at 60 fps.
 pub const LOW_FPS_FRAMES: usize = 1000;
+/// Names a file to record when each guest frame arrives, for measuring frame pacing: one line per
+/// stamp, a tag (`g` as the GPU hands the frame over, `w` as the window takes it) and microseconds.
+pub const FRAME_LOG_VARIABLE: &str = "PROTEUS_FRAME_LOG";
 /// A longer wait between frames is a still screen (Android sends no frame when nothing changes),
 /// not a stutter, so it is left out of the 1% low.
 pub const LOW_FPS_MAX_GAP: Duration = Duration::from_millis(250);
@@ -450,6 +453,10 @@ pub const CACHE_TRIM_SHARE: u64 = 16;
 /// Most inactive anonymous memory moved into zram per `CACHE_TRIM_PERIOD` (KiB): about 4 s of one
 /// guest core compressing, so no single pass stalls the guest long.
 pub const ANON_TRIM_MAX_KIB: u64 = 512 * 1024;
+/// Room each app gets for its saved GPU shaders and pipelines (bytes), in Android's multi-file
+/// shader cache. A game's ANGLE pipeline cache runs to tens of MB; the single-file cache Android
+/// uses otherwise holds 2 MB, so the game compiled every pipeline again in each session.
+pub const SHADER_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 /// Less inactive anonymous memory than this (KiB) is left alone: not worth a pass.
 pub const ANON_TRIM_MIN_KIB: u64 = 16 * 1024;
 /// How often the program's own view of guest RAM is mapped afresh, so pages the emulator touched
