@@ -80,6 +80,12 @@ const EDID_ROOM: usize = 1024;
 /// Pixels per inch the display claims in its EDID: the density Android is told to use
 /// (`androidboot.lcd_density`), so the composer's DPI and the system's agree.
 pub const EDID_DPI: u32 = 320;
+/// How long a stopping display worker gets to tear the renderer down. gfxstream's teardown waits
+/// for every render thread to leave, and a render thread whose guest was switched off mid-frame
+/// waits for guest commands forever: the window then never closed.
+const WORKER_STOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How often the stopping worker is checked on.
+const WORKER_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// A finished frame: `width * height` pixels of four bytes each, rows top to bottom.
 pub struct Frame<'a> {
@@ -888,7 +894,14 @@ impl VirtioDevice for Gpu {
     fn reset(&mut self) {
         if let Some((wake, thread)) = self.worker.take() {
             let _ = wake.send(Wake::Stop);
-            if thread.join().is_err() {
+            let asked = std::time::Instant::now();
+            while !thread.is_finished() && asked.elapsed() < WORKER_STOP_LIMIT {
+                thread::sleep(WORKER_STOP_POLL);
+            }
+            if !thread.is_finished() {
+                // Left running: the renderer is stuck in its teardown and would block for good.
+                log::warn!("{}", copy::GPU_WORKER_STUCK);
+            } else if thread.join().is_err() {
                 log::error!("{}", copy::GPU_WORKER_GONE);
             }
         }
