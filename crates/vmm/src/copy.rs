@@ -641,6 +641,25 @@ pub mod gui {
     pub const RESTART_FROM_WINDOW: &str =
         "Saved. Stop and start the instance, or use Restart in its window, to apply.";
     pub const STOP_FIRST: &str = "Stop the instance first.";
+    pub const ADD_GOOGLE: &str = "Add Google sign-in";
+    pub const ADD_GOOGLE_HINT: &str = "Install Google Play services and the Play Store, so apps \
+        can sign in with a Google account. Android restarts up to three times (about 2 minutes).";
+    pub const ADD_GOOGLE_NEEDS_WRITABLE: &str = "Turn on the writable system in Settings and \
+        restart the instance first: Google's apps are installed into its own copy of the system.";
+    pub const ADD_GOOGLE_NO_SCRIPT: &str =
+        "This build carries no Google installer (install-google.sh).";
+
+    pub fn adding_google(name: &str) -> String {
+        format!("Adding Google sign-in to {name}… Android restarts up to three times.")
+    }
+
+    pub fn google_added(name: &str) -> String {
+        format!("Google sign-in added to {name}: open the Play Store to sign in.")
+    }
+
+    pub fn google_failed(name: &str, why: &str) -> String {
+        format!("Could not add Google sign-in to {name}: {why}")
+    }
 
     pub fn starting(name: &str) -> String {
         format!("Starting {name}…")

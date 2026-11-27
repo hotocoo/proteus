@@ -6,7 +6,7 @@
 #
 # The instance must have been started with --writable-system (its own copy of the system
 # partitions); the shared image is never changed. Without a zip, the MindTheGapps release for
-# Android 17 arm64 is downloaded with the GitHub CLI and its checksum checked. Only what sign-in
+# Android 17 arm64 is downloaded from GitHub and its checksum checked. Only what sign-in
 # needs is installed: no Google app, TalkBack, speech services, Family Link, Wellbeing, setup
 # wizard or sync adapters. The instance reboots up to three times.
 set -eu
@@ -35,8 +35,14 @@ booted() {
 }
 
 if [ -z "$zip" ]; then
-    tag=$(gh release list -R "$repo" -L 1 --json tagName -q '.[0].tagName')
-    gh release download "$tag" -R "$repo" -p '*.zip' -p '*.sha256sum' -D "$work"
+    # The newest release's package and checksum, with curl alone (no GitHub CLI needed).
+    urls=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
+        grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(https[^"]*\)"/\1/' |
+        grep -E '\.zip$|\.sha256sum$')
+    [ -n "$urls" ] || { echo "could not find the MindTheGapps release (no internet?)" >&2; exit 1; }
+    for url in $urls; do
+        (cd "$work" && curl -fsSL --retry 3 -O "$url")
+    done
     (cd "$work" && shasum -a 256 -c ./*.sha256sum)
     zip=$(ls "$work"/*.zip)
 fi

@@ -24,6 +24,8 @@ struct Entry {
     name: String,
     running: bool,
     image: String,
+    /// Has its own writable copy of the system partitions, which Google's apps need.
+    writable_system: bool,
 }
 
 #[derive(Default)]
@@ -47,6 +49,8 @@ struct Launcher {
     failed: Option<String>,
     /// The update the Update button started, while it runs.
     updating: Option<std::thread::JoinHandle<Result<update::Outcome, String>>>,
+    /// The instance the Add Google button is installing into, while it runs.
+    adding_google: Option<(String, std::thread::JoinHandle<Result<(), String>>)>,
 }
 
 /// The instance names in use, for a new instance's default name.
@@ -73,6 +77,31 @@ pub fn new_args(image: &str, kernel: &str, gpu: bool) -> Vec<String> {
         args.push(config::GPU_OPTION.to_owned());
     }
     args
+}
+
+/// Runs the release's Google installer on the running instance `name`; blocks until it is done.
+fn add_google(name: &str) -> Result<(), String> {
+    let (_, script) = config::bundled(config::GOOGLE_INSTALLER)
+        .ok_or_else(|| text::ADD_GOOGLE_NO_SCRIPT.to_owned())?;
+    let program = std::env::current_exe().map_err(|err| err.to_string())?;
+    let ran = crate::no_console_window(&mut std::process::Command::new("sh"))
+        .arg(script)
+        .arg(name)
+        .env(config::GOOGLE_INSTALLER_PROGRAM_VARIABLE, program)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| err.to_string())?;
+    if ran.status.success() {
+        return Ok(());
+    }
+    // The script's last complaint says what went wrong.
+    let said = String::from_utf8_lossy(&ran.stderr);
+    Err(said
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .to_owned())
 }
 
 /// Starts the instance `name` as its own program, so it keeps running if the launcher closes.
@@ -102,13 +131,17 @@ impl Launcher {
         self.entries = listed
             .into_iter()
             .map(|(name, running)| {
-                let image = instance::args(&root, &name)
-                    .map(|args| crate::settings::Settings::from_args(&args).android)
-                    .unwrap_or_default();
+                let settings = instance::args(&root, &name)
+                    .map(|args| crate::settings::Settings::from_args(&args))
+                    .ok();
                 Entry {
                     name,
                     running,
-                    image,
+                    image: settings
+                        .as_ref()
+                        .map(|s| s.android.clone())
+                        .unwrap_or_default(),
+                    writable_system: settings.is_some_and(|s| s.writable_system),
                 }
             })
             .collect();
@@ -147,6 +180,20 @@ impl Launcher {
                 Err(_) => copy::UPDATE_STOPPED.to_owned(),
             };
         } else if self.updating.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+        if self
+            .adding_google
+            .as_ref()
+            .is_some_and(|(_, job)| job.is_finished())
+            && let Some((name, job)) = self.adding_google.take()
+        {
+            self.status = match job.join() {
+                Ok(Ok(())) => text::google_added(&name),
+                Ok(Err(why)) => text::google_failed(&name, &why),
+                Err(_) => text::google_failed(&name, copy::UPDATE_STOPPED),
+            };
+        } else if self.adding_google.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
         if !self.status.is_empty() {
@@ -230,6 +277,22 @@ impl Launcher {
                             if ui.button(text::STOP).clicked() {
                                 self.status = stop(&entry.name);
                                 self.listed_at = None;
+                            }
+                            let idle = self.adding_google.is_none();
+                            let clicked = ui
+                                .add_enabled(idle, egui::Button::new(text::ADD_GOOGLE))
+                                .on_hover_text(text::ADD_GOOGLE_HINT)
+                                .clicked();
+                            if clicked && !entry.writable_system {
+                                self.status = text::ADD_GOOGLE_NEEDS_WRITABLE.to_owned();
+                            } else if clicked {
+                                let name = entry.name.clone();
+                                self.status = text::adding_google(&name);
+                                let job = std::thread::spawn({
+                                    let name = name.clone();
+                                    move || add_google(&name)
+                                });
+                                self.adding_google = Some((name, job));
                             }
                         } else if style::primary(ui, text::START) {
                             self.status = match start(&entry.name) {
@@ -452,6 +515,7 @@ pub fn run() -> Result<(), String> {
         status: String::new(),
         failed: None,
         updating: None,
+        adding_google: None,
     };
     let ran = event_loop.run_app(&mut launcher);
     launcher.window = None;
@@ -481,6 +545,7 @@ mod tests {
             status: String::new(),
             failed: None,
             updating: None,
+            adding_google: None,
         };
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(720.0, 900.0))
@@ -496,6 +561,7 @@ mod tests {
             name: config::DEFAULT_INSTANCE.to_owned(),
             running: false,
             image: String::new(),
+            writable_system: false,
         }];
         assert_eq!(
             free_name(&entries),

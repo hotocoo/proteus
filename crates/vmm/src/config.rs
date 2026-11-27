@@ -223,6 +223,11 @@ pub fn bundled(name: &str) -> Option<(PathBuf, PathBuf)> {
         .find(|(_, path)| path.exists())
 }
 
+/// The script a release carries that installs Google's sign-in apps into a running instance.
+pub const GOOGLE_INSTALLER: &str = "install-google.sh";
+/// The variable that tells that script which `proteus` to drive.
+pub const GOOGLE_INSTALLER_PROGRAM_VARIABLE: &str = "PROTEUS";
+
 /// The guest kernel a release carries.
 pub fn bundled_kernel() -> Option<PathBuf> {
     bundled(BUNDLED_KERNEL).map(|(_, path)| path)
