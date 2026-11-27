@@ -1,0 +1,36 @@
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 65b99ed..3ae39c4 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -981,6 +981,23 @@ kk_physical_device_init_pipeline_cache(struct kk_physical_device *pdev)
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
+ }
+ 
++/* Keeps built shaders on disk, so a game does not build again in every session the pipelines it
++ * built before. Its own pipeline cache would do that if it saved one, but ANGLE (Android's GL)
++ * does not save Vulkan pipeline caches on this driver, so every pipeline was built afresh each
++ * time a game started, and each new sight stuttered again. Keyed by the driver's build, so a
++ * changed driver starts a new cache. MESA_SHADER_CACHE_DIR chooses where it lives. */
++static void
++kk_physical_device_init_disk_cache(struct kk_physical_device *pdev)
++{
++#ifdef ENABLE_SHADER_CACHE
++   struct kk_instance *instance = kk_physical_device_instance(pdev);
++   char build[2 * sizeof(instance->driver_build_sha) + 1];
++   for (unsigned i = 0; i < sizeof(instance->driver_build_sha); i++)
++      snprintf(build + 2 * i, 3, "%02x", instance->driver_build_sha[i]);
++   pdev->vk.disk_cache = disk_cache_create("kosmickrisp", build, 0);
++#endif
++}
++
+ static void
+ kk_physical_device_free_disk_cache(struct kk_physical_device *pdev)
+ {
+@@ -1172,6 +1189,7 @@ kk_enumerate_physical_devices(struct vk_instance *_instance)
+       goto fail_mtl_dev;
+ 
+    kk_physical_device_init_pipeline_cache(pdev);
++   kk_physical_device_init_disk_cache(pdev);
+ 
+    uint64_t sysmem_size_B = kk_get_sysmem_heap_size(pdev);
+    if (sysmem_size_B == 0) {

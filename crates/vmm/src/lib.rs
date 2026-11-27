@@ -351,6 +351,18 @@ fn gpu_check() -> ExitCode {
 /// release carries beside the program, best first. The driver that passes stays set, so the
 /// renderer uses the same one.
 fn start_gpu() -> Result<(), String> {
+    if std::env::var_os(config::SHADER_CACHE_DIR_VARIABLE).is_none() {
+        let home = std::env::var_os(config::PROTEUS_HOME_VARIABLE).map(std::path::PathBuf::from);
+        if let Some(home) = home.or_else(config::home_default) {
+            // SAFETY: called from `main` before any thread is started.
+            unsafe {
+                std::env::set_var(
+                    config::SHADER_CACHE_DIR_VARIABLE,
+                    home.join(config::SHADER_CACHE_DIR),
+                );
+            }
+        }
+    }
     let chosen = config::VULKAN_DRIVER_VARIABLES
         .iter()
         .any(|name| std::env::var_os(name).is_some());

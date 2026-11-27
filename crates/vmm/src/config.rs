@@ -228,6 +228,11 @@ pub const GOOGLE_INSTALLER: &str = "install-google.sh";
 /// The variable that tells that script which `proteus` to drive.
 pub const GOOGLE_INSTALLER_PROGRAM_VARIABLE: &str = "PROTEUS";
 
+/// Where the GPU driver keeps the shaders it has built (Mesa's on-disk cache), and the folder under
+/// the emulator's home it defaults to: a game then builds each pipeline once, not in every session.
+pub const SHADER_CACHE_DIR_VARIABLE: &str = "MESA_SHADER_CACHE_DIR";
+pub const SHADER_CACHE_DIR: &str = "shader-cache";
+
 /// The guest kernel a release carries.
 pub fn bundled_kernel() -> Option<PathBuf> {
     bundled(BUNDLED_KERNEL).map(|(_, path)| path)
